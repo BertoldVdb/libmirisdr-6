@@ -15,7 +15,7 @@ static int mirisdr_samples_convert_504_s8 (mirisdr_dev_t *p, unsigned char* src,
         unsigned char *b = src + i;
 
         /* ztracená data */
-        mirisdr_addr_next(p, b[3] << 24 | b[2] << 16 | b[1] << 8 | b[0] << 0, 504);
+        mirisdr_addr_next(p, b[3] << 24 | b[2] << 16 | b[1] << 8 | b[0] << 0, p->addr_step);
 
         memcpy(dst + ret, b + 16, 1008);
     }

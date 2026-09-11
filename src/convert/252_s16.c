@@ -24,7 +24,7 @@ static int mirisdr_samples_convert_252_s16 (mirisdr_dev_t *p, unsigned char* buf
         addr = src[3] << 24 | src[2] << 16 | src[1] << 8 | src[0] << 0;
 
         /* potenciálně ztracená data - potentially lost data */
-        mirisdr_addr_next(p, addr, 252);
+        mirisdr_addr_next(p, addr, p->addr_step);
 
         /* přeskočíme hlavičku 16 bitů, 252 I+Q párů - skip 16 bits of header, do 252 I+Q pairs */
         for (src+= 16, j = 0; j < 1008; j+= 4, ret+= 2) {

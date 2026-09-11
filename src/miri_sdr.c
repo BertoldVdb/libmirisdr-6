@@ -55,6 +55,11 @@ void usage(void)
 		"\t    384:    S10 +2bits \n"
 		"\t    336:    S12\n"
 		"\t    252:    S14\n"
+		"\t  real modes, one converter, every sample real:\n"
+		"\t    768r:   S10 +2bits\n"
+		"\t    672r:   S12\n"
+		"\t    504r:   S16\n"
+
 #if !defined (_WIN32) || defined(__MINGW32__)
 		"\t[-e USB transfer mode (default: 1)]\n"
 #else
@@ -247,6 +252,12 @@ int main(int argc, char **argv)
 				format = 3;}
 			if (strcmp("252", optarg) == 0) {
 				format = 4;}
+			if (strcmp("768r", optarg) == 0) {
+				format = 5;}
+			if (strcmp("672r", optarg) == 0) {
+				format = 6;}
+			if (strcmp("504r", optarg) == 0) {
+				format = 7;}
 			break;
 		case 's':
 			samp_rate = (uint32_t)atof(optarg);
@@ -365,6 +376,15 @@ int main(int argc, char **argv)
 		break;
 	case 4:
 		mirisdr_set_sample_format(dev, "252_S16");
+		break;
+	case 5:
+		mirisdr_set_sample_format(dev, "768_REAL_S16");
+		break;
+	case 6:
+		mirisdr_set_sample_format(dev, "672_REAL_S16");
+		break;
+	case 7:
+		mirisdr_set_sample_format(dev, "504_REAL_S16");
 		break;
 	default:
 		mirisdr_set_sample_format(dev, "AUTO");
