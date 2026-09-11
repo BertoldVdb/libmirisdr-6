@@ -121,8 +121,10 @@ int mirisdr_setup (mirisdr_dev_t **out_dev, mirisdr_dev_t *dev) {
     /* ISOC is more stable but works only on Unix systems */
 #if !defined (_WIN32) || defined(__MINGW32__)
     dev->transfer = MIRISDR_TRANSFER_ISOC;
+    dev->alt_setting = 1;
 #else
     dev->transfer = MIRISDR_TRANSFER_BULK;
+    dev->alt_setting = 3;
 #endif
 
     mirisdr_adc_init(dev);

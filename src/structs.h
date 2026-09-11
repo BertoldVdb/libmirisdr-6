@@ -88,6 +88,7 @@ struct mirisdr_dev {
         MIRISDR_TRANSFER_BULK = 0,
         MIRISDR_TRANSFER_ISOC
     } transfer;
+    uint8_t             alt_setting;    /* the one streaming actually selects */
 
     /* async */
     enum {
