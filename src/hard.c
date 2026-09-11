@@ -17,12 +17,29 @@
 
 #include "hard.h"
 
+/*
+ * It is possible to configure how many 1kB blocks at a time the DSP will
+ * hand over to the USB controller. If this value is too low not all buffer
+ * memory is used and the chance of gaps increases. If it is too high (eg 4
+ * packets in a 1 slot isochronous transfer), the stream stops.
+ */
+static uint32_t mirisdr_burst(mirisdr_dev_t *p)
+{
+	switch (p->alt_setting)
+	{
+	case 1:  return 3;          /* isochronous, 3 x 1024 per microframe */
+	case 2:  return 1;          /* isochronous, 1 x 1024 */
+	case 4:  return 2;          /* isochronous, 2 x 1024 (requires custom firmware) */
+	default: return 4;          /* bulk */
+	}
+}
+
 /* nastavení parametrů které vyžadují restart */
 /* parameters that require restart */
 int mirisdr_set_hard(mirisdr_dev_t *p)
 {
 	int streaming = 0;
-	uint32_t reg3 = 0, reg4 = 0, swap, decim, pll_rate, rate_min, rate_max;
+	uint32_t reg3 = 0, reg4 = 0, swap, burst, decim, pll_rate, rate_min, rate_max;
 	uint64_t i, vco, n, fract;
 
 	/* při změně registrů musíme zastavit streamování */
@@ -37,6 +54,8 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 	}
 
 	swap = p->swap_iq ? (1 << 9) : 0;
+
+	burst = (mirisdr_burst(p) - 1) << 6;
 
 	decim = ((p->decimation_bypass == MIRISDR_DECIMATION_BYPASS_ON) ||
 	         ((p->decimation_bypass == MIRISDR_DECIMATION_BYPASS_AUTO) &&
@@ -82,7 +101,7 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 #if MIRISDR_DEBUG >= 1
 		fprintf( stderr, "format: 252\n");
 #endif
-		mirisdr_write_reg(p, 0x07, 0x000094 | swap | decim);
+		mirisdr_write_reg(p, 0x07, 0x000014 | swap | decim | burst);
 		p->addr = 252 + 2;
 		p->addr_step = 252;
 		break;
@@ -91,7 +110,7 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 #if MIRISDR_DEBUG >= 1
 		fprintf( stderr, "format: 336\n");
 #endif
-		mirisdr_write_reg(p, 0x07, 0x000085 | swap | decim);
+		mirisdr_write_reg(p, 0x07, 0x000005 | swap | decim | burst);
 		p->addr = 336 + 2;
 		p->addr_step = 336;
 		break;
@@ -100,7 +119,7 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 #if MIRISDR_DEBUG >= 1
 		fprintf( stderr, "format: 384\n");
 #endif
-		mirisdr_write_reg(p, 0x07, 0x0000a5 | swap | decim);
+		mirisdr_write_reg(p, 0x07, 0x000025 | swap | decim | burst);
 		p->addr = 384 + 2;
 		p->addr_step = 384;
 		break;
@@ -110,7 +129,7 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 #if MIRISDR_DEBUG >= 1
 		fprintf( stderr, "format: 504\n");
 #endif
-		mirisdr_write_reg(p, 0x07, 0x000c94 | swap | decim);
+		mirisdr_write_reg(p, 0x07, 0x000c14 | swap | decim | burst);
 		p->addr = 504 + 2;
 		p->addr_step = 504;
 		break;
@@ -118,7 +137,7 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 #if MIRISDR_DEBUG >= 1
 		fprintf( stderr, "format: 504 real\n");
 #endif
-		mirisdr_write_reg(p, 0x07, 0x000494 | swap | decim);
+		mirisdr_write_reg(p, 0x07, 0x000414 | swap | decim | burst);
 		p->addr = 504 + 2;
 		p->addr_step = 504;
 		break;
@@ -126,7 +145,7 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 #if MIRISDR_DEBUG >= 1
 		fprintf( stderr, "format: 672 real\n");
 #endif
-		mirisdr_write_reg(p, 0x07, 0x000485 | swap | decim);
+		mirisdr_write_reg(p, 0x07, 0x000405 | swap | decim | burst);
 		p->addr = 672 + 2;
 		p->addr_step = 672;
 		break;
@@ -134,7 +153,7 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 #if MIRISDR_DEBUG >= 1
 		fprintf( stderr, "format: 768 real\n");
 #endif
-		mirisdr_write_reg(p, 0x07, 0x0004a5 | swap | decim);
+		mirisdr_write_reg(p, 0x07, 0x000425 | swap | decim | burst);
 		p->addr = 768 + 2;
 		p->addr_step = 768;
 		break;

@@ -627,10 +627,12 @@ int mirisdr_set_transfer(mirisdr_dev_t *p, const char *v)
     if (!strcmp(v, "BULK"))
     {
         p->transfer = MIRISDR_TRANSFER_BULK;
+        p->alt_setting = 3;
     }
     else if (!strcmp(v, "ISOC"))
     {
         p->transfer = MIRISDR_TRANSFER_ISOC;
+        p->alt_setting = 1;
     }
     else
     {
@@ -638,7 +640,8 @@ int mirisdr_set_transfer(mirisdr_dev_t *p, const char *v)
         goto failed;
     }
 
-    return 0;
+    /* Configure the endpoint burst size */
+    return mirisdr_set_hard(p);
 
     failed: return -1;
 }

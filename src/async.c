@@ -468,7 +468,7 @@ int mirisdr_read_async (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx,
 #if MIRISDR_DEBUG >= 1
         fprintf( stderr, ", transfer: bulk\n");
 #endif
-        if ((r = libusb_set_interface_alt_setting(p->dh, 0, 3)) < 0) {
+        if ((r = libusb_set_interface_alt_setting(p->dh, 0, p->alt_setting)) < 0) {
             fprintf( stderr, "failed to use alternate setting for Bulk mode on miri usb device %u with code %d\n", p->index, r);
         }
         break;
@@ -476,7 +476,7 @@ int mirisdr_read_async (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx,
 #if MIRISDR_DEBUG >= 1
         fprintf( stderr, ", transfer: isochronous\n");
 #endif
-        if ((r = libusb_set_interface_alt_setting(p->dh, 0, 1)) < 0) {
+        if ((r = libusb_set_interface_alt_setting(p->dh, 0, p->alt_setting)) < 0) {
             fprintf( stderr, "failed to use alternate setting for Isochronous mode on miri usb device %u with code %d\n", p->index, r);
         }
         break;
