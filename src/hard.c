@@ -22,7 +22,7 @@
 int mirisdr_set_hard(mirisdr_dev_t *p)
 {
 	int streaming = 0;
-	uint32_t reg3 = 0, reg4 = 0, decim, pll_rate, rate_min, rate_max;
+	uint32_t reg3 = 0, reg4 = 0, swap, decim, pll_rate, rate_min, rate_max;
 	uint64_t i, vco, n, fract;
 
 	/* při změně registrů musíme zastavit streamování */
@@ -35,6 +35,8 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 			goto failed;
 		}
 	}
+
+	swap = p->swap_iq ? (1 << 9) : 0;
 
 	decim = ((p->decimation_bypass == MIRISDR_DECIMATION_BYPASS_ON) ||
 	         ((p->decimation_bypass == MIRISDR_DECIMATION_BYPASS_AUTO) &&
@@ -80,24 +82,27 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 #if MIRISDR_DEBUG >= 1
 		fprintf( stderr, "format: 252\n");
 #endif
-		mirisdr_write_reg(p, 0x07, 0x000094 | decim);
+		mirisdr_write_reg(p, 0x07, 0x000094 | swap | decim);
 		p->addr = 252 + 2;
+		p->addr_step = 252;
 		break;
 	case MIRISDR_FORMAT_336_S16:
 		/* maximum rate 8.064 Msps | 24.576 MB/s | 196.608 Mbit/s */
 #if MIRISDR_DEBUG >= 1
 		fprintf( stderr, "format: 336\n");
 #endif
-		mirisdr_write_reg(p, 0x07, 0x000085 | decim);
+		mirisdr_write_reg(p, 0x07, 0x000085 | swap | decim);
 		p->addr = 336 + 2;
+		p->addr_step = 336;
 		break;
 	case MIRISDR_FORMAT_384_S16:
 		/* maximum rate 9.216 Msps | 24.576 MB/s | 196.608 Mbit/s */
 #if MIRISDR_DEBUG >= 1
 		fprintf( stderr, "format: 384\n");
 #endif
-		mirisdr_write_reg(p, 0x07, 0x0000a5 | decim);
+		mirisdr_write_reg(p, 0x07, 0x0000a5 | swap | decim);
 		p->addr = 384 + 2;
+		p->addr_step = 384;
 		break;
 	case MIRISDR_FORMAT_504_S16:
 	case MIRISDR_FORMAT_504_S8:
@@ -105,8 +110,33 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 #if MIRISDR_DEBUG >= 1
 		fprintf( stderr, "format: 504\n");
 #endif
-		mirisdr_write_reg(p, 0x07, 0x000c94 | decim);
+		mirisdr_write_reg(p, 0x07, 0x000c94 | swap | decim);
 		p->addr = 504 + 2;
+		p->addr_step = 504;
+		break;
+	case MIRISDR_FORMAT_504_REAL_S16:
+#if MIRISDR_DEBUG >= 1
+		fprintf( stderr, "format: 504 real\n");
+#endif
+		mirisdr_write_reg(p, 0x07, 0x000494 | swap | decim);
+		p->addr = 504 + 2;
+		p->addr_step = 504;
+		break;
+	case MIRISDR_FORMAT_672_REAL_S16:
+#if MIRISDR_DEBUG >= 1
+		fprintf( stderr, "format: 672 real\n");
+#endif
+		mirisdr_write_reg(p, 0x07, 0x000485 | swap | decim);
+		p->addr = 672 + 2;
+		p->addr_step = 672;
+		break;
+	case MIRISDR_FORMAT_768_REAL_S16:
+#if MIRISDR_DEBUG >= 1
+		fprintf( stderr, "format: 768 real\n");
+#endif
+		mirisdr_write_reg(p, 0x07, 0x0004a5 | swap | decim);
+		p->addr = 768 + 2;
+		p->addr_step = 768;
 		break;
 	}
 
@@ -156,12 +186,15 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 	switch (p->format)
 	{ /* AGC */
 	case MIRISDR_FORMAT_252_S16:
+	case MIRISDR_FORMAT_504_REAL_S16:
 		reg3 |= (0x0f & 0x01) << 12;
 		break;
 	case MIRISDR_FORMAT_336_S16:
+	case MIRISDR_FORMAT_672_REAL_S16:
 		reg3 |= (0x0f & 0x05) << 12;
 		break;
 	case MIRISDR_FORMAT_384_S16:
+	case MIRISDR_FORMAT_768_REAL_S16:
 		reg3 |= (0x0f & 0x09) << 12;
 		break;
 	case MIRISDR_FORMAT_504_S16:
@@ -171,6 +204,19 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 	}
 
 	reg3 |= (0x01 & 1) << 16; /* ?? */
+
+	/* The real formats digitise one converter, so gate the other off: bit 5
+	   powers down I, bit 6 Q.  reg7 bit 9 chooses which one is read. */
+	switch (p->format)
+	{
+	case MIRISDR_FORMAT_504_REAL_S16:
+	case MIRISDR_FORMAT_672_REAL_S16:
+	case MIRISDR_FORMAT_768_REAL_S16:
+		reg3 |= (p->swap_iq ? (1 << 5) : (1 << 6));
+		break;
+	default:
+		break;
+	}
 
 	/* registr pro detailní nastavení vzorkovací frekvence */
 	/* Registry settings for detailed sampling frequency */
@@ -229,6 +275,12 @@ int mirisdr_set_sample_format(mirisdr_dev_t *p, const char *v)
 			p->format = MIRISDR_FORMAT_504_S16;
 		} else if (!strcmp(v, "504_S8")) {
 			p->format = MIRISDR_FORMAT_504_S8;
+		} else if (!strcmp(v, "504_REAL_S16")) {
+			p->format = MIRISDR_FORMAT_504_REAL_S16;
+		} else if (!strcmp(v, "672_REAL_S16")) {
+			p->format = MIRISDR_FORMAT_672_REAL_S16;
+		} else if (!strcmp(v, "768_REAL_S16")) {
+			p->format = MIRISDR_FORMAT_768_REAL_S16;
 		} else {
 			fprintf(stderr, "unsupported format: %s\n", v);
 			goto failed;
@@ -269,6 +321,18 @@ const char *mirisdr_get_decimation_bypass(mirisdr_dev_t *p)
 	}
 }
 
+int mirisdr_set_swap_iq(mirisdr_dev_t *p, int swap)
+{
+	p->swap_iq = swap ? 1 : 0;
+
+	return mirisdr_set_hard(p);
+}
+
+int mirisdr_get_swap_iq(mirisdr_dev_t *p)
+{
+	return p->swap_iq;
+}
+
 const char *mirisdr_get_sample_format(mirisdr_dev_t *p)
 {
 	if (p->format_auto == MIRISDR_FORMAT_AUTO_ON) {
@@ -287,6 +351,12 @@ const char *mirisdr_get_sample_format(mirisdr_dev_t *p)
 		return "504_S16";
 	case MIRISDR_FORMAT_504_S8:
 		return "504_S8";
+	case MIRISDR_FORMAT_504_REAL_S16:
+		return "504_REAL_S16";
+	case MIRISDR_FORMAT_672_REAL_S16:
+		return "672_REAL_S16";
+	case MIRISDR_FORMAT_768_REAL_S16:
+		return "768_REAL_S16";
 	}
 
 	return "";

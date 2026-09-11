@@ -174,6 +174,39 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
                     }
                 }
                 break;
+            case MIRISDR_FORMAT_504_REAL_S16:
+                samples = samples_realloc(p, 504 * DEFAULT_ISO_BUFFERS * DEFAULT_ISO_PACKETS * 2);
+                for (i = 0; i < DEFAULT_ISO_PACKETS; i++) {
+                    struct libusb_iso_packet_descriptor *packet = &xfer->iso_packet_desc[i];
+                    if ((packet->actual_length > 0) &&
+                        (iso_packet_buf = libusb_get_iso_packet_buffer_simple(xfer, i))) {
+                        len = mirisdr_samples_convert_252_s16(p, iso_packet_buf, samples + bytes, packet->actual_length);
+                        bytes+= len;
+                    }
+                }
+                break;
+            case MIRISDR_FORMAT_672_REAL_S16:
+                samples = samples_realloc(p, 672 * DEFAULT_ISO_BUFFERS * DEFAULT_ISO_PACKETS * 2);
+                for (i = 0; i < DEFAULT_ISO_PACKETS; i++) {
+                    struct libusb_iso_packet_descriptor *packet = &xfer->iso_packet_desc[i];
+                    if ((packet->actual_length > 0) &&
+                        (iso_packet_buf = libusb_get_iso_packet_buffer_simple(xfer, i))) {
+                        len = mirisdr_samples_convert_336_s16(p, iso_packet_buf, samples + bytes, packet->actual_length);
+                        bytes+= len;
+                    }
+                }
+                break;
+            case MIRISDR_FORMAT_768_REAL_S16:
+                samples = samples_realloc(p, 768 * DEFAULT_ISO_BUFFERS * DEFAULT_ISO_PACKETS * 2);
+                for (i = 0; i < DEFAULT_ISO_PACKETS; i++) {
+                    struct libusb_iso_packet_descriptor *packet = &xfer->iso_packet_desc[i];
+                    if ((packet->actual_length > 0) &&
+                        (iso_packet_buf = libusb_get_iso_packet_buffer_simple(xfer, i))) {
+                        len = mirisdr_samples_convert_384_s16(p, iso_packet_buf, samples + bytes, packet->actual_length);
+                        bytes+= len;
+                    }
+                }
+                break;
             }
             break;
         case LIBUSB_TRANSFER_TYPE_BULK:
@@ -197,6 +230,18 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
             case MIRISDR_FORMAT_504_S8:
                 samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024) * 1008);
                 bytes = mirisdr_samples_convert_504_s8(p, xfer->buffer, samples, xfer->actual_length);
+                break;
+            case MIRISDR_FORMAT_504_REAL_S16:
+                samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024) * 1008);
+                bytes = mirisdr_samples_convert_252_s16(p, xfer->buffer, samples, xfer->actual_length);
+                break;
+            case MIRISDR_FORMAT_672_REAL_S16:
+                samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024) * 1344);
+                bytes = mirisdr_samples_convert_336_s16(p, xfer->buffer, samples, xfer->actual_length);
+                break;
+            case MIRISDR_FORMAT_768_REAL_S16:
+                samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024) * 1536);
+                bytes = mirisdr_samples_convert_384_s16(p, xfer->buffer, samples, xfer->actual_length);
                 break;
             }
             break;

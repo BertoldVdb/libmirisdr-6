@@ -96,9 +96,24 @@ MIRISDR_API uint32_t mirisdr_get_sample_rate (mirisdr_dev_t *p);
 MIRISDR_API int mirisdr_set_decimation_bypass (mirisdr_dev_t *p, const char *v);  /* extra */
 MIRISDR_API const char *mirisdr_get_decimation_bypass (mirisdr_dev_t *p);         /* extra */
 
-/* sample format control */
+/*
+ * Complex formats deliver interleaved I/Q, so n samples are 2n int16. The
+ * REAL formats digitise a single converter. Every int16 is one real sample.
+ * This means that n samples are n int16.
+ *
+ * The following rates are available:
+ *   AUTO, 252_S16, 336_S16, 384_S16, 504_S16, 504_S8
+ *   504_REAL_S16, 672_REAL_S16, 768_REAL_S16
+ */
 MIRISDR_API int mirisdr_set_sample_format (mirisdr_dev_t *p, const char *v);  /* extra */
 MIRISDR_API const char *mirisdr_get_sample_format (mirisdr_dev_t *p);   /* extra */
+
+/*
+ * For complex formats this swaps I and Q. For real formats, this selects which
+ * converter is used (swap=Q, no-swap=I).
+ */
+MIRISDR_API int mirisdr_set_swap_iq (mirisdr_dev_t *p, int swap);       /* extra */
+MIRISDR_API int mirisdr_get_swap_iq (mirisdr_dev_t *p);                 /* extra */
 
 /*
  * Counts are in the unit the hardware counter uses:

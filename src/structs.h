@@ -53,7 +53,11 @@ struct mirisdr_dev {
         MIRISDR_FORMAT_336_S16,
         MIRISDR_FORMAT_384_S16,
         MIRISDR_FORMAT_504_S16,
-        MIRISDR_FORMAT_504_S8
+        MIRISDR_FORMAT_504_S8,
+        /* real modes use a single converter, each entry is a single I OR Q sample. */
+        MIRISDR_FORMAT_504_REAL_S16,
+        MIRISDR_FORMAT_672_REAL_S16,
+        MIRISDR_FORMAT_768_REAL_S16
     } format;
     enum {
         MIRISDR_BW_200KHZ = 0,
@@ -104,6 +108,8 @@ struct mirisdr_dev {
     size_t              xfer_out_pos;
     unsigned char       *xfer_out;
     uint32_t            addr;
+    uint32_t            addr_step;
+    int                 swap_iq;
     int                 driver_active;
     int                 bias;
     int                 reg8;
