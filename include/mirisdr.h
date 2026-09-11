@@ -83,6 +83,19 @@ MIRISDR_API int mirisdr_adc_init (mirisdr_dev_t *p);                    /* extra
 MIRISDR_API int mirisdr_set_sample_rate (mirisdr_dev_t *p, uint32_t rate);
 MIRISDR_API uint32_t mirisdr_get_sample_rate (mirisdr_dev_t *p);
 
+/*
+ * The PLL of the device is limited to ~15MHz, so higher sample rates require 
+ * turning off the internal decimator. This results in a doubled output rate,
+ * but requires the application to do some extra filtering to get useful results.
+ *
+ * Three modes are available:
+ *   "AUTO" (default)  bypass only above 14.5 Msps
+ *   "ON"              always bypass (the PLL runs at half the sample rate)
+ *   "OFF"             never bypass  (the PLL runs at the sample rate)
+ */
+MIRISDR_API int mirisdr_set_decimation_bypass (mirisdr_dev_t *p, const char *v);  /* extra */
+MIRISDR_API const char *mirisdr_get_decimation_bypass (mirisdr_dev_t *p);         /* extra */
+
 /* sample format control */
 MIRISDR_API int mirisdr_set_sample_format (mirisdr_dev_t *p, const char *v);  /* extra */
 MIRISDR_API const char *mirisdr_get_sample_format (mirisdr_dev_t *p);   /* extra */

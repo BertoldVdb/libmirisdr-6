@@ -15,5 +15,9 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+/* limits of the sampling PLL */
 #define MIRISDR_SAMPLE_RATE_MIN         1300000
 #define MIRISDR_SAMPLE_RATE_MAX         15000000
+
+/* rate above which AUTO bypasses the decimator */
+#define MIRISDR_DECIMATION_AUTO_RATE    14500000

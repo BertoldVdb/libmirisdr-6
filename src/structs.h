@@ -44,6 +44,11 @@ struct mirisdr_dev {
         MIRISDR_FORMAT_AUTO_OFF
     } format_auto;
     enum {
+        MIRISDR_DECIMATION_BYPASS_AUTO = 0,
+        MIRISDR_DECIMATION_BYPASS_OFF,
+        MIRISDR_DECIMATION_BYPASS_ON
+    } decimation_bypass;
+    enum {
         MIRISDR_FORMAT_252_S16 = 0,
         MIRISDR_FORMAT_336_S16,
         MIRISDR_FORMAT_384_S16,

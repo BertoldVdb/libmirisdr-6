@@ -107,6 +107,7 @@ int mirisdr_setup (mirisdr_dev_t **out_dev, mirisdr_dev_t *dev) {
     dev->gain_reduction_baseband = 43;
     dev->if_freq = MIRISDR_IF_ZERO;
     dev->format_auto = MIRISDR_FORMAT_AUTO_ON;
+    dev->decimation_bypass = MIRISDR_DECIMATION_BYPASS_AUTO;
     dev->bandwidth = MIRISDR_BW_8MHZ;
     dev->xtal = MIRISDR_XTAL_24M;
     dev->bias = 0;

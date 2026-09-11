@@ -22,7 +22,7 @@
 int mirisdr_set_hard(mirisdr_dev_t *p)
 {
 	int streaming = 0;
-	uint32_t reg3 = 0, reg4 = 0;
+	uint32_t reg3 = 0, reg4 = 0, decim, pll_rate, rate_min, rate_max;
 	uint64_t i, vco, n, fract;
 
 	/* při změně registrů musíme zastavit streamování */
@@ -36,18 +36,25 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 		}
 	}
 
+	decim = ((p->decimation_bypass == MIRISDR_DECIMATION_BYPASS_ON) ||
+	         ((p->decimation_bypass == MIRISDR_DECIMATION_BYPASS_AUTO) &&
+	          (p->rate > MIRISDR_DECIMATION_AUTO_RATE))) ? (1 << 3) : 0;
+
+	rate_min = decim ? 2 * MIRISDR_SAMPLE_RATE_MIN : MIRISDR_SAMPLE_RATE_MIN;
+	rate_max = decim ? 2 * MIRISDR_SAMPLE_RATE_MAX : MIRISDR_SAMPLE_RATE_MAX;
+
 	/* omezení rozsahu */
 	/* limit the scope of */
-	if (p->rate > MIRISDR_SAMPLE_RATE_MAX)
+	if (p->rate > rate_max)
 	{
-		fprintf(stderr, "can't set rate %u, setting maximum rate: %d\n", p->rate, MIRISDR_SAMPLE_RATE_MAX);
-		p->rate = MIRISDR_SAMPLE_RATE_MAX;
+		p->rate = rate_max;
 	}
-	else if (p->rate < MIRISDR_SAMPLE_RATE_MIN)
+	else if (p->rate < rate_min)
 	{
-		fprintf(stderr, "can't set rate %u, setting minimum rate: %d\n", p->rate, MIRISDR_SAMPLE_RATE_MIN);
-		p->rate = MIRISDR_SAMPLE_RATE_MIN;
+		p->rate = rate_min;
 	}
+
+	pll_rate = decim ? p->rate / 2 : p->rate;
 
 	/* automatická volba formátu */
 	/* automatic choice format */
@@ -73,7 +80,7 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 #if MIRISDR_DEBUG >= 1
 		fprintf( stderr, "format: 252\n");
 #endif
-		mirisdr_write_reg(p, 0x07, 0x000094);
+		mirisdr_write_reg(p, 0x07, 0x000094 | decim);
 		p->addr = 252 + 2;
 		break;
 	case MIRISDR_FORMAT_336_S16:
@@ -81,7 +88,7 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 #if MIRISDR_DEBUG >= 1
 		fprintf( stderr, "format: 336\n");
 #endif
-		mirisdr_write_reg(p, 0x07, 0x000085);
+		mirisdr_write_reg(p, 0x07, 0x000085 | decim);
 		p->addr = 336 + 2;
 		break;
 	case MIRISDR_FORMAT_384_S16:
@@ -89,7 +96,7 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 #if MIRISDR_DEBUG >= 1
 		fprintf( stderr, "format: 384\n");
 #endif
-		mirisdr_write_reg(p, 0x07, 0x0000a5);
+		mirisdr_write_reg(p, 0x07, 0x0000a5 | decim);
 		p->addr = 384 + 2;
 		break;
 	case MIRISDR_FORMAT_504_S16:
@@ -98,7 +105,7 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 #if MIRISDR_DEBUG >= 1
 		fprintf( stderr, "format: 504\n");
 #endif
-		mirisdr_write_reg(p, 0x07, 0x000c94);
+		mirisdr_write_reg(p, 0x07, 0x000c94 | decim);
 		p->addr = 504 + 2;
 		break;
 	}
@@ -122,7 +129,7 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 	 */
 	for (i = 4; i < 16; i += 2)
 	{
-		vco = (uint64_t) p->rate * i * 12;
+		vco = (uint64_t) pll_rate * i * 12;
 
 		if (vco >= 202000000UL) {
 			break;
@@ -134,8 +141,8 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 	n = vco / 48000000UL;
 	fract = 0x200000UL * (vco % 48000000UL) / 48000000UL;
 #if MIRISDR_DEBUG >= 1
-	fprintf( stderr, "rate: %u, vco: %lu (%lu), n: %lu, fraction: %lu\n",
-			p->rate, (long unsigned int)vco, (long unsigned int)(i / 2) - 1,
+	fprintf( stderr, "rate: %u, pll: %u, vco: %lu (%lu), n: %lu, fraction: %lu\n",
+			p->rate, pll_rate, (long unsigned int)vco, (long unsigned int)(i / 2) - 1,
 			(long unsigned int)n, (long unsigned int)fract);
 #endif
 	/* nastavení vzorkovací frekvence */
@@ -185,9 +192,17 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 
 int mirisdr_set_sample_rate(mirisdr_dev_t *p, uint32_t rate)
 {
-	p->rate = rate;
+	int r;
 
-	return mirisdr_set_hard(p);
+	p->rate = rate;
+	r = mirisdr_set_hard(p);
+
+	/* the range depends on the decimation bypass, report what was reached */
+	if (p->rate != rate) {
+		fprintf(stderr, "can't set rate %u, using %u\n", rate, p->rate);
+	}
+
+	return r;
 }
 
 uint32_t mirisdr_get_sample_rate(mirisdr_dev_t *p)
@@ -223,6 +238,35 @@ int mirisdr_set_sample_format(mirisdr_dev_t *p, const char *v)
 	return mirisdr_set_hard(p);
 
 	failed: return -1;
+}
+
+int mirisdr_set_decimation_bypass(mirisdr_dev_t *p, const char *v)
+{
+	if (!strcmp(v, "AUTO")) {
+		p->decimation_bypass = MIRISDR_DECIMATION_BYPASS_AUTO;
+	} else if (!strcmp(v, "ON")) {
+		p->decimation_bypass = MIRISDR_DECIMATION_BYPASS_ON;
+	} else if (!strcmp(v, "OFF")) {
+		p->decimation_bypass = MIRISDR_DECIMATION_BYPASS_OFF;
+	} else {
+		fprintf(stderr, "unsupported decimation bypass: %s\n", v);
+		return -1;
+	}
+
+	return mirisdr_set_hard(p);
+}
+
+const char *mirisdr_get_decimation_bypass(mirisdr_dev_t *p)
+{
+	switch (p->decimation_bypass)
+	{
+	case MIRISDR_DECIMATION_BYPASS_ON:
+		return "ON";
+	case MIRISDR_DECIMATION_BYPASS_OFF:
+		return "OFF";
+	default:
+		return "AUTO";
+	}
 }
 
 const char *mirisdr_get_sample_format(mirisdr_dev_t *p)

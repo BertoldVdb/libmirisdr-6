@@ -17,6 +17,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <ctype.h>
 #include <errno.h>
 #include <signal.h>
 #include <string.h>
@@ -77,6 +78,10 @@ void usage(void)
 		"\t   8000000: 8MHz\n"
         "\t  14000000: 14MHz\n"
 		"\t[-s samplerate (default: 2048000 Hz)]\n"
+		"\t[-D decimation bypass (default: auto)]\n"
+		"\t    auto:   bypass above 14.5 Msps, where the PLL runs out\n"
+		"\t    on:     always bypass, 2.6 - 30 Msps\n"
+		"\t    off:    never bypass, 1.3 - 15 Msps\n"
 		"\t[-d device_index (default: 0)]\n"
 	    "\t[-T device_type device variant (default: 0)]\n"
         "\t    0:       Default\n"
@@ -155,6 +160,7 @@ int main(int argc, char **argv)
 	FILE *file;
 	uint8_t *buffer;
 	uint32_t format = 0;
+	const char *decimation = "AUTO";
 #if !defined (_WIN32) || defined(__MINGW32__)
 	uint32_t transfer = 1;
 #else
@@ -172,13 +178,17 @@ int main(int argc, char **argv)
 	int intval;
 
 #if !defined (_WIN32) || defined(__MINGW32__)
-	while ((opt = getopt(argc, argv, "b:d:T:e:f:g:G:i:m:s:w:S::")) != -1) {
+	while ((opt = getopt(argc, argv, "b:d:D:T:e:f:g:G:i:m:s:w:S::")) != -1) {
 		switch (opt) {
 		case 'b':
 			out_block_size = (uint32_t)atof(optarg);
 			break;
 		case 'd':
 			dev_index = atoi(optarg);
+			break;
+		case 'D':
+			for (decimation = optarg; *optarg; optarg++)
+				*optarg = toupper((unsigned char) *optarg);
 			break;
         case 'T':
             intval = atoi(optarg);
@@ -321,6 +331,10 @@ int main(int argc, char **argv)
 		fprintf(stderr, "WARNING: Failed to read usb strings.\n");
 	else
 		fprintf(stderr, "%s, %s: SN: %s\n", vendor, product, serial);
+
+	/* Set the decimation mode */
+    if (mirisdr_set_decimation_bypass(dev, decimation) < 0)
+		exit(1);
 
 	/* Set the sample rate */
 	r = mirisdr_set_sample_rate(dev, samp_rate);
