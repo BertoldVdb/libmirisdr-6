@@ -21,10 +21,7 @@ static int mirisdr_samples_convert_384_s16 (mirisdr_dev_t *p, unsigned char* buf
         addr = src[3] << 24 | src[2] << 16 | src[1] << 8 | src[0] << 0;
 
         /* potenciálně ztracená data */
-        if ((i == 0) && (addr != p->addr)) {
-            fprintf(stderr, "%u samples lost, %d, %08x:%08x\n", addr - p->addr, cnt, p->addr, addr);
-            p->sync_loss_cnt++;
-        }
+        mirisdr_addr_next(p, addr, 384);
 
         /* přeskočíme hlavičku 16 bitů, 6 bloků, poslední 4 bajtový posuvný blok zpracujeme */
         for (src+= 16, j = 0; j < 6; j++, src+= 4) {
@@ -71,7 +68,6 @@ static int mirisdr_samples_convert_384_s16 (mirisdr_dev_t *p, unsigned char* buf
         }
     }
 
-    p->addr = addr + 384;
 
     /* total used bytes */
     return ret * 2;

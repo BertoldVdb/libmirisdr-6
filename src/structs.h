@@ -104,7 +104,10 @@ struct mirisdr_dev {
     int                 reg8;
     uint8_t             *samples;
     int                 samples_size;
-    int                 sync_loss_cnt;
+    mirisdr_stream_stats_t stats;
+    int                 stats_head;    /* next block starts a delivered buffer */
+    int                 sync_run;      /* consecutive bad blocks, drives resync */
+    int                 addr_valid;
 
     /* dc offset calibration */
     enum {

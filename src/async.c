@@ -107,6 +107,7 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
 
     /* zpracujeme pouze kompletní přenos */
     if (xfer->status == LIBUSB_TRANSFER_COMPLETED) {
+        p->stats_head = 1;
         /*
          * Určení správné velikosti bufferu, tato část musí být provedena
          * v jednom kroku, jinak může dojít ke změně formátu uprostřed procesu,
@@ -208,9 +209,10 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
 
         if (xfer->type == LIBUSB_TRANSFER_TYPE_BULK)
         {
-            if(p->sync_loss_cnt > (int)p->xfer_buf_num)
+            if(p->sync_run > (int)p->xfer_buf_num)
             {
-                p->sync_loss_cnt = -p->xfer_buf_num +1;
+                p->sync_run = -p->xfer_buf_num +1;
+                p->stats.resyncs++;
                 xfer->length = DEFAULT_BULK_BUFFER - 512;
                 fprintf(stderr,"libmirisdr: Sync lost. Trying to synchronize.\n");
             }else
@@ -412,7 +414,9 @@ int mirisdr_read_async (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx,
         fprintf( stderr, "auto");
     }
 #endif
-    p->sync_loss_cnt = 0;
+    memset(&p->stats, 0, sizeof(p->stats));
+    p->sync_run = 0;
+    p->addr_valid = 0;
     /* použití správného rozhraní které zasílá data - není kritické */
     switch (p->transfer) {
     case MIRISDR_TRANSFER_BULK:

@@ -118,10 +118,24 @@ static void sighandler(int signum)
 
 static void mirisdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 {
+	mirisdr_stream_stats_t st;
+	static uint64_t mark;
+
 	if (ctx) {
 		if (fwrite(buf, 1, len, (FILE*)ctx) != len) {
 			fprintf(stderr, "Short write, samples lost, exiting!\n");
 			mirisdr_cancel_async(dev);
+		}
+	}
+
+	if (mirisdr_get_stream_stats(dev, &st) == 0) {
+		if (st.index < mark) mark = 0;
+		if (st.index - mark >= mirisdr_get_sample_rate(dev)) {
+			mark = st.index;
+			fprintf(stderr, "%.3f Ms delivered, %llu lost in %llu gaps, %llu jitter, %llu resync\n",
+				st.samples / 1e6, (unsigned long long) st.lost,
+				(unsigned long long) st.gaps, (unsigned long long) st.jitter,
+				(unsigned long long) st.resyncs);
 		}
 	}
 }

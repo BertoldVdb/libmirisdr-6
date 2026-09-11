@@ -87,6 +87,22 @@ MIRISDR_API uint32_t mirisdr_get_sample_rate (mirisdr_dev_t *p);
 MIRISDR_API int mirisdr_set_sample_format (mirisdr_dev_t *p, const char *v);  /* extra */
 MIRISDR_API const char *mirisdr_get_sample_format (mirisdr_dev_t *p);   /* extra */
 
+/*
+ * Counts are in the unit the hardware counter uses:
+ * I/Q pairs in the complex formats, single samples in the real ones.
+ */
+typedef struct mirisdr_stream_stats
+{
+	uint64_t samples;   /* total number delivered to the application */
+	uint64_t lost;      /* total number of samples lost */
+	uint64_t gaps;      /* number of gaps in the stream */
+	uint64_t jitter;    /* number of jitter events. These happen at very high rates and are harmless. */
+	uint64_t resyncs;   /* byte alignment recoveries */
+	uint64_t index;     /* absolute index of the first sample in the buffer */
+} mirisdr_stream_stats_t;
+
+MIRISDR_API int mirisdr_get_stream_stats (mirisdr_dev_t *p, mirisdr_stream_stats_t *s); /* extra */
+
 /* streaming control */
 MIRISDR_API int mirisdr_streaming_start (mirisdr_dev_t *p);             /* extra */
 MIRISDR_API int mirisdr_streaming_stop (mirisdr_dev_t *p);              /* extra */
