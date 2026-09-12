@@ -61,12 +61,15 @@ void usage(void)
 		"\t    504r:   S16\n"
 
 #if !defined (_WIN32) || defined(__MINGW32__)
-		"\t[-e USB transfer mode (default: 1)]\n"
+		"\t[-e USB transfer mode (default: ISOC)]\n"
 #else
-		"\t[-e USB transfer mode (default: 2)]\n"
+		"\t[-e USB transfer mode (default: BULK)]\n"
 #endif
-		"\t    1:      Isochronous (maximum 196.608 Mbit/s) \n"
-		"\t    2:      Bulk (maximum 333Mbit/s, depends on controller type)\n"
+		"\t    ISOC:   Isochronous, 3 x 1024 per microframe (24.576 MB/s)\n"
+		"\t    ISOC2:  Isochronous, 2 x 1024 per microframe (16.384 MB/s)\n"
+		"\t    ISOC1:  Isochronous, 1 x 1024 per microframe (8.192 MB/s)\n"
+		"\t    BULK:   Bulk, not microframe limited\n"
+		"\t            1 means ISOC and 2 BULK\n"
 		"\t[-i IF mode (default: ZERO]\n"
 		"\t    0:       ZERO\n"
 		"\t    450000:  450 kHz\n"
@@ -167,9 +170,9 @@ int main(int argc, char **argv)
 	uint32_t format = 0;
 	const char *decimation = "AUTO";
 #if !defined (_WIN32) || defined(__MINGW32__)
-	uint32_t transfer = 1;
+	const char *transfer_name = "ISOC";
 #else
-	uint32_t transfer = 2;
+	const char *transfer_name = "BULK";
 #endif
 	uint32_t if_mode = 0;
 	uint32_t bw = 8000000;
@@ -205,10 +208,12 @@ int main(int argc, char **argv)
 		case 'e':
 			if ((strcmp("ISOC", optarg) == 0) ||
 			    (strcmp("1", optarg) == 0)) {
-				transfer = 1;}
-			if ((strcmp("BULK", optarg) == 0) ||
+				transfer_name = "ISOC";}
+			else if ((strcmp("BULK", optarg) == 0) ||
 			    (strcmp("2", optarg) == 0)) {
-				transfer = 2;}
+				transfer_name = "BULK";}
+			else {
+				transfer_name = optarg;}
 			break;
 		case 'f':
 			frequency = (uint32_t)atof(optarg);
@@ -392,14 +397,9 @@ int main(int argc, char **argv)
 	}
 
 	/* Set USB transfer type */
-	switch (transfer) {
-	case 1:
-		mirisdr_set_transfer(dev, "ISOC");
-		break;
-	case 2:
-		mirisdr_set_transfer(dev, "BULK");
-		break;
-	}
+	if (mirisdr_set_transfer(dev, transfer_name) < 0)
+		exit(1);
+	fprintf(stderr, "Transfer mode is %s.\n", mirisdr_get_transfer(dev));
 
 	/* Set IF mode */
 	mirisdr_set_if_freq(dev, if_mode);

@@ -95,6 +95,23 @@ static uint8_t *samples_realloc(mirisdr_dev_t *p, int size)
     return p->samples;
 }
 
+/*
+ * It is possible to configure how many 1kB blocks at a time the DSP will
+ * hand over to the USB controller. If this value is too low not all buffer
+ * memory is used and the chance of gaps increases. If it is too high (eg 4
+ * packets in a 1 slot isochronous transfer), the stream stops.
+ */
+static uint32_t mirisdr_burst(mirisdr_dev_t *p)
+{
+	switch (p->alt_setting)
+	{
+	case 1:  return 3;          /* isochronous, 3 x 1024 per microframe */
+	case 2:  return 1;          /* isochronous, 1 x 1024 */
+	case 4:  return 2;          /* isochronous, 2 x 1024 (requires custom firmware) */
+	default: return 4;          /* bulk */
+	}
+}
+
 /* volání pro zasílání dat */
 static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
     size_t i;
@@ -365,7 +382,7 @@ static int mirisdr_async_alloc (mirisdr_dev_t *p) {
 
         switch (p->transfer) {
         case MIRISDR_TRANSFER_ISOC:
-            bufsz = (size_t) DEFAULT_ISO_BUFFER * DEFAULT_ISO_BUFFERS * DEFAULT_ISO_PACKETS;
+            bufsz = (size_t) DEFAULT_ISO_BUFFER * mirisdr_burst(p) * DEFAULT_ISO_PACKETS;
             break;
         default:
             bufsz = DEFAULT_BULK_BUFFER;
@@ -505,12 +522,12 @@ int mirisdr_read_async (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx,
                                      p->dh,
                                      0x81,
                                      p->xfer_buf[i],
-                                     DEFAULT_ISO_BUFFER * DEFAULT_ISO_BUFFERS * DEFAULT_ISO_PACKETS,
+                                     DEFAULT_ISO_BUFFER * mirisdr_burst(p) * DEFAULT_ISO_PACKETS,
                                      DEFAULT_ISO_PACKETS,
                                      _libusb_callback,
                                      (void*) p,
                                      DEFAULT_ISO_TIMEOUT);
-            libusb_set_iso_packet_lengths(p->xfer[i], DEFAULT_ISO_BUFFER * DEFAULT_ISO_BUFFERS);
+            libusb_set_iso_packet_lengths(p->xfer[i], DEFAULT_ISO_BUFFER * mirisdr_burst(p));
             break;
         default:
             fprintf( stderr, "unsupported transfer type\n");
