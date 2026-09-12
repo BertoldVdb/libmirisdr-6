@@ -192,6 +192,50 @@ MIRISDR_API int mirisdr_release_gpio (mirisdr_dev_t *p, unsigned int pin); /* ex
 MIRISDR_API int mirisdr_set_gpio_outputs (mirisdr_dev_t *p, unsigned int mask, unsigned int levels); /* extra */
 MIRISDR_API int mirisdr_get_gpio_inputs (mirisdr_dev_t *p); /* extra */
 
+/* Open a device with options, including the firmware it should be running.
+ * The image comes from a buffer or from a path. The image can be patched
+ * at runtime to ensure the VID/PID does not change */
+#define MIRISDR_FW_IDS_IMAGE    0
+#define MIRISDR_FW_IDS_DEVICE   1
+#define MIRISDR_FW_IDS_SET      2
+
+typedef struct mirisdr_open_config
+{
+	uint32_t       index;           /* when opening by index */
+	int            fd;              /* or an already open descriptor, -1 for none */
+
+	const uint8_t *firmware;        /* the image, or NULL */
+	uint32_t       firmware_size;
+	const char    *firmware_path;   /* or a file to read it from */
+	int            firmware_ids;    /* one of MIRISDR_FW_IDS_* */
+	uint16_t       firmware_vid;    /* for MIRISDR_FW_IDS_SET */
+	uint16_t       firmware_pid;
+	int            keep_running;    /* use running fw */
+} mirisdr_open_config_t;
+
+/* Please fill in the open_config struct using mirisdr_open_config_default(&cfg) and only
+ * the edit the options you need. You will likely only need to change index or fd. */
+
+MIRISDR_API void mirisdr_open_config_default (mirisdr_open_config_t *cfg); /* extra */
+MIRISDR_API int mirisdr_open_ex (mirisdr_dev_t **p, const mirisdr_open_config_t *cfg); /* extra */
+
+/* If a function returns this value, the USB handle is invalid, and the device needs to be reopened.
+ * Currently this can only happens when opening by fd or calling mirisdr_reboot(). */
+#define MIRISDR_REOPEN          (-2)
+
+#define MIRISDR_FW_BLOCK        0x0040
+#define MIRISDR_FW_ID_LEN       8
+
+MIRISDR_API int mirisdr_get_fw_id (mirisdr_dev_t *p, uint8_t *buf, int len); /* extra */
+MIRISDR_API int mirisdr_running_from_rom (mirisdr_dev_t *p);            /* extra */
+
+/* These functions allow the host to read and write device memory. The remap argument
+ * allows access to certain internal DSP and USB memories, assuming a compatible firmware
+ * is loaded. Using remap is ignored on the standard firmware and can cause data corruption. */
+MIRISDR_API int mirisdr_read_mem (mirisdr_dev_t *p, uint16_t addr, uint8_t *buf, int len, int remap); /* extra */
+MIRISDR_API int mirisdr_write_mem (mirisdr_dev_t *p, uint16_t addr, const uint8_t *buf, int len, int remap); /* extra */
+MIRISDR_API int mirisdr_reboot (mirisdr_dev_t *p, int from_ram); /* extra, returns MIRISDR_REOPEN */
+
 /* The MSI2500 has a remote control receiver on GPIO3, this function allows to configure a
  * callback that receives IR events. If you want to sample a non-pulse based protocol, 
  * such as UART, it makes sense to set tick_ns to 1 and use only the level field */
