@@ -17,22 +17,6 @@
 
 #include "hard.h"
 
-/*
- * It is possible to configure how many 1kB blocks at a time the DSP will
- * hand over to the USB controller. If this value is too low not all buffer
- * memory is used and the chance of gaps increases. If it is too high (eg 4
- * packets in a 1 slot isochronous transfer), the stream stops.
- */
-static uint32_t mirisdr_burst(mirisdr_dev_t *p)
-{
-	switch (p->alt_setting)
-	{
-	case 1:  return 3;          /* isochronous, 3 x 1024 per microframe */
-	case 2:  return 1;          /* isochronous, 1 x 1024 */
-	case 4:  return 2;          /* isochronous, 2 x 1024 (requires custom firmware) */
-	default: return 4;          /* bulk */
-	}
-}
 
 /* nastavení parametrů které vyžadují restart */
 /* parameters that require restart */

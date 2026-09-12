@@ -624,6 +624,8 @@ int mirisdr_set_transfer(mirisdr_dev_t *p, const char *v)
     if (!p)
         goto failed;
 
+    /* The isochronous settings differ in how many 1kB slots they reserve in the microframe:
+     * ISOC=3, ISOC1=1, ISOC2=2 (2 requires custom fw) */
     if (!strcmp(v, "BULK"))
     {
         p->transfer = MIRISDR_TRANSFER_BULK;
@@ -633,6 +635,16 @@ int mirisdr_set_transfer(mirisdr_dev_t *p, const char *v)
     {
         p->transfer = MIRISDR_TRANSFER_ISOC;
         p->alt_setting = 1;
+    }
+    else if (!strcmp(v, "ISOC2"))
+    {
+        p->transfer = MIRISDR_TRANSFER_ISOC;
+        p->alt_setting = 4;
+    }
+    else if (!strcmp(v, "ISOC1"))
+    {
+        p->transfer = MIRISDR_TRANSFER_ISOC;
+        p->alt_setting = 2;
     }
     else
     {
@@ -653,7 +665,12 @@ const char *mirisdr_get_transfer(mirisdr_dev_t *p)
     case MIRISDR_TRANSFER_BULK:
         return "BULK";
     case MIRISDR_TRANSFER_ISOC:
-        return "ISOC";
+        switch (p->alt_setting)
+        {
+        case 2:  return "ISOC1";
+        case 4:  return "ISOC2";
+        default: return "ISOC";
+        }
     }
 
     return "";
