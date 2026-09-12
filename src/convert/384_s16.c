@@ -11,17 +11,14 @@
  */
 static int mirisdr_samples_convert_384_s16 (mirisdr_dev_t *p, unsigned char* buf, uint8_t *dst8, int cnt) {
     int i, i_max, j, k, ret = 0;
-    uint32_t addr = 0, shift;
+    uint32_t shift;
     uint8_t *src = buf;
     int16_t *dst = (int16_t*) dst8;
 
     /* dostáváme 1-3 1024 bytů dlouhé bloky, poslední část je 24 bitů, tu nezpracováváme */
     for (i_max = cnt >> 10, i = 0; i < i_max; i++, src+= 24) {
-        /* pozice hlavičky */
-        addr = src[3] << 24 | src[2] << 16 | src[1] << 8 | src[0] << 0;
-
         /* potenciálně ztracená data */
-        mirisdr_addr_next(p, addr, p->addr_step);
+        mirisdr_addr_next(p, src, p->addr_step);
 
         /* přeskočíme hlavičku 16 bitů, 6 bloků, poslední 4 bajtový posuvný blok zpracujeme */
         for (src+= 16, j = 0; j < 6; j++, src+= 4) {

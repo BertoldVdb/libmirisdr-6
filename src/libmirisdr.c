@@ -44,6 +44,8 @@
 
 /* interní funkce - inline */
 #include "reg.c"
+#include "gpio.c"
+#include "ir.c"
 #include "adc.c"
 #include "convert/base.c"
 #include "async.c"
