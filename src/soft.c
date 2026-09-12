@@ -58,13 +58,6 @@ hw_switch_freq_plan_t *hw_switch_freq_plan[2] = {
         hw_switch_freq_plan_sdrplay
 };
 
-#define BIAS_GPIO 3
-
-void update_reg_8(mirisdr_dev_t *p)
-{
-    mirisdr_write_reg(p, 0x08, p->reg8|(p->bias?(1<<(BIAS_GPIO+8)):0));
-}
-
 int mirisdr_set_soft(mirisdr_dev_t *p)
 {
     uint32_t reg0 = 0, reg2 = 2, reg5 = 5, reg3 = 3, regd = 0x0d;

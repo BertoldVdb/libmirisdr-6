@@ -7,7 +7,10 @@
  */
 #define MIRISDR_ADDR_JITTER 4
 
-static void mirisdr_addr_next (mirisdr_dev_t *p, uint32_t addr, uint32_t step) {
+/* Called once per 1024 byte block with its header, which carries the sample
+   counter and the IR block last completed run (if enabled). */
+static void mirisdr_addr_next (mirisdr_dev_t *p, const uint8_t *hdr, uint32_t step) {
+    uint32_t addr = hdr[3] << 24 | hdr[2] << 16 | hdr[1] << 8 | hdr[0] << 0;
     int32_t d = (int32_t) (addr - p->addr);
 
     if (!p->addr_valid) {
@@ -16,6 +19,7 @@ static void mirisdr_addr_next (mirisdr_dev_t *p, uint32_t addr, uint32_t step) {
         fprintf(stderr, "%d samples lost, %08x:%08x\n", d, p->addr, addr);
         p->stats.gaps++;
         p->sync_run++;
+        mirisdr_ir_resync(p);
 
         /* a counter that went backwards is a misaligned stream reading sample
            data as a header, not samples that went missing */
@@ -32,6 +36,8 @@ static void mirisdr_addr_next (mirisdr_dev_t *p, uint32_t addr, uint32_t step) {
 
     p->stats.samples+= step;
     p->addr = addr + step;
+
+    mirisdr_ir_latch(p, hdr[6], addr);
 }
 
 #include "252_s16.c"

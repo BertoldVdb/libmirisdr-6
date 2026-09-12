@@ -115,6 +115,22 @@ struct mirisdr_dev {
     int                 driver_active;
     int                 bias;
     int                 reg8;
+
+    /* pins the application has taken over, and what it wants them doing */
+    uint8_t             gpio_mask;
+    uint8_t             gpio_dir;
+    uint8_t             gpio_val;
+
+    /* IR receiver, see ir.c */
+    uint32_t            ir_tick_ns;     /* counter period */
+    uint32_t            ir_start;       /* sample counter when this pulse started */
+    uint8_t             ir_prev;        /* last header byte 6 */
+    uint8_t             ir_have;        
+    uint8_t             ir_level;       /* the level of the current pulse */
+    uint8_t             ir_partial;     /* pulse beginning was missing */
+    mirisdr_ir_cb_t     ir_cb;
+    void                *ir_ctx;
+
     uint8_t             *samples;
     int                 samples_size;
     mirisdr_stream_stats_t stats;

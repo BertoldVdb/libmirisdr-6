@@ -56,3 +56,18 @@ GPIO(0x13) & 0x04 = BROADCAST_NOTCH
 
 
 */
+
+/*
+ * The 24 bit registers written above are write only.  The read window is a
+ * separate decode, four bytes per index, and holds status rather than a mirror
+ * of what was written - index 6 is the GPIO input nibble.
+ */
+int mirisdr_read_reg (mirisdr_dev_t *p, uint8_t index, uint8_t *buf, int len) {
+    if (!p) goto failed;
+    if (!p->dh) goto failed;
+
+    return libusb_control_transfer(p->dh, 0xC0, CMD_RREG, 0, index * 4, buf, len, CTRL_TIMEOUT);
+
+failed:
+    return -1;
+}
