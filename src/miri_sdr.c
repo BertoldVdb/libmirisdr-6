@@ -51,11 +51,13 @@ void usage(void)
 	fprintf(stderr,
 		"Usage:\t -f frequency_to_tune_to [Hz]\n"
 		"\t[-m sample format (default: auto]\n"
+		"\t    auto:   widest format possible\n"
 		"\t    504:    S8 (fastest)\n"
 		"\t    384:    S10 +2bits \n"
 		"\t    336:    S12\n"
 		"\t    252:    S14\n"
 		"\t  real modes, one converter, every sample real:\n"
+		"\t    autor:  widest real format possible\n"
 		"\t    768r:   S10 +2bits\n"
 		"\t    672r:   S12\n"
 		"\t    504r:   S16\n"
@@ -69,7 +71,7 @@ void usage(void)
 		"\t    ISOC2:  Isochronous, 2 x 1024 per microframe (16.384 MB/s)\n"
 		"\t    ISOC1:  Isochronous, 1 x 1024 per microframe (8.192 MB/s)\n"
 		"\t    BULK:   Bulk, not microframe limited\n"
-		"\t            1 means ISOC and 2 BULK\n"
+		"\t    1 and 2 are also accepted, for ISOC and BULK\n"
 		"\t[-i IF mode (default: ZERO]\n"
 		"\t    0:       ZERO\n"
 		"\t    450000:  450 kHz\n"
@@ -263,6 +265,8 @@ int main(int argc, char **argv)
 				format = 6;}
 			if (strcmp("504r", optarg) == 0) {
 				format = 7;}
+			if (strcmp("autor", optarg) == 0) {
+				format = 8;}
 			break;
 		case 's':
 			samp_rate = (uint32_t)atof(optarg);
@@ -391,6 +395,9 @@ int main(int argc, char **argv)
 	case 7:
 		mirisdr_set_sample_format(dev, "504_REAL_S16");
 		break;
+	case 8:
+		mirisdr_set_sample_format(dev, "AUTO_REAL");
+		break;
 	default:
 		mirisdr_set_sample_format(dev, "AUTO");
 		break;
@@ -400,6 +407,11 @@ int main(int argc, char **argv)
 	if (mirisdr_set_transfer(dev, transfer_name) < 0)
 		exit(1);
 	fprintf(stderr, "Transfer mode is %s.\n", mirisdr_get_transfer(dev));
+
+	fprintf(stderr, "Sample format is %s", mirisdr_get_sample_format(dev));
+	if (strncmp(mirisdr_get_sample_format(dev), "AUTO", 4) == 0)
+		fprintf(stderr, " (%s)", mirisdr_get_sample_format_selected(dev));
+	fprintf(stderr, ".\n");
 
 	/* Set IF mode */
 	mirisdr_set_if_freq(dev, if_mode);

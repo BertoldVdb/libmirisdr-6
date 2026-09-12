@@ -41,7 +41,8 @@ struct mirisdr_dev {
     mirisdr_band_t      band;
     enum {
         MIRISDR_FORMAT_AUTO_ON = 0,
-        MIRISDR_FORMAT_AUTO_OFF
+        MIRISDR_FORMAT_AUTO_OFF,
+        MIRISDR_FORMAT_AUTO_REAL
     } format_auto;
     enum {
         MIRISDR_DECIMATION_BYPASS_AUTO = 0,
