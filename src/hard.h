@@ -21,3 +21,7 @@
 
 /* rate above which AUTO bypasses the decimator */
 #define MIRISDR_DECIMATION_AUTO_RATE    14500000
+
+/* Estimated BULK transfer capacity (kept from the original code)
+ * Using all 4 USB buffers, on my system, I can reach 40MB/s easily */
+#define MIRISDR_BULK_CAPACITY           24576000

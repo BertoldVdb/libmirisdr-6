@@ -18,6 +18,19 @@
 #include "hard.h"
 
 
+static uint32_t mirisdr_capacity(mirisdr_dev_t *p)
+{
+	if (p->transfer == MIRISDR_TRANSFER_BULK)
+		return MIRISDR_BULK_CAPACITY;
+
+	return 1024 * mirisdr_burst(p) * 8000;
+}
+
+static int mirisdr_format_fits(mirisdr_dev_t *p, uint32_t spp, uint32_t cap)
+{
+	return ((uint64_t) p->rate * 1024 / spp) <= cap;
+}
+
 /* nastavení parametrů které vyžadují restart */
 /* parameters that require restart */
 int mirisdr_set_hard(mirisdr_dev_t *p)
@@ -62,18 +75,39 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 	pll_rate = decim ? p->rate / 2 : p->rate;
 
 	/* automatická volba formátu */
-	/* automatic choice format */
-	if (p->format_auto == MIRISDR_FORMAT_AUTO_ON)
+	if (p->format_auto != MIRISDR_FORMAT_AUTO_OFF)
 	{
-		if (p->rate <= 6048000) {
-			p->format = MIRISDR_FORMAT_252_S16;
-		} else if (p->rate <= 8064000) {
-			p->format = MIRISDR_FORMAT_336_S16;
-		} else if (p->rate <= 9216000) {
-			p->format = MIRISDR_FORMAT_384_S16;
-		} else {
-			p->format = MIRISDR_FORMAT_504_S16;
+		uint32_t cap = mirisdr_capacity(p);
+
+		if (p->format_auto == MIRISDR_FORMAT_AUTO_REAL)
+		{
+			if (mirisdr_format_fits(p, 504, cap)) {
+				p->format = MIRISDR_FORMAT_504_REAL_S16;
+			} else if (mirisdr_format_fits(p, 672, cap)) {
+				p->format = MIRISDR_FORMAT_672_REAL_S16;
+			} else {
+				p->format = MIRISDR_FORMAT_768_REAL_S16;
+			}
 		}
+		else
+		{
+			if (mirisdr_format_fits(p, 252, cap)) {
+				p->format = MIRISDR_FORMAT_252_S16;
+			} else if (mirisdr_format_fits(p, 336, cap)) {
+				p->format = MIRISDR_FORMAT_336_S16;
+			} else if (mirisdr_format_fits(p, 384, cap)) {
+				p->format = MIRISDR_FORMAT_384_S16;
+			} else {
+				p->format = MIRISDR_FORMAT_504_S16;
+			}
+		}
+
+		if (!mirisdr_format_fits(p, p->format_auto == MIRISDR_FORMAT_AUTO_REAL ? 768 : 504, cap))
+			fprintf(stderr, "rate %u needs %lu B/s, more than the %u B/s this mode supports\n",
+			        p->rate,
+			        (long unsigned int) ((uint64_t) p->rate * 1024 /
+			                             (p->format_auto == MIRISDR_FORMAT_AUTO_REAL ? 768 : 504)),
+			        cap);
 	}
 
 	/* typ forámtu a šířka pásma */
@@ -265,6 +299,10 @@ int mirisdr_set_sample_format(mirisdr_dev_t *p, const char *v)
 	{
 		p->format_auto = MIRISDR_FORMAT_AUTO_ON;
 	}
+	else if (!strcmp(v, "AUTO_REAL"))
+	{
+		p->format_auto = MIRISDR_FORMAT_AUTO_REAL;
+	}
 	else
 	{
 		p->format_auto = MIRISDR_FORMAT_AUTO_OFF;
@@ -342,6 +380,15 @@ const char *mirisdr_get_sample_format(mirisdr_dev_t *p)
 		return "AUTO";
 	}
 
+	if (p->format_auto == MIRISDR_FORMAT_AUTO_REAL) {
+		return "AUTO_REAL";
+	}
+
+	return mirisdr_get_sample_format_selected(p);
+}
+
+const char *mirisdr_get_sample_format_selected(mirisdr_dev_t *p)
+{
 	switch (p->format)
 	{
 	case MIRISDR_FORMAT_252_S16:

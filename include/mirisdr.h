@@ -103,10 +103,16 @@ MIRISDR_API const char *mirisdr_get_decimation_bypass (mirisdr_dev_t *p);       
  *
  * The following rates are available:
  *   AUTO, 252_S16, 336_S16, 384_S16, 504_S16, 504_S8
- *   504_REAL_S16, 672_REAL_S16, 768_REAL_S16
+ *   AUTO_REAL, 504_REAL_S16, 672_REAL_S16, 768_REAL_S16
  */
 MIRISDR_API int mirisdr_set_sample_format (mirisdr_dev_t *p, const char *v);  /* extra */
 MIRISDR_API const char *mirisdr_get_sample_format (mirisdr_dev_t *p);   /* extra */
+
+/*
+ * This function returns the selected sample format, eg:
+ * set: AUTO get: 336_S16
+ */
+MIRISDR_API const char *mirisdr_get_sample_format_selected (mirisdr_dev_t *p);  /* extra */
 
 /*
  * For complex formats this swaps I and Q. For real formats, this selects which
