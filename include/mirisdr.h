@@ -251,6 +251,14 @@ typedef struct mirisdr_call_regs
 
 MIRISDR_API int mirisdr_call (mirisdr_dev_t *p, uint16_t addr, mirisdr_call_regs_t *regs); /* extra */
 
+/* Read and write the eeprom */
+MIRISDR_API int mirisdr_read_eeprom (mirisdr_dev_t *p, uint16_t addr, uint8_t *buf, int len); /* extra */
+MIRISDR_API int mirisdr_write_eeprom (mirisdr_dev_t *p, uint16_t addr, const uint8_t *buf, int len); /* extra */
+
+/* Returns the maximum EEPROM size for the strapping:
+ * 0=no response, 512=9-bit, 65536=16-bit */
+MIRISDR_API int mirisdr_eeprom_size (mirisdr_dev_t *p); /* extra */
+
 /* The MSI2500 has a remote control receiver on GPIO3, this function allows to configure a
  * callback that receives IR events. If you want to sample a non-pulse based protocol, 
  * such as UART, it makes sense to set tick_ns to 1 and use only the level field */

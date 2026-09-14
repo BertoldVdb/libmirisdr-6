@@ -116,6 +116,7 @@ struct mirisdr_dev {
     int                 bias;
     int                 reg8;
     int                 fw_ours;
+    int                 ee_size;        /* what the EEPROM's address reaches, 0 if none */
 
     /* pins the application has taken over, and what it wants them doing */
     uint8_t             gpio_mask;
