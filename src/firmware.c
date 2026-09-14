@@ -163,24 +163,19 @@ static int mirisdr_fw_wait (const mirisdr_fw_path_t *path, uint32_t fallback)
     return -1;
 }
 
-/* Find address of USB descriptor in the firmware to patch it */
+/* Locate the device descriptor */
 static int mirisdr_fw_descriptor (const uint8_t *image, uint32_t size)
 {
-    int found = -1;
-    uint32_t i;
+    uint32_t at;
 
-    for (i = 8; (uint64_t) i + 4 <= size; i++)
-    {
-        if ((image[i] != 0xF7) || (image[i + 1] != 0x1D)) continue;         /* 1DF7 */
-        if ((image[i + 2] != 0x00) || (image[i + 3] != 0x25)) continue;     /* 2500 */
-        if ((image[i - 8] != 18) || (image[i - 7] != 1)) continue;          /* a descriptor */
+    if ((size < MIRISDR_FW_BLOCK + 16)
+        || memcmp(image + MIRISDR_FW_BLOCK, "BVDB", 4)) return -1;
 
-        if (found >= 0) return -1;
+    at = image[MIRISDR_FW_BLOCK + 12] | ((uint32_t) image[MIRISDR_FW_BLOCK + 13] << 8);
 
-        found = (int) i - 8;
-    }
+    if (((uint64_t) at + 18 > size) || (image[at] != 18) || (image[at + 1] != 1)) return -1;
 
-    return found;
+    return (int) at;
 }
 
 static int mirisdr_fw_running (mirisdr_dev_t *p, const uint8_t *image, uint32_t size)
@@ -199,7 +194,7 @@ static int mirisdr_fw_set_ids (uint8_t *image, uint32_t size, uint16_t vid, uint
 
     if (at < 0)
     {
-        fprintf(stderr, "no 1DF7:2500 device descriptor in the firmware image\n");
+        fprintf(stderr, "the firmware image has no information block, its USB ids cannot be set\n");
 
         return -1;
     }
@@ -241,24 +236,65 @@ failed:
     return NULL;
 }
 
-static int mirisdr_fw_ids_ok (mirisdr_dev_t *p, const mirisdr_open_config_t *cfg)
+static int mirisdr_fw_ids_of (mirisdr_dev_t *p, uint16_t *vid, uint16_t *pid)
 {
     struct libusb_device_descriptor dd;
     libusb_device *d;
 
-    if (cfg->firmware_ids != MIRISDR_FW_IDS_SET) return 1;
+    if (!(d = libusb_get_device(p->dh))) return -1;
+    if (libusb_get_device_descriptor(d, &dd) < 0) return -1;
 
-    if (!(d = libusb_get_device(p->dh))) return 0;
-    if (libusb_get_device_descriptor(d, &dd) < 0) return 0;
+    *vid = dd.idVendor;
+    *pid = dd.idProduct;
 
-    return (dd.idVendor == cfg->firmware_vid) && (dd.idProduct == cfg->firmware_pid);
+    return 0;
+}
+
+static int mirisdr_fw_ids_wanted (mirisdr_dev_t *p, const mirisdr_open_config_t *cfg,
+                                  const uint8_t *image, uint32_t size,
+                                  uint16_t *vid, uint16_t *pid)
+{
+    int at;
+
+    if (cfg->firmware_ids == MIRISDR_FW_IDS_SET)
+    {
+        *vid = cfg->firmware_vid;
+        *pid = cfg->firmware_pid;
+
+        return 1;
+    }
+
+    if (cfg->firmware_ids == MIRISDR_FW_IDS_DEVICE)
+        return (mirisdr_fw_ids_of(p, vid, pid) < 0) ? -1 : 1;
+
+    if ((at = mirisdr_fw_descriptor(image, size)) < 0) return 0;
+
+    *vid = (uint16_t) (image[at + 8] | (image[at + 9] << 8));
+    *pid = (uint16_t) (image[at + 10] | (image[at + 11] << 8));
+
+    return 1;
+}
+
+static int mirisdr_fw_ids_ok (mirisdr_dev_t *p, int have, uint16_t vid, uint16_t pid)
+{
+    uint16_t now_vid, now_pid;
+
+    if (!have) return 1;
+    if (mirisdr_fw_ids_of(p, &now_vid, &now_pid) < 0) return 0;
+
+    return (now_vid == vid) && (now_pid == pid);
 }
 
 static int mirisdr_fw_open (mirisdr_dev_t **dev, const mirisdr_open_config_t *cfg, uint32_t at)
 {
-    if (cfg->fd >= 0) return mirisdr_open_fd_raw(dev, cfg->fd);
+    uint8_t block[16];
+    int r = (cfg->fd >= 0) ? mirisdr_open_fd_raw(dev, cfg->fd) : mirisdr_open_raw(dev, at);
 
-    return mirisdr_open_raw(dev, at);
+    /* the ROM answers the memory requests too, so anything that needs our own
+       firmware asks this rather than assuming */
+    if (r == 0) (*dev)->fw_ours = (mirisdr_fw_block(*dev, block) == 0);
+
+    return r;
 }
 
 static int mirisdr_fw_recycle (mirisdr_dev_t **dev, const mirisdr_open_config_t *cfg,
@@ -284,6 +320,8 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
     mirisdr_dev_t *dev = NULL;
     mirisdr_fw_path_t path;
     uint32_t index, size, at;
+    uint16_t vid = 0, pid = 0;
+    int have_ids = 0;
     int r = -1;
 
     if (!out || !cfg) return -1;
@@ -304,18 +342,20 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
     {
         if (!(work = malloc(size))) goto out;
         memcpy(work, image, size);
-
-        if ((cfg->firmware_ids == MIRISDR_FW_IDS_SET)
-            && (mirisdr_fw_set_ids(work, size, cfg->firmware_vid, cfg->firmware_pid) < 0))
-            goto out;
     }
 
     if (mirisdr_fw_open(&dev, cfg, at) < 0) goto out;
 
     if (cfg->fd < 0) mirisdr_fw_path_of(dev, &path);
 
+    if (work && !cfg->keep_running)
+    {
+        if ((have_ids = mirisdr_fw_ids_wanted(dev, cfg, work, size, &vid, &pid)) < 0) goto out;
+        if (have_ids && (mirisdr_fw_set_ids(work, size, vid, pid) < 0)) goto out;
+    }
+
     if (cfg->keep_running || !image || !size
-        || (mirisdr_fw_running(dev, work, size) && mirisdr_fw_ids_ok(dev, cfg)))
+        || (mirisdr_fw_running(dev, work, size) && mirisdr_fw_ids_ok(dev, have_ids, vid, pid)))
     {
         *out = dev;
         dev = NULL;
@@ -345,20 +385,6 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
         }
     }
 
-    if (cfg->firmware_ids == MIRISDR_FW_IDS_DEVICE)
-    {
-        struct libusb_device_descriptor dd;
-        libusb_device *d = libusb_get_device(dev->dh);
-
-        if (!d || (libusb_get_device_descriptor(d, &dd) < 0)
-            || (mirisdr_fw_set_ids(work, size, dd.idVendor, dd.idProduct) < 0))
-        {
-            r = -1;
-
-            goto out;
-        }
-    }
-
     if (mirisdr_write_mem(dev, 0x0000, work, (int) size, 0) < 0)
     {
         r = -1;
@@ -370,7 +396,7 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
 
     if ((r = mirisdr_fw_recycle(&dev, cfg, &path, &at, index))) goto out;
 
-    if (mirisdr_fw_running(dev, work, size) && mirisdr_fw_ids_ok(dev, cfg))
+    if (mirisdr_fw_running(dev, work, size) && mirisdr_fw_ids_ok(dev, have_ids, vid, pid))
     {
         *out = dev;
         dev = NULL;

@@ -115,6 +115,7 @@ struct mirisdr_dev {
     int                 driver_active;
     int                 bias;
     int                 reg8;
+    int                 fw_ours;
 
     /* pins the application has taken over, and what it wants them doing */
     uint8_t             gpio_mask;

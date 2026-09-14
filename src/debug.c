@@ -73,6 +73,40 @@ failed:
     return -1;
 }
 
+#define CMD_CALL                0x59
+
+int mirisdr_call (mirisdr_dev_t *p, uint16_t addr, mirisdr_call_regs_t *regs)
+{
+    uint8_t ctx[6], reply[6];
+
+    if (!p) goto failed;
+    if (!p->dh || !regs || !p->fw_ours) goto failed;
+
+    ctx[0] = regs->a;
+    ctx[1] = regs->b;
+    ctx[2] = (uint8_t) regs->dptr;
+    ctx[3] = (uint8_t) (regs->dptr >> 8);
+    ctx[4] = regs->r0;
+    ctx[5] = regs->r1;
+
+    if (mirisdr_write_mem(p, MIRISDR_CALL_CTX, ctx, sizeof(ctx), 0) < 0) goto failed;
+
+    if (libusb_control_transfer(p->dh, 0xC0, CMD_CALL, addr, 0, reply,
+                                sizeof(reply), CTRL_TIMEOUT) != (int) sizeof(reply))
+        goto failed;
+
+    regs->a = reply[0];
+    regs->b = reply[1];
+    regs->dptr = (uint16_t) (reply[2] | (reply[3] << 8));
+    regs->r0 = reply[4];
+    regs->r1 = reply[5];
+
+    return 0;
+
+failed:
+    return -1;
+}
+
 /*
  * Reboot the device. Setting from_ram will boot a firmware that is loaded into
  * RAM. Returns MIRISDR_REOPEN on success, since the device leaves the bus and
