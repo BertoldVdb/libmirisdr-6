@@ -235,6 +235,21 @@ MIRISDR_API int mirisdr_read_mem (mirisdr_dev_t *p, uint16_t addr, uint8_t *buf,
 MIRISDR_API int mirisdr_write_mem (mirisdr_dev_t *p, uint16_t addr, const uint8_t *buf, int len, int remap); /* extra */
 MIRISDR_API int mirisdr_reboot (mirisdr_dev_t *p, int from_ram); /* extra, returns MIRISDR_REOPEN */
 
+/* Call code on the device. The registers go in and the ones the callee left come
+ * back, in the same struct. Write the code somewhere unused with mirisdr_write_mem()
+ * first. Needs a firmware that supports it */
+#define MIRISDR_CALL_CTX        0x1FF8
+typedef struct mirisdr_call_regs
+{
+	uint8_t  a;
+	uint8_t  b;
+	uint16_t dptr;
+	uint8_t  r0;
+	uint8_t  r1;
+} mirisdr_call_regs_t;
+
+MIRISDR_API int mirisdr_call (mirisdr_dev_t *p, uint16_t addr, mirisdr_call_regs_t *regs); /* extra */
+
 /* The MSI2500 has a remote control receiver on GPIO3, this function allows to configure a
  * callback that receives IR events. If you want to sample a non-pulse based protocol, 
  * such as UART, it makes sense to set tick_ns to 1 and use only the level field */
