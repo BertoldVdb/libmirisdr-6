@@ -46,6 +46,7 @@
 #include "reg.c"
 #include "debug.c"
 #include "gpio.c"
+#include "eeprom.c"
 #include "ir.c"
 #include "adc.c"
 #include "convert/base.c"
@@ -121,6 +122,7 @@ int mirisdr_setup (mirisdr_dev_t **out_dev, mirisdr_dev_t *dev) {
     dev->dc_period = 0x800;
 
     dev->hw_flavour = MIRISDR_HW_DEFAULT;
+    dev->ee_size = -1;              /* not probed yet, see eeprom.c */
 
     /* ISOC is more stable but works only on Unix systems */
 #if !defined (_WIN32) || defined(__MINGW32__)
