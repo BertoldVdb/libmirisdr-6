@@ -51,6 +51,7 @@
 #include "convert/base.c"
 #include "async.c"
 #include "devices.c"
+#include "firmware.c"
 #include "gain.c"
 #include "hard.c"
 #include "streaming.c"
@@ -152,7 +153,7 @@ failed:
     return -1;
 }
 
-int mirisdr_open (mirisdr_dev_t **p, uint32_t index) {
+static int mirisdr_open_raw (mirisdr_dev_t **p, uint32_t index) {
     mirisdr_dev_t *dev = NULL;
     libusb_device **list, *device = NULL;
     struct libusb_device_descriptor dd;
@@ -217,7 +218,7 @@ failed:
     return -1;
 }
 
-int mirisdr_open_fd (mirisdr_dev_t **p, int fd) {
+static int mirisdr_open_fd_raw (mirisdr_dev_t **p, int fd) {
     mirisdr_dev_t *dev = NULL;
     libusb_device **list, *device = NULL;
     struct libusb_device_descriptor dd;
@@ -249,6 +250,24 @@ int mirisdr_open_fd (mirisdr_dev_t **p, int fd) {
     }
 
     return mirisdr_setup(p, dev);
+}
+
+int mirisdr_open (mirisdr_dev_t **p, uint32_t index) {
+    mirisdr_open_config_t cfg;
+
+    mirisdr_open_config_default(&cfg);
+    cfg.index = index;
+
+    return mirisdr_open_ex(p, &cfg);
+}
+
+int mirisdr_open_fd (mirisdr_dev_t **p, int fd) {
+    mirisdr_open_config_t cfg;
+
+    mirisdr_open_config_default(&cfg);
+    cfg.fd = fd;
+
+    return mirisdr_open_ex(p, &cfg);
 }
 
 int mirisdr_close (mirisdr_dev_t *p) {
