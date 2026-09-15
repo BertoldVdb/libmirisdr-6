@@ -124,6 +124,18 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
 
     /* zpracujeme pouze kompletní přenos */
     if (xfer->status == LIBUSB_TRANSFER_COMPLETED) {
+        unsigned char *raw = xfer->buffer;
+
+        /* From uncoherent memory the format converters read one slow byte at a time,
+           so the block is moved with a wide copy first and they are pointed at
+           that instead. The transfer owns its buffer again below. */
+        if (p->xfer_buf_slow) {
+            memcpy(p->xfer_copy, xfer->buffer,
+                   (xfer->type == LIBUSB_TRANSFER_TYPE_ISOCHRONOUS)
+                   ? (size_t) xfer->length : (size_t) xfer->actual_length);
+            xfer->buffer = p->xfer_copy;
+        }
+
         p->stats_head = 1;
         /*
          * Určení správné velikosti bufferu, tato část musí být provedena
@@ -267,6 +279,8 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
             goto failed;
         }
 
+        xfer->buffer = raw;
+
         if (bytes > 0) mirisdr_feed_async(p, samples, bytes);
 
         if (xfer->type == LIBUSB_TRANSFER_TYPE_BULK)
@@ -357,6 +371,63 @@ failed:
 }
 
 /* alokace asynchronních bufferů */
+/* Byte reads from a usbfs buffer cost less than a nanosecond where the controller
+   is IO coherent and hundreds where it is not. The platform does not expose this
+   information to the application, so we have to measure it. */
+#define MIRISDR_PROBE_BYTES     2048
+#define MIRISDR_PROBE_ROUNDS    5
+#define MIRISDR_PROBE_RATIO     8
+
+static double mirisdr_read_cost (const volatile uint8_t *buf, int len, int rounds) {
+    volatile uint32_t sum = 0;
+    double best = 0;
+    int i, r;
+
+    for (i = 0; i < len; i++) sum+= buf[i];        /* map the pages first */
+
+    for (r = 0; r < rounds; r++) {
+        struct timespec a, b;
+        double ns;
+
+        clock_gettime(CLOCK_MONOTONIC, &a);
+        for (i = 0; i < len; i++) sum+= buf[i];
+        clock_gettime(CLOCK_MONOTONIC, &b);
+
+        ns = ((double) (b.tv_sec - a.tv_sec) * 1e9 + (b.tv_nsec - a.tv_nsec)) / len;
+
+        if (!r || (ns < best)) best = ns;
+    }
+
+    return best;
+}
+
+static void mirisdr_probe_buffers (mirisdr_dev_t *p) {
+    uint8_t *cached;
+    double slow, fast;
+
+    p->xfer_buf_slow = 0;
+
+    if (!p->xfer_buf_devmem || !p->xfer_buf || !p->xfer_buf[0]) return;
+    if (!(cached = malloc(MIRISDR_PROBE_BYTES))) return;
+
+    memset(cached, 0, MIRISDR_PROBE_BYTES);
+
+    fast = mirisdr_read_cost(cached, MIRISDR_PROBE_BYTES, MIRISDR_PROBE_ROUNDS);
+    slow = mirisdr_read_cost(p->xfer_buf[0], MIRISDR_PROBE_BYTES, MIRISDR_PROBE_ROUNDS);
+
+    free(cached);
+
+    p->xfer_buf_slow = slow > fast * MIRISDR_PROBE_RATIO;
+
+#if MIRISDR_DEBUG >= 1
+    fprintf(stderr, "transfer buffers: %.1f ns/byte against %.1f cached, %s\n",
+            slow, fast, p->xfer_buf_slow ? "copying each transfer" : "read in place");
+#endif
+
+    if (p->xfer_buf_slow && !(p->xfer_copy = malloc(p->xfer_buf_size)))
+        p->xfer_buf_slow = 0;
+}
+
 static int mirisdr_async_alloc (mirisdr_dev_t *p) {
     size_t i;
 
@@ -402,6 +473,8 @@ static int mirisdr_async_alloc (mirisdr_dev_t *p) {
             for (i = 0; i < p->xfer_buf_num; i++)
                 p->xfer_buf[i] = malloc(bufsz);
         }
+
+        mirisdr_probe_buffers(p);
     }
 
     if ((!p->xfer_out) &&
@@ -436,6 +509,11 @@ static int mirisdr_async_free (mirisdr_dev_t *p) {
 
         free(p->xfer_buf);
         p->xfer_buf = NULL;
+    }
+
+    if (p->xfer_copy) {
+        free(p->xfer_copy);
+        p->xfer_copy = NULL;
     }
 
     if (p->xfer_out) {
