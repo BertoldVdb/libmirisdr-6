@@ -159,7 +159,7 @@ failed:
     return -1;
 }
 
-static int mirisdr_open_raw (mirisdr_dev_t **p, uint32_t index) {
+static int mirisdr_open_raw (mirisdr_dev_t **p, uint32_t index, int external_tuner) {
     mirisdr_dev_t *dev = NULL;
     libusb_device **list, *device = NULL;
     struct libusb_device_descriptor dd;
@@ -210,6 +210,8 @@ static int mirisdr_open_raw (mirisdr_dev_t **p, uint32_t index) {
 
     libusb_free_device_list(list, 1);
 
+    dev->external_tuner = external_tuner;
+
     return mirisdr_setup(p, dev);
 
 failed:
@@ -224,7 +226,7 @@ failed:
     return -1;
 }
 
-static int mirisdr_open_fd_raw (mirisdr_dev_t **p, int fd) {
+static int mirisdr_open_fd_raw (mirisdr_dev_t **p, int fd, int external_tuner) {
     mirisdr_dev_t *dev = NULL;
     libusb_device **list, *device = NULL;
     struct libusb_device_descriptor dd;
@@ -254,6 +256,8 @@ static int mirisdr_open_fd_raw (mirisdr_dev_t **p, int fd) {
         free(dev);
         return -1;
     }
+
+    dev->external_tuner = external_tuner;
 
     return mirisdr_setup(p, dev);
 }

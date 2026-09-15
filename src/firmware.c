@@ -15,8 +15,8 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-static int mirisdr_open_raw (mirisdr_dev_t **p, uint32_t index);
-static int mirisdr_open_fd_raw (mirisdr_dev_t **p, int fd);
+static int mirisdr_open_raw (mirisdr_dev_t **p, uint32_t index, int external_tuner);
+static int mirisdr_open_fd_raw (mirisdr_dev_t **p, int fd, int external_tuner);
 
 void mirisdr_open_config_default (mirisdr_open_config_t *cfg)
 {
@@ -413,7 +413,8 @@ static int mirisdr_fw_ids_ok (mirisdr_dev_t *p, int have, uint16_t vid, uint16_t
 static int mirisdr_fw_open (mirisdr_dev_t **dev, const mirisdr_open_config_t *cfg, uint32_t at)
 {
     uint8_t block[16];
-    int r = (cfg->fd >= 0) ? mirisdr_open_fd_raw(dev, cfg->fd) : mirisdr_open_raw(dev, at);
+    int r = (cfg->fd >= 0) ? mirisdr_open_fd_raw(dev, cfg->fd, cfg->external_tuner)
+                           : mirisdr_open_raw(dev, at, cfg->external_tuner);
 
     /* the ROM answers the memory requests too, so anything that needs our own
        firmware asks this rather than assuming */
