@@ -49,6 +49,7 @@
 #include "eeprom.c"
 #include "uart.c"
 #include "i2c.c"
+#include "pps.c"
 #include "ir.c"
 #include "adc.c"
 #include "convert/base.c"
