@@ -321,13 +321,18 @@ int mirisdr_set_soft(mirisdr_dev_t *p)
     p->reg8=switch_plan.band_select_word;
     update_reg_8(p);
 
-    mirisdr_write_reg(p, 0x09, 0x0e);
-    mirisdr_write_reg(p, 0x09, reg3);
+    /* register 9 is the MSi001's serial port: a board with another tuner on it
+       has this port wired somewhere else, or nowhere */
+    if (!p->external_tuner)
+    {
+        mirisdr_write_reg(p, 0x09, 0x0e);
+        mirisdr_write_reg(p, 0x09, reg3);
 
-    mirisdr_write_reg(p, 0x09, reg0);
-    mirisdr_write_reg(p, 0x09, reg5);
-    mirisdr_write_reg(p, 0x09, reg2);
-    mirisdr_write_reg(p, 0x09, regd);
+        mirisdr_write_reg(p, 0x09, reg0);
+        mirisdr_write_reg(p, 0x09, reg5);
+        mirisdr_write_reg(p, 0x09, reg2);
+        mirisdr_write_reg(p, 0x09, regd);
+    }
 
 //    if (band_select[i] != 0)
 //    {

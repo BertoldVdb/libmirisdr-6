@@ -90,6 +90,8 @@ int mirisdr_set_gain(mirisdr_dev_t *p)
     reg1 |= (p->dc_mode & 0x7) << 14;
     reg1 |= ((p->dc_speedup)? MIRISDR_DC_OFFSET_CALIBRATION_SPEEDUP_ON :
                               MIRISDR_DC_OFFSET_CALIBRATION_SPEEDUP_OFF) << 17;
+    if (p->external_tuner) return 0;
+
     mirisdr_write_reg(p, 0x09, reg1);
 
     /* DC Offset Calibration setup */

@@ -234,6 +234,8 @@ typedef struct mirisdr_open_config
 	int            firmware_ids;    /* one of MIRISDR_FW_IDS_* */
 	mirisdr_fw_patch_t firmware_patch; /* what MIRISDR_FW_IDS_SET writes in */
 	int            keep_running;    /* use running fw */
+	int            external_tuner; /* the board's tuner is not an MSi001, the library
+                                    * will not try to control it when set */
 } mirisdr_open_config_t;
 
 /* Please fill in the open_config struct using mirisdr_open_config_default(&cfg) and only
@@ -252,6 +254,11 @@ MIRISDR_API int mirisdr_open_ex (mirisdr_dev_t **p, const mirisdr_open_config_t 
 MIRISDR_API int mirisdr_get_fw_id (mirisdr_dev_t *p, uint8_t *buf, int len); /* extra */
 
 MIRISDR_API int mirisdr_running_from_rom (mirisdr_dev_t *p);            /* extra */
+
+/* Read and write the device registers. Reading is safe, but writing the wrong
+ * bits can cause the device to hang and require a power cycle. */
+MIRISDR_API int mirisdr_write_reg (mirisdr_dev_t *p, uint8_t reg, uint32_t val); /* extra */
+MIRISDR_API int mirisdr_read_reg (mirisdr_dev_t *p, uint8_t index, uint8_t *buf, int len); /* extra */
 
 /* These functions allow the host to read and write device memory. The remap argument
  * allows access to certain internal DSP and USB memories, assuming a compatible firmware
