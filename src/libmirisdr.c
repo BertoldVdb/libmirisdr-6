@@ -47,6 +47,7 @@
 #include "debug.c"
 #include "gpio.c"
 #include "eeprom.c"
+#include "uart.c"
 #include "ir.c"
 #include "adc.c"
 #include "convert/base.c"

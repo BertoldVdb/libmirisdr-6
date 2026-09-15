@@ -287,6 +287,9 @@ MIRISDR_API int mirisdr_write_eeprom (mirisdr_dev_t *p, uint16_t addr, const uin
  * 0=no response, 512=9-bit, 65536=16-bit */
 MIRISDR_API int mirisdr_eeprom_size (mirisdr_dev_t *p); /* extra */
 
+/* Send UART data via GPIO_2 */
+MIRISDR_API int mirisdr_uart_write (mirisdr_dev_t *p, uint32_t baud, const uint8_t *buf, int len); /* extra */
+
 /* The MSI2500 has a remote control receiver on GPIO3, this function allows to configure a
  * callback that receives IR events. If you want to sample a non-pulse based protocol, 
  * such as UART, it makes sense to set tick_ns to 1 and use only the level field */
