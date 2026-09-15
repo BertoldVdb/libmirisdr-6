@@ -105,6 +105,8 @@ struct mirisdr_dev {
     struct libusb_transfer **xfer;
     unsigned char       **xfer_buf;
     int                 xfer_buf_devmem;
+    int                 xfer_buf_slow;  /* reading from USB buffers is slow */
+    uint8_t             *xfer_copy;
     size_t              xfer_buf_size;
     size_t              xfer_out_len;
     size_t              xfer_out_pos;
