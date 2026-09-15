@@ -16,6 +16,9 @@
  */
 
 /* limits of the sampling PLL */
+#define MIRISDR_VCO_MIN                 202000000ULL
+#define MIRISDR_VCO_MAX                 767999999ULL
+
 #define MIRISDR_SAMPLE_RATE_MIN         1300000
 #define MIRISDR_SAMPLE_RATE_MAX         15000000
 
