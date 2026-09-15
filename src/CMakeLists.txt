@@ -59,7 +59,8 @@ endif()
 ########################################################################
 add_executable(miri_sdr miri_sdr.c)
 add_executable(miri_fm miri_fm.c)
-set(INSTALL_TARGETS mirisdr_shared mirisdr_static miri_sdr miri_fm)
+add_executable(miri_eeprom miri_eeprom.c)
+set(INSTALL_TARGETS mirisdr_shared mirisdr_static miri_sdr miri_fm miri_eeprom)
 
 target_link_libraries(miri_sdr mirisdr_shared
     ${LIBUSB_LIBRARIES}
@@ -67,6 +68,11 @@ target_link_libraries(miri_sdr mirisdr_shared
 )
 
 target_link_libraries(miri_fm mirisdr_shared
+    ${LIBUSB_LIBRARIES}
+    ${CMAKE_THREAD_LIBS_INIT}
+)
+
+target_link_libraries(miri_eeprom mirisdr_shared
     ${LIBUSB_LIBRARIES}
     ${CMAKE_THREAD_LIBS_INIT}
 )

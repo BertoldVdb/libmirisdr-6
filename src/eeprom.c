@@ -25,6 +25,8 @@
 #define MIRISDR_EE_SMALL        0x200
 #define MIRISDR_EE_LARGE        0x10000
 
+#define MIRISDR_EE_BOOT_IMAGE   0xD2
+
 #define MIRISDR_EE_WIP          0x01
 #define MIRISDR_EE_READY        0x30
 
@@ -135,6 +137,27 @@ static void mirisdr_ee_end (mirisdr_dev_t *p)
     mirisdr_write_reg(p, 0x0B, 0);
 
     update_reg_8(p);
+}
+
+/* Attempt to drive the strap pin incorrectly to EEPROM configuration is skipped */
+static int mirisdr_ee_ignore (mirisdr_dev_t *p)
+{
+    uint8_t first;
+    int r;
+
+    if ((r = mirisdr_ee_begin(p)) <= 0) goto out;
+    if ((r = mirisdr_ee_get(p, 0, &first)) < 0) goto out;
+
+    r = (first == MIRISDR_EE_BOOT_IMAGE) ? 1 : 0;
+
+out:
+    mirisdr_ee_end(p);
+
+    if (r <= 0) return r;
+
+    if (mirisdr_set_gpio_direction(p, 2, 1) < 0) return -1;
+
+    return (mirisdr_set_gpio_output(p, 2, p->ee_size == MIRISDR_EE_SMALL) < 0) ? -1 : 1;
 }
 
 int mirisdr_read_eeprom (mirisdr_dev_t *p, uint16_t addr, uint8_t *buf, int len)

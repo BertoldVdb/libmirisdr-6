@@ -360,14 +360,61 @@ failed:
 }
 
 int mirisdr_get_usb_strings (mirisdr_dev_t *dev, char *manufact, char *product, char *serial) {
-(void) dev;
-    fprintf( stderr, "mirisdr_get_usb_strings not implemented yet\n");
+    struct libusb_device_descriptor dd;
+    mirisdr_device_t *known;
+    libusb_device *d;
+
+    if (!dev || !dev->dh || !manufact || !product || !serial) return -1;
+    if (!(d = libusb_get_device(dev->dh))) return -1;
+    if (libusb_get_device_descriptor(d, &dd) < 0) return -1;
 
     memset(manufact, 0, 256);
     memset(product, 0, 256);
     memset(serial, 0, 256);
 
+    if (!mirisdr_usb_string(dev->dh, dd.iManufacturer, manufact, 256)
+        || !mirisdr_usb_string(dev->dh, dd.iProduct, product, 256))
+    {
+        if ((known = mirisdr_device_get(dd.idVendor, dd.idProduct)))
+        {
+            if (!*manufact) strcpy(manufact, known->manufacturer);
+            if (!*product) strcpy(product, known->product);
+        }
+    }
+
+    if (!mirisdr_usb_string(dev->dh, dd.iSerialNumber, serial, 256))
+        mirisdr_port_name(d, serial);
+
     return 0;
+}
+
+int mirisdr_get_usb_ids (mirisdr_dev_t *p, uint16_t *vid, uint16_t *pid) {
+    struct libusb_device_descriptor dd;
+    libusb_device *d;
+
+    if (!p || !p->dh) return -1;
+    if (!(d = libusb_get_device(p->dh))) return -1;
+    if (libusb_get_device_descriptor(d, &dd) < 0) return -1;
+
+    if (vid) *vid = dd.idVendor;
+    if (pid) *pid = dd.idProduct;
+
+    return 0;
+}
+
+int mirisdr_get_serial (mirisdr_dev_t *p, char *out, int len) {
+    struct libusb_device_descriptor dd;
+    libusb_device *d;
+
+    if (!p || !p->dh || !out || (len <= 0)) return -1;
+    if (!(d = libusb_get_device(p->dh))) return -1;
+    if (libusb_get_device_descriptor(d, &dd) < 0) return -1;
+
+    *out = 0;
+
+    if (!mirisdr_usb_string(p->dh, dd.iSerialNumber, out, len)) return 0;
+
+    return (int) strlen(out);
 }
 
 int mirisdr_set_hw_flavour (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_flavour) {

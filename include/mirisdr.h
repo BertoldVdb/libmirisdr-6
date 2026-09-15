@@ -55,6 +55,8 @@ typedef struct mirisdr_dev mirisdr_dev_t;
 MIRISDR_API uint32_t mirisdr_get_device_count (void);
 MIRISDR_API const char *mirisdr_get_device_name (uint32_t index);
 MIRISDR_API int mirisdr_get_device_usb_strings (uint32_t index, char *manufact, char *product, char *serial);
+/* Matches the serial of the device if it has one, otherwise a synthetic one based on USB bus location */
+MIRISDR_API int mirisdr_get_index_by_serial (const char *serial);
 
 /* main */
 MIRISDR_API int mirisdr_open (mirisdr_dev_t **p, uint32_t index);
@@ -63,6 +65,9 @@ MIRISDR_API int mirisdr_close (mirisdr_dev_t *p);
 MIRISDR_API int mirisdr_reset (mirisdr_dev_t *p);                       /* extra */
 MIRISDR_API int mirisdr_reset_buffer (mirisdr_dev_t *p);
 MIRISDR_API int mirisdr_get_usb_strings (mirisdr_dev_t *dev, char *manufact, char *product, char *serial);
+MIRISDR_API int mirisdr_get_usb_ids (mirisdr_dev_t *p, uint16_t *vid, uint16_t *pid); /* extra */
+/* The serial the device itself declares, returns 0 if none declared */
+MIRISDR_API int mirisdr_get_serial (mirisdr_dev_t *p, char *out, int len); /* extra */
 MIRISDR_API int mirisdr_set_hw_flavour (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_flavour);
 
 /* sync */
@@ -191,9 +196,28 @@ MIRISDR_API int mirisdr_release_gpio (mirisdr_dev_t *p, unsigned int pin); /* ex
 MIRISDR_API int mirisdr_set_gpio_outputs (mirisdr_dev_t *p, unsigned int mask, unsigned int levels); /* extra */
 MIRISDR_API int mirisdr_get_gpio_inputs (mirisdr_dev_t *p); /* extra */
 
+#define MIRISDR_FW_SERIAL_MAX   12
+
+/* mirisdr_fw_get() sets fields to what the image has, mirisdr_fw_patch() applies only
+ * what is set. A serial is at most MIRISDR_FW_SERIAL_MAX characters. An empty one leaves
+ * the image declaring none */
+#define MIRISDR_FW_PATCH_IDS    (1u << 0)
+#define MIRISDR_FW_PATCH_SERIAL (1u << 1)
+
+typedef struct mirisdr_fw_patch
+{
+	unsigned int   fields;
+	uint16_t       vid;
+	uint16_t       pid;
+	char           serial[MIRISDR_FW_SERIAL_MAX + 1];
+} mirisdr_fw_patch_t;
+
+MIRISDR_API int mirisdr_fw_get (const uint8_t *image, uint32_t size, mirisdr_fw_patch_t *out); /* extra */
+MIRISDR_API int mirisdr_fw_patch (uint8_t *image, uint32_t size, const mirisdr_fw_patch_t *p); /* extra */
+
 /* Open a device with options, including the firmware it should be running.
  * The image comes from a buffer or from a path. The image can be patched
- * at runtime to ensure the VID/PID does not change */
+ * at runtime to ensure the VID/PID/Serial do not change. */
 #define MIRISDR_FW_IDS_IMAGE    0
 #define MIRISDR_FW_IDS_DEVICE   1
 #define MIRISDR_FW_IDS_SET      2
@@ -201,14 +225,14 @@ MIRISDR_API int mirisdr_get_gpio_inputs (mirisdr_dev_t *p); /* extra */
 typedef struct mirisdr_open_config
 {
 	uint32_t       index;           /* when opening by index */
+	const char    *serial;          /* or by serial, which wins over the index */
 	int            fd;              /* or an already open descriptor, -1 for none */
 
 	const uint8_t *firmware;        /* the image, or NULL */
 	uint32_t       firmware_size;
 	const char    *firmware_path;   /* or a file to read it from */
 	int            firmware_ids;    /* one of MIRISDR_FW_IDS_* */
-	uint16_t       firmware_vid;    /* for MIRISDR_FW_IDS_SET */
-	uint16_t       firmware_pid;
+	mirisdr_fw_patch_t firmware_patch; /* what MIRISDR_FW_IDS_SET writes in */
 	int            keep_running;    /* use running fw */
 } mirisdr_open_config_t;
 
@@ -226,6 +250,7 @@ MIRISDR_API int mirisdr_open_ex (mirisdr_dev_t **p, const mirisdr_open_config_t 
 #define MIRISDR_FW_ID_LEN       8
 
 MIRISDR_API int mirisdr_get_fw_id (mirisdr_dev_t *p, uint8_t *buf, int len); /* extra */
+
 MIRISDR_API int mirisdr_running_from_rom (mirisdr_dev_t *p);            /* extra */
 
 /* These functions allow the host to read and write device memory. The remap argument
@@ -233,7 +258,11 @@ MIRISDR_API int mirisdr_running_from_rom (mirisdr_dev_t *p);            /* extra
  * is loaded. Using remap is ignored on the standard firmware and can cause data corruption. */
 MIRISDR_API int mirisdr_read_mem (mirisdr_dev_t *p, uint16_t addr, uint8_t *buf, int len, int remap); /* extra */
 MIRISDR_API int mirisdr_write_mem (mirisdr_dev_t *p, uint16_t addr, const uint8_t *buf, int len, int remap); /* extra */
-MIRISDR_API int mirisdr_reboot (mirisdr_dev_t *p, int from_ram); /* extra, returns MIRISDR_REOPEN */
+
+#define MIRISDR_BOOT_ROM        0
+#define MIRISDR_BOOT_RAM        1
+#define MIRISDR_BOOT_IGNORE_EEPROM 2 /* attempt to skip loading firmware or configuration from EEPROM */
+MIRISDR_API int mirisdr_reboot (mirisdr_dev_t *p, int mode); /* extra, returns MIRISDR_REOPEN */
 
 /* Call code on the device. The registers go in and the ones the callee left come
  * back, in the same struct. Write the code somewhere unused with mirisdr_write_mem()
