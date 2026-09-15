@@ -116,6 +116,13 @@ struct mirisdr_dev {
     int                 bias;
     int                 reg8;
     int                 fw_ours;
+    int64_t             pps_base;       /* stream index where the packet count was zeroed */
+    uint64_t            pps_lost0;
+    uint8_t             pps_edge0;
+    uint8_t             pps_stale;      /* the latched edge predates the anchor */
+    uint32_t            pps_irq_last;
+    uint32_t            pps_irq_high;
+    uint8_t             pps_anchor_valid;
     uint16_t            i2c_delay;
     uint32_t            i2c_clock_ns;
     int                 ee_size;        /* what the EEPROM's address reaches, 0 if none */

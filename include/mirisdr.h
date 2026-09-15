@@ -288,6 +288,20 @@ MIRISDR_API int mirisdr_write_eeprom (mirisdr_dev_t *p, uint16_t addr, const uin
  * 0=no response, 512=9-bit, 65536=16-bit */
 MIRISDR_API int mirisdr_eeprom_size (mirisdr_dev_t *p); /* extra */
 
+/* A pulse per second on GPIO_0, timestamped in the stream's own samples. Needs
+ * our firmware and a running stream: enabling takes an anchor, which costs one
+ * damaged packet. `edges` advances once per pulse and wraps at 256 */
+typedef struct mirisdr_pps
+{
+	uint64_t sample;    /* count at low->high edge, in mirisdr_stream_stats_t.index units */
+	uint8_t  edges;
+	int      trusted;   /* no USB interrupt near this capture, ignore sample if 0. Self repairs */
+	int      gapless;   /* nothing lost since the anchor, ignore sample if 0. Self repairs */
+} mirisdr_pps_t;
+
+MIRISDR_API int mirisdr_enable_pps (mirisdr_dev_t *p, int run); /* extra */
+MIRISDR_API int mirisdr_get_pps (mirisdr_dev_t *p, mirisdr_pps_t *out); /* extra */
+
 /* I2C master on GPIO_1 (SDA) and GPIO_2 (SCL) */
 #define MIRISDR_I2C_NO_STOP     0x01
 #define MIRISDR_I2C_REPEAT      0x02
