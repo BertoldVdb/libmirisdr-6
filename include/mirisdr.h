@@ -230,7 +230,8 @@ typedef struct mirisdr_open_config
 
 	const uint8_t *firmware;        /* the image, or NULL */
 	uint32_t       firmware_size;
-	const char    *firmware_path;   /* or a file to read it from */
+	const char    *firmware_path;   /* a file to read it from, which wins over
+	                                 * the buffer above. */
 	int            firmware_ids;    /* one of MIRISDR_FW_IDS_* */
 	mirisdr_fw_patch_t firmware_patch; /* what MIRISDR_FW_IDS_SET writes in */
 	int            keep_running;    /* use running fw */

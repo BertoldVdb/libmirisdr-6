@@ -95,6 +95,41 @@ static uint8_t *samples_realloc(mirisdr_dev_t *p, int size)
     return p->samples;
 }
 
+/* Our firmware stamps header bytes 8-11 of every buffer at startup - bytes the
+   capture engine never writes - so the mark rides along in every packet the
+   part sends.  Byte 12 carries which of the four ring buffers it came from,
+   and 13-15 are spare. */
+static const uint8_t mirisdr_hdr_magic[4] = { 'B', 'V', 'D', 'B' };
+
+/* Where does the 1 kB block grid really start in this buffer?
+   Returns -1 when nothing in it looks like the grid. */
+static int mirisdr_bulk_phase (mirisdr_dev_t *p, const uint8_t *b, int n)
+{
+	int k;
+
+	if (n < 3 * 1024) return -1;
+
+	/* The stamp settles it outright: two of them a block apart cannot be
+	   sample data. */
+	for (k = 0; k < 1024; k++)
+		if (!memcmp(b + k + 8, mirisdr_hdr_magic, sizeof(mirisdr_hdr_magic)) &&
+		    !memcmp(b + k + 1024 + 8, mirisdr_hdr_magic, sizeof(mirisdr_hdr_magic)))
+			return k;
+
+	/* Firmware that does not stamp so fall back to the counter:
+     * a run one block apart stepping by addr_step is the grid. */
+	for (k = 0; k < 1024; k++)
+	{
+		uint32_t c0 = b[k]        | b[k+1]<<8    | b[k+2]<<16    | (uint32_t) b[k+3]<<24;
+		uint32_t c1 = b[k+1024]   | b[k+1025]<<8 | b[k+1026]<<16 | (uint32_t) b[k+1027]<<24;
+		uint32_t c2 = b[k+2048]   | b[k+2049]<<8 | b[k+2050]<<16 | (uint32_t) b[k+2051]<<24;
+
+		if ((c1 - c0 == p->addr_step) && (c2 - c1 == p->addr_step)) return k;
+	}
+
+	return -1;
+}
+
 /*
  * It is possible to configure how many 1kB blocks at a time the DSP will
  * hand over to the USB controller. If this value is too low not all buffer
@@ -287,10 +322,25 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
         {
             if(p->sync_run > (int)p->xfer_buf_num)
             {
-                p->sync_run = -p->xfer_buf_num +1;
-                p->stats.resyncs++;
-                xfer->length = DEFAULT_BULK_BUFFER - 512;
-                fprintf(stderr,"libmirisdr: Sync lost. Trying to synchronize.\n");
+                /* Rarely, packets containing a count of zero are received, which should not
+                 * be seen as desync */
+                int phase = mirisdr_bulk_phase(p, xfer->buffer, xfer->actual_length);
+
+                /* A shift only reaches the stream once the transfers already
+                   queued behind it have drained, and every one of those still
+                   carries the old phase. Counting that wait in transfers is
+                   a bug: sync_run counts blocks, and one transfer holds
+                   sixteen of them, so the next buffer re-triggered the shift
+                   and it oscillates. */
+                p->sync_run = -(int) (p->xfer_buf_num * (DEFAULT_BULK_BUFFER / 1024));
+
+                if (phase > 0) {
+                    p->stats.resyncs++;
+                    xfer->length = DEFAULT_BULK_BUFFER - phase;
+                    fprintf(stderr,"libmirisdr: block grid is %d bytes out, shifting.\n", phase);
+                } else {
+                    xfer->length = DEFAULT_BULK_BUFFER;
+                }
             }else
                 xfer->length = DEFAULT_BULK_BUFFER;
         }
@@ -633,6 +683,7 @@ int mirisdr_read_async (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx,
             goto failed_free;
         }
 
+
         /* dochází k ukončení */
         if (p->async_status == MIRISDR_ASYNC_CANCELING) {
             if (!p->xfer) {
@@ -749,6 +800,10 @@ int mirisdr_stop_async (mirisdr_dev_t *p) {
     /* nedovolíme jiný stav než spuštěný */
     if (p->async_status != MIRISDR_ASYNC_RUNNING) goto failed;
 
+    /* ask the firmware to stop while transfers are still queued, as otherwise the ISR never
+     * fires, and we can't disable the capture engine */
+    mirisdr_streaming_stop(p);
+
     while (p->async_status == MIRISDR_ASYNC_RUNNING) {
         semafor = 1;
         for (i = 0; i < p->xfer_buf_num; i++) {
@@ -772,13 +827,6 @@ int mirisdr_stop_async (mirisdr_dev_t *p) {
     }
 
     if (p->async_status != MIRISDR_ASYNC_RUNNING) goto failed;
-
-#if defined (_WIN32) && !defined(__MINGW32__)
-    Sleep(20);
-#else
-    usleep(20000);
-#endif
-    mirisdr_streaming_stop(p);
 
     p->async_status = MIRISDR_ASYNC_PAUSED;
 

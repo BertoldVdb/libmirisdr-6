@@ -476,7 +476,9 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
     image = cfg->firmware;
     size = cfg->firmware_size;
 
-    if (!image && cfg->firmware_path && !cfg->keep_running)
+    /* A path wins over a buffer: the default config carries the built-in image,
+       so a caller that names a file would otherwise be silently ignored. */
+    if (cfg->firmware_path && !cfg->keep_running)
     {
         if (!(owned = mirisdr_fw_read(cfg->firmware_path, &size))) return -1;
         image = owned;
