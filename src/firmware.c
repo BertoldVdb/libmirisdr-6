@@ -18,6 +18,13 @@
 static int mirisdr_open_raw (mirisdr_dev_t **p, uint32_t index, int external_tuner);
 static int mirisdr_open_fd_raw (mirisdr_dev_t **p, int fd, int external_tuner);
 
+const uint8_t *mirisdr_default_firmware (uint32_t *size)
+{
+    if (size) *size = msi2500pps_fw_len;
+
+    return (const uint8_t *) msi2500pps_fw;
+}
+
 void mirisdr_open_config_default (mirisdr_open_config_t *cfg)
 {
     if (!cfg) return;
@@ -26,6 +33,7 @@ void mirisdr_open_config_default (mirisdr_open_config_t *cfg)
 
     cfg->fd = -1;
     cfg->firmware_ids = MIRISDR_FW_IDS_DEVICE;
+    cfg->firmware = mirisdr_default_firmware(&cfg->firmware_size);
 }
 
 #define MIRISDR_FW_GONE_MS      2000

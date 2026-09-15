@@ -44,7 +44,7 @@ static void usage (void)
         "  read <file> [bytes]           dump to a file\n"
         "  write <file> [address]        write a file back\n"
         "  writeids <vid> <pid> [bcd]    boot the ROM with these ids\n"
-        "  writefw <image> [-v vid] [-p pid] [-s serial|random]\n"
+        "  writefw <image|default> [-v vid] [-p pid] [-s serial|random]\n"
         "                                boot this image instead of the ROM\n"
         "  disable                       byte 0 back to 0xFF\n");
 
@@ -126,8 +126,6 @@ static int commit (const uint8_t *buf, int len)
 
 static int boot (void)
 {
-    int i;
-
     if (mirisdr_reboot(dev, MIRISDR_BOOT_ROM) != MIRISDR_REOPEN)
     {
         fprintf(stderr, "  written, but the reset failed: power cycle to apply it\n");
@@ -365,7 +363,18 @@ static int cmd_fw (const char *path, long vid, long pid, const char *serial)
     long len;
     int n, r;
 
-    if (!(img = slurp(path, &len))) return -1;
+    if (!strcmp(path, "default"))
+    {
+        uint32_t n;
+        const uint8_t *built = mirisdr_default_firmware(&n);
+
+        len = (long) n;
+
+        if (!(img = malloc((size_t) len))) return -1;
+
+        memcpy(img, built, (size_t) len);
+    }
+    else if (!(img = slurp(path, &len))) return -1;
 
     if (serial && !strcmp(serial, "random") && !(serial = make_serial()))
     {

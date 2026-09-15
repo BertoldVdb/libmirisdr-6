@@ -241,6 +241,8 @@ typedef struct mirisdr_open_config
 /* Please fill in the open_config struct using mirisdr_open_config_default(&cfg) and only
  * the edit the options you need. You will likely only need to change index or fd. */
 
+/* The firmware built into this library, which the default config loads */
+MIRISDR_API const uint8_t *mirisdr_default_firmware (uint32_t *size); /* extra */
 MIRISDR_API void mirisdr_open_config_default (mirisdr_open_config_t *cfg); /* extra */
 MIRISDR_API int mirisdr_open_ex (mirisdr_dev_t **p, const mirisdr_open_config_t *cfg); /* extra */
 

@@ -55,6 +55,7 @@
 #include "convert/base.c"
 #include "async.c"
 #include "devices.c"
+#include "firmware_pps.c"
 #include "firmware.c"
 #include "gain.c"
 #include "hard.c"
