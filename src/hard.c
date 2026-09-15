@@ -31,13 +31,44 @@ static int mirisdr_format_fits(mirisdr_dev_t *p, uint32_t spp, uint32_t cap)
 	return ((uint64_t) p->rate * 1024 / spp) <= cap;
 }
 
+/* Every divider whose VCO is in range, nearest the middle first. */
+static unsigned mirisdr_pll_candidates (uint32_t pll_rate, uint64_t *out)
+{
+	uint64_t want = (MIRISDR_VCO_MIN + MIRISDR_VCO_MAX) / 2, i;
+	unsigned n = 0, a, b;
+
+	for (i = 4; i <= 16; i += 2)
+	{
+		uint64_t v = (uint64_t) pll_rate * i * 12;
+
+		if (v > MIRISDR_VCO_MAX) break;
+		if (v < MIRISDR_VCO_MIN) continue;
+
+		out[n++] = i;
+	}
+
+	for (a = 0; a < n; a++)
+		for (b = a + 1; b < n; b++)
+		{
+			uint64_t va = (uint64_t) pll_rate * out[a] * 12;
+			uint64_t vb = (uint64_t) pll_rate * out[b] * 12;
+			uint64_t da = (va > want) ? (va - want) : (want - va);
+			uint64_t db = (vb > want) ? (vb - want) : (want - vb);
+
+			if (db < da) { uint64_t t = out[a]; out[a] = out[b]; out[b] = t; }
+		}
+
+	return n;
+}
+
 /* nastavení parametrů které vyžadují restart */
 /* parameters that require restart */
 int mirisdr_set_hard(mirisdr_dev_t *p)
 {
 	int streaming = 0;
 	uint32_t reg3 = 0, reg4 = 0, swap, burst, decim, pll_rate, rate_min, rate_max;
-	uint64_t i, vco, n, fract;
+	uint64_t i, vco, n, fract, cand[8];
+	unsigned ncand, try;
 
 	/* při změně registrů musíme zastavit streamování */
 	/* at a registry change we must stop streaming */
@@ -195,40 +226,10 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 	 * 		 where you can not switch back rate, as well as setting a lower frequency than 571,429 SPS
 	 * 		 because it will be less than N 2, which is not an acceptable condition.
 	 */
-	/* Put the VCO in the middle of its range rather than just over the floor, so 
-     * chips with a slightly higher minimum VCO frequency also lock. */
-	{
-		uint64_t want = (MIRISDR_VCO_MIN + MIRISDR_VCO_MAX) / 2;
-		uint64_t best = 0, closest = 0, under = 0, under_vco = 0;
+	ncand = mirisdr_pll_candidates(pll_rate, cand);
 
-		for (i = 4; i <= 16; i += 2)
-		{
-			uint64_t v = (uint64_t) pll_rate * i * 12, away;
-
-			if (v > MIRISDR_VCO_MAX) break;
-
-			if (v < MIRISDR_VCO_MIN)
-			{
-				under = i;
-				under_vco = v;
-				continue;
-			}
-
-			away = (v > want) ? (v - want) : (want - v);
-
-			if (!best || (away < closest))
-			{
-				best = i;
-				closest = away;
-				vco = v;
-			}
-		}
-
-		/* only reachable below the supported rate range, where nothing fits */
-		if (!best) { best = under ? under : 4; vco = under ? under_vco : (uint64_t) pll_rate * 48; }
-
-		i = best;
-	}
+	i = ncand ? cand[0] : 4;
+	vco = (uint64_t) pll_rate * i * 12;
 
 	/* z předchozího výpočtu je N minimálně 4 */
 	/* from the previous calculation N is at least 4 */
@@ -288,6 +289,53 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 
 	mirisdr_write_reg(p, 0x04, reg4);
 	mirisdr_write_reg(p, 0x03, reg3);
+
+	/* The part reports its VCO band selection in read index 0, low nibble.
+	   Extremes: 0xF when it wants more capacitance than the bank has, 0 when it has
+	   none left to remove. We try to avoid the edges to increase tolerance to 
+       variation */
+	for (try = 1; (ncand > 1) && (try <= ncand); try++)
+	{
+		uint8_t rd[4];
+		uint64_t alt, v;
+
+		/* Let the capacitance search settle before asking what it chose. */
+#if defined (_WIN32) && !defined(__MINGW32__)
+		Sleep(1);               /* 1ms */
+#else
+		usleep(200);
+#endif
+
+		if (mirisdr_read_reg(p, 0, rd, sizeof(rd)) != (int) sizeof(rd)) break;
+
+		rd[0]&= 0x0f;
+
+		if ((rd[0] > 1) && (rd[0] < 0x0e)) break;
+
+		/* Once the list is exhausted nothing was better than where it started,
+		   so put the first choice back rather than leave the last one tried. */
+		alt = (try < ncand) ? cand[try] : cand[0];
+		v = (uint64_t) pll_rate * alt * 12;
+		n = v / 48000000UL;
+		fract = 0x200000UL * (v % 48000000UL) / 48000000UL;
+
+		reg3 = (reg3 & ~0xf9cUL)
+		     | ((0x07 & (uint32_t) (alt / 2 - 1)) << 2)
+		     | ((0x01 & (uint32_t) (fract >> 20)) << 7)
+		     | ((0x0f & (uint32_t) n) << 8);
+		reg4 = (uint32_t) (fract & 0xfffff);
+
+#if MIRISDR_DEBUG >= 1
+		fprintf(stderr, "vco band %X at %lu, trying %lu\n", rd[0],
+		        (long unsigned int) vco, (long unsigned int) v);
+#endif
+		vco = v;
+
+		mirisdr_write_reg(p, 0x04, reg4);
+		mirisdr_write_reg(p, 0x03, reg3);
+
+		if (try == ncand) break;
+	}
 
 	/* opětovné spuštění streamu */
 	/* restart stream */
