@@ -287,6 +287,16 @@ MIRISDR_API int mirisdr_write_eeprom (mirisdr_dev_t *p, uint16_t addr, const uin
  * 0=no response, 512=9-bit, 65536=16-bit */
 MIRISDR_API int mirisdr_eeprom_size (mirisdr_dev_t *p); /* extra */
 
+/* I2C master on GPIO_1 (SDA) and GPIO_2 (SCL) */
+#define MIRISDR_I2C_NO_STOP     0x01
+#define MIRISDR_I2C_REPEAT      0x02
+#define MIRISDR_I2C_NACK        1
+MIRISDR_API int mirisdr_set_i2c_rate (mirisdr_dev_t *p, uint32_t hz); /* extra, 50 kHz until set */
+MIRISDR_API int mirisdr_i2c_write (mirisdr_dev_t *p, uint8_t addr, unsigned int flags, const uint8_t *buf, int len); /* extra */
+MIRISDR_API int mirisdr_i2c_read (mirisdr_dev_t *p, uint8_t addr, unsigned int flags, uint8_t *buf, int len); /* extra */
+MIRISDR_API int mirisdr_i2c_transfer (mirisdr_dev_t *p, uint8_t addr, const uint8_t *out, int outlen, uint8_t *in, int inlen); /* extra */
+MIRISDR_API int mirisdr_i2c_recover (mirisdr_dev_t *p); /* extra */
+
 /* Send UART data via GPIO_2 */
 MIRISDR_API int mirisdr_uart_write (mirisdr_dev_t *p, uint32_t baud, const uint8_t *buf, int len); /* extra */
 

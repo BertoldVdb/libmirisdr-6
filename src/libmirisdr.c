@@ -48,6 +48,7 @@
 #include "gpio.c"
 #include "eeprom.c"
 #include "uart.c"
+#include "i2c.c"
 #include "ir.c"
 #include "adc.c"
 #include "convert/base.c"
@@ -123,6 +124,7 @@ int mirisdr_setup (mirisdr_dev_t **out_dev, mirisdr_dev_t *dev) {
     dev->dc_period = 0x800;
 
     dev->hw_flavour = MIRISDR_HW_DEFAULT;
+    mirisdr_set_i2c_rate(dev, 50000);
     dev->ee_size = -1;              /* not probed yet, see eeprom.c */
 
     /* ISOC is more stable but works only on Unix systems */

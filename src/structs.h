@@ -116,6 +116,8 @@ struct mirisdr_dev {
     int                 bias;
     int                 reg8;
     int                 fw_ours;
+    uint16_t            i2c_delay;
+    uint32_t            i2c_clock_ns;
     int                 ee_size;        /* what the EEPROM's address reaches, 0 if none */
 
     /* pins the application has taken over, and what it wants them doing */
