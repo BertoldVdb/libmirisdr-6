@@ -178,6 +178,64 @@ static int mirisdr_fw_descriptor (const uint8_t *image, uint32_t size)
     return (int) at;
 }
 
+/* The serial string descriptor, at the other pointer the block publishes. */
+static int mirisdr_fw_serial_at (const uint8_t *image, uint32_t size)
+{
+    uint32_t at;
+
+    if ((size < MIRISDR_FW_BLOCK + 16)
+        || memcmp(image + MIRISDR_FW_BLOCK, "BVDB", 4)) return -1;
+
+    at = image[MIRISDR_FW_BLOCK + 14] | ((uint32_t) image[MIRISDR_FW_BLOCK + 15] << 8);
+
+    if ((uint64_t) at + 2 + 2 * MIRISDR_FW_SERIAL_MAX > size) return -1;
+
+    return (int) at;
+}
+
+static int mirisdr_fw_get_serial (const uint8_t *image, uint32_t size, char *out, int len)
+{
+    int at = mirisdr_fw_serial_at(image, size), n, i;
+
+    *out = 0;
+
+    if (at < 0) return -1;
+
+    n = (image[at] > 2) ? (image[at] - 2) / 2 : 0;
+
+    if (n >= len) n = len - 1;
+
+    for (i = 0; i < n; i++) out[i] = (char) image[at + 2 + 2 * i];
+
+    out[n] = 0;
+
+    return n;
+}
+
+static int mirisdr_fw_set_serial (uint8_t *image, uint32_t size, const char *serial)
+{
+    int at = mirisdr_fw_serial_at(image, size), desc, n, i;
+
+    if ((at < 0) || ((desc = mirisdr_fw_descriptor(image, size)) < 0)) return -1;
+
+    n = (int) strlen(serial);
+
+    if (n > MIRISDR_FW_SERIAL_MAX) return -1;
+
+    image[at] = (uint8_t) (n ? 2 + 2 * n : 0);
+    image[at + 1] = 3;
+
+    for (i = 0; i < MIRISDR_FW_SERIAL_MAX; i++)
+    {
+        image[at + 2 + 2 * i] = (i < n) ? (uint8_t) serial[i] : 0;
+        image[at + 3 + 2 * i] = 0;
+    }
+
+    image[desc + 16] = n ? 3 : 0;
+
+    return 0;
+}
+
 static int mirisdr_fw_running (mirisdr_dev_t *p, const uint8_t *image, uint32_t size)
 {
     uint8_t block[16];
@@ -186,6 +244,18 @@ static int mirisdr_fw_running (mirisdr_dev_t *p, const uint8_t *image, uint32_t 
     if (mirisdr_read_mem(p, MIRISDR_FW_BLOCK, block, sizeof(block), 0) < 0) return 0;
 
     return !memcmp(block, image + MIRISDR_FW_BLOCK, sizeof(block));
+}
+
+static int mirisdr_fw_get_ids (const uint8_t *image, uint32_t size, uint16_t *vid, uint16_t *pid)
+{
+    int at = mirisdr_fw_descriptor(image, size);
+
+    if (at < 0) return -1;
+
+    if (vid) *vid = (uint16_t) (image[at + 8] | (image[at + 9] << 8));
+    if (pid) *pid = (uint16_t) (image[at + 10] | (image[at + 11] << 8));
+
+    return 0;
 }
 
 static int mirisdr_fw_set_ids (uint8_t *image, uint32_t size, uint16_t vid, uint16_t pid)
@@ -203,6 +273,34 @@ static int mirisdr_fw_set_ids (uint8_t *image, uint32_t size, uint16_t vid, uint
     image[at + 9] = (uint8_t) (vid >> 8);
     image[at + 10] = (uint8_t) pid;
     image[at + 11] = (uint8_t) (pid >> 8);
+
+    return 0;
+}
+
+int mirisdr_fw_get (const uint8_t *image, uint32_t size, mirisdr_fw_patch_t *out)
+{
+    if (!image || !out) return -1;
+
+    memset(out, 0, sizeof(*out));
+
+    if (!mirisdr_fw_get_ids(image, size, &out->vid, &out->pid))
+        out->fields|= MIRISDR_FW_PATCH_IDS;
+
+    if (mirisdr_fw_get_serial(image, size, out->serial, sizeof(out->serial)) >= 0)
+        out->fields|= MIRISDR_FW_PATCH_SERIAL;
+
+    return out->fields ? 0 : -1;
+}
+
+int mirisdr_fw_patch (uint8_t *image, uint32_t size, const mirisdr_fw_patch_t *p)
+{
+    if (!image || !p) return -1;
+
+    if ((p->fields & MIRISDR_FW_PATCH_IDS)
+        && mirisdr_fw_set_ids(image, size, p->vid, p->pid)) return -1;
+
+    if ((p->fields & MIRISDR_FW_PATCH_SERIAL)
+        && mirisdr_fw_set_serial(image, size, p->serial)) return -1;
 
     return 0;
 }
@@ -254,12 +352,11 @@ static int mirisdr_fw_ids_wanted (mirisdr_dev_t *p, const mirisdr_open_config_t 
                                   const uint8_t *image, uint32_t size,
                                   uint16_t *vid, uint16_t *pid)
 {
-    int at;
-
-    if (cfg->firmware_ids == MIRISDR_FW_IDS_SET)
+    if ((cfg->firmware_ids == MIRISDR_FW_IDS_SET)
+        && (cfg->firmware_patch.fields & MIRISDR_FW_PATCH_IDS))
     {
-        *vid = cfg->firmware_vid;
-        *pid = cfg->firmware_pid;
+        *vid = cfg->firmware_patch.vid;
+        *pid = cfg->firmware_patch.pid;
 
         return 1;
     }
@@ -267,12 +364,40 @@ static int mirisdr_fw_ids_wanted (mirisdr_dev_t *p, const mirisdr_open_config_t 
     if (cfg->firmware_ids == MIRISDR_FW_IDS_DEVICE)
         return (mirisdr_fw_ids_of(p, vid, pid) < 0) ? -1 : 1;
 
-    if ((at = mirisdr_fw_descriptor(image, size)) < 0) return 0;
+    return mirisdr_fw_get_ids(image, size, vid, pid) ? 0 : 1;
+}
 
-    *vid = (uint16_t) (image[at + 8] | (image[at + 9] << 8));
-    *pid = (uint16_t) (image[at + 10] | (image[at + 11] << 8));
+/* The same three ways the ids are chosen, since a serial is part of the identity
+   the image carries.  Read before any reboot: the ROM declares none. */
+static int mirisdr_fw_serial_wanted (mirisdr_dev_t *p, const mirisdr_open_config_t *cfg,
+                                     const uint8_t *image, uint32_t size, char *out, int len)
+{
+    if (mirisdr_fw_serial_at(image, size) < 0) return 0;
 
-    return 1;
+    if ((cfg->firmware_ids == MIRISDR_FW_IDS_SET)
+        && (cfg->firmware_patch.fields & MIRISDR_FW_PATCH_SERIAL))
+    {
+        if ((int) strlen(cfg->firmware_patch.serial) >= len) return -1;
+
+        strcpy(out, cfg->firmware_patch.serial);
+
+        return 1;
+    }
+
+    if ((cfg->firmware_ids == MIRISDR_FW_IDS_DEVICE)
+        && (mirisdr_get_serial(p, out, len) > 0)) return 1;
+
+    return (mirisdr_fw_get_serial(image, size, out, len) < 0) ? 0 : 1;
+}
+
+static int mirisdr_fw_serial_ok (mirisdr_dev_t *p, int have, const char *want)
+{
+    char now[MIRISDR_FW_SERIAL_MAX + 1];
+
+    if (!have) return 1;
+    if (mirisdr_get_serial(p, now, sizeof(now)) < 0) return 0;
+
+    return !strcmp(now, want);
 }
 
 static int mirisdr_fw_ids_ok (mirisdr_dev_t *p, int have, uint16_t vid, uint16_t pid)
@@ -321,13 +446,23 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
     mirisdr_fw_path_t path;
     uint32_t index, size, at;
     uint16_t vid = 0, pid = 0;
-    int have_ids = 0;
+    char serial[MIRISDR_FW_SERIAL_MAX + 1] = "";
+    int have_ids = 0, have_serial = 0;
     int r = -1;
 
     if (!out || !cfg) return -1;
 
     index = at = cfg->index;
     path.valid = 0;
+
+    if (cfg->serial && (cfg->fd < 0))
+    {
+        int found = mirisdr_get_index_by_serial(cfg->serial);
+
+        if (found < 0) return -1;
+
+        index = at = (uint32_t) found;
+    }
 
     image = cfg->firmware;
     size = cfg->firmware_size;
@@ -352,10 +487,15 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
     {
         if ((have_ids = mirisdr_fw_ids_wanted(dev, cfg, work, size, &vid, &pid)) < 0) goto out;
         if (have_ids && (mirisdr_fw_set_ids(work, size, vid, pid) < 0)) goto out;
+
+        if ((have_serial = mirisdr_fw_serial_wanted(dev, cfg, work, size, serial,
+                                                    sizeof(serial))) < 0) goto out;
+        if (have_serial && (mirisdr_fw_set_serial(work, size, serial) < 0)) goto out;
     }
 
     if (cfg->keep_running || !image || !size
-        || (mirisdr_fw_running(dev, work, size) && mirisdr_fw_ids_ok(dev, have_ids, vid, pid)))
+        || (mirisdr_fw_running(dev, work, size) && mirisdr_fw_ids_ok(dev, have_ids, vid, pid)
+            && mirisdr_fw_serial_ok(dev, have_serial, serial)))
     {
         *out = dev;
         dev = NULL;
@@ -366,13 +506,13 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
 
     if (mirisdr_running_from_rom(dev) == 0)
     {
-        if (mirisdr_reboot(dev, 0) != MIRISDR_REOPEN) goto out;
+        if (mirisdr_reboot(dev, MIRISDR_BOOT_IGNORE_EEPROM) != MIRISDR_REOPEN) goto out;
 
         if ((r = mirisdr_fw_recycle(&dev, cfg, &path, &at, index))) goto out;
 
-        /* Booting to the ROM landed on firmware, so the ROM handed off to an
-           image in the SPI flash.  RAM cannot be written under it, but what
-           booted is usable, so hand that back instead of failing. */
+        /* Booting to the ROM landed on firmware even with the strap held wrong,
+           so the handover is not the EEPROM's doing.  RAM cannot be written
+           under it, but what booted is usable, so hand that back. */
         if (mirisdr_running_from_rom(dev) != 1)
         {
             fprintf(stderr, "not loading: the device boots firmware from its SPI flash\n");
@@ -392,11 +532,12 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
         goto out;
     }
 
-    if (mirisdr_reboot(dev, 1) != MIRISDR_REOPEN) goto out;
+    if (mirisdr_reboot(dev, MIRISDR_BOOT_RAM) != MIRISDR_REOPEN) goto out;
 
     if ((r = mirisdr_fw_recycle(&dev, cfg, &path, &at, index))) goto out;
 
-    if (mirisdr_fw_running(dev, work, size) && mirisdr_fw_ids_ok(dev, have_ids, vid, pid))
+    if (mirisdr_fw_running(dev, work, size) && mirisdr_fw_ids_ok(dev, have_ids, vid, pid)
+            && mirisdr_fw_serial_ok(dev, have_serial, serial))
     {
         *out = dev;
         dev = NULL;

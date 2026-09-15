@@ -15,6 +15,8 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+static int mirisdr_ee_ignore (mirisdr_dev_t *p);
+
 #define MIRISDR_MEM_READ_UNIT   4
 #define MIRISDR_MEM_WRITE_CHUNK 64
 
@@ -108,16 +110,24 @@ failed:
 }
 
 /*
- * Reboot the device. Setting from_ram will boot a firmware that is loaded into
- * RAM. Returns MIRISDR_REOPEN on success, since the device leaves the bus and
- * the handle has to be closed and reopened, or -1 if the request failed.
+ * Reboot the device. Returns MIRISDR_REOPEN on success, since the device leaves
+ * the bus and the handle has to be closed and reopened, or -1 if the request failed.
  */
-int mirisdr_reboot (mirisdr_dev_t *p, int from_ram)
+int mirisdr_reboot (mirisdr_dev_t *p, int mode)
 {
     if (!p) goto failed;
     if (!p->dh) goto failed;
 
-    if (libusb_control_transfer(p->dh, 0x40, CMD_RESET, from_ram ? 1 : 0, 0,
+    if (mode == MIRISDR_BOOT_IGNORE_EEPROM)
+    {
+        int held = mirisdr_ee_ignore(p);
+
+        if (held < 0) goto failed;
+        if (!held && (mirisdr_set_gpio_direction(p, 2, 0) < 0)) goto failed;
+    }
+    else if ((mode != MIRISDR_BOOT_RAM) && (mirisdr_set_gpio_direction(p, 2, 0) < 0)) goto failed;
+
+    if (libusb_control_transfer(p->dh, 0x40, CMD_RESET, (mode == MIRISDR_BOOT_RAM) ? 1 : 0, 0,
                                 NULL, 0, CTRL_TIMEOUT) < 0) goto failed;
 
     return MIRISDR_REOPEN;

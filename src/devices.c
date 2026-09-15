@@ -100,6 +100,49 @@ const char *mirisdr_get_device_name (uint32_t index) {
     return "";
 }
 
+static int mirisdr_usb_string (libusb_device_handle *dh, uint8_t at, char *out, int len)
+{
+    if (!at || !dh) return 0;
+
+    return libusb_get_string_descriptor_ascii(dh, at, (unsigned char *) out, len) > 0;
+}
+
+static int mirisdr_device_string (libusb_device *d, uint8_t at, char *out, int len)
+{
+    libusb_device_handle *dh;
+    int got;
+
+    if (!at || libusb_open(d, &dh)) return 0;
+
+    got = mirisdr_usb_string(dh, at, out, len);
+    libusb_close(dh);
+
+    return got;
+}
+
+// because all known SDRplay clones do not have an EEPROM chip with the serial number,
+// use the physical location of the USB port
+static void mirisdr_port_name (libusb_device *d, char *serial)
+{
+    char *cursor = serial;
+
+    cursor+= sprintf(cursor, "%d:", libusb_get_bus_number(d));
+
+#if LIBUSBX_API_VERSION >= 0x01000102
+    {
+        uint8_t usb_path[16];
+        int path_len = libusb_get_port_numbers(d, usb_path, sizeof(usb_path));
+        int u;
+
+        if (path_len == LIBUSB_ERROR_OVERFLOW) path_len = sizeof(usb_path); // array too small
+
+        for (u = 0; u < path_len; u++) cursor+= sprintf(cursor, "%d.", usb_path[u]);
+    }
+#endif
+
+    *(cursor - 1) = '\0'; // remove last dot or :
+}
+
 /* vlastní implementace */
 int mirisdr_get_device_usb_strings (uint32_t index, char *manufact, char *product, char *serial) {
     ssize_t i, i_max;
@@ -125,25 +168,8 @@ int mirisdr_get_device_usb_strings (uint32_t index, char *manufact, char *produc
             strcpy(manufact, device->manufacturer);
             strcpy(product, device->product);
 
-            // because all known SDRplay clones do not have an EEPROM chip with the serial number,
-            // use the physical location of the USB port
-
-            char* serial_cursor = serial;
-            serial_cursor += sprintf(serial_cursor, "%d:", libusb_get_bus_number(list[i]));
-
-#if LIBUSBX_API_VERSION >= 0x01000102 
-            uint8_t usb_path[16];
-            int path_len = libusb_get_port_numbers(list[i], usb_path, sizeof(usb_path));
-            if (path_len == LIBUSB_ERROR_OVERFLOW) { // array too small
-                path_len = sizeof(usb_path);
-            }
-
-            for (int u = 0; u < path_len; u++) {
-                serial_cursor += sprintf(serial_cursor, "%d.", usb_path[u]);
-            }
-            
-#endif
-            *(serial_cursor - 1) = '\0'; // remove last dot or :
+            if (!mirisdr_device_string(list[i], dd.iSerialNumber, serial, 256))
+                mirisdr_port_name(list[i], serial);
 
             libusb_free_device_list(list, 1);
             libusb_exit(ctx);
@@ -159,4 +185,22 @@ int mirisdr_get_device_usb_strings (uint32_t index, char *manufact, char *produc
     libusb_exit(ctx);
 
     return -1;
+}
+
+int mirisdr_get_index_by_serial (const char *serial)
+{
+    char manufact[256], product[256], have[256];
+    uint32_t i, i_max;
+
+    if (!serial) return -1;
+
+    i_max = mirisdr_get_device_count();
+
+    for (i = 0; i < i_max; i++)
+    {
+        if (mirisdr_get_device_usb_strings(i, manufact, product, have)) continue;
+        if (!strcmp(have, serial)) return (int) i;
+    }
+
+    return -2;
 }
