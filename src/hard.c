@@ -195,13 +195,39 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 	 * 		 where you can not switch back rate, as well as setting a lower frequency than 571,429 SPS
 	 * 		 because it will be less than N 2, which is not an acceptable condition.
 	 */
-	for (i = 4; i < 16; i += 2)
+	/* Put the VCO in the middle of its range rather than just over the floor, so 
+     * chips with a slightly higher minimum VCO frequency also lock. */
 	{
-		vco = (uint64_t) pll_rate * i * 12;
+		uint64_t want = (MIRISDR_VCO_MIN + MIRISDR_VCO_MAX) / 2;
+		uint64_t best = 0, closest = 0, under = 0, under_vco = 0;
 
-		if (vco >= 202000000UL) {
-			break;
+		for (i = 4; i <= 16; i += 2)
+		{
+			uint64_t v = (uint64_t) pll_rate * i * 12, away;
+
+			if (v > MIRISDR_VCO_MAX) break;
+
+			if (v < MIRISDR_VCO_MIN)
+			{
+				under = i;
+				under_vco = v;
+				continue;
+			}
+
+			away = (v > want) ? (v - want) : (want - v);
+
+			if (!best || (away < closest))
+			{
+				best = i;
+				closest = away;
+				vco = v;
+			}
 		}
+
+		/* only reachable below the supported rate range, where nothing fits */
+		if (!best) { best = under ? under : 4; vco = under ? under_vco : (uint64_t) pll_rate * 48; }
+
+		i = best;
 	}
 
 	/* z předchozího výpočtu je N minimálně 4 */
