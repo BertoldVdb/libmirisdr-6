@@ -31,6 +31,24 @@ static int mirisdr_format_fits(mirisdr_dev_t *p, uint32_t spp, uint32_t cap)
 	return ((uint64_t) p->rate * 1024 / spp) <= cap;
 }
 
+/* samples in each 1 kB block, which sets what a rate costs the engine */
+static uint32_t mirisdr_format_spp (int format)
+{
+	switch (format)
+	{
+	case MIRISDR_FORMAT_252_S16:      return 252;
+	case MIRISDR_FORMAT_336_S16:      return 336;
+	case MIRISDR_FORMAT_384_S16:      return 384;
+	case MIRISDR_FORMAT_504_S16:
+	case MIRISDR_FORMAT_504_S8:
+	case MIRISDR_FORMAT_504_REAL_S16: return 504;
+	case MIRISDR_FORMAT_672_REAL_S16: return 672;
+	case MIRISDR_FORMAT_768_REAL_S16: return 768;
+	}
+
+	return 252;
+}
+
 /* Every divider whose VCO is in range, nearest the middle first. */
 static unsigned mirisdr_pll_candidates (uint32_t pll_rate, uint64_t *out)
 {
@@ -142,6 +160,36 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 			        cap);
 	}
 
+	/* The format is settled now, so the engine's own limit can be applied.  It
+	   has to happen here: after the automatic choice, which needs the rate, and
+	   before the switch below writes register 7, since clamping can drop the
+	   rate back under the decimation threshold and change that bit. */
+	{
+		uint64_t spp  = mirisdr_format_spp(p->format);
+		uint64_t most = MIRISDR_ENGINE_BLOCK_RATE * spp / 1024;
+
+		if ((uint64_t) p->rate > most)
+		{
+			fprintf(stderr, "rate %u needs %lu B/s of blocks, more than the engine's %lu, using %lu\n",
+			        p->rate,
+			        (long unsigned int) ((uint64_t) p->rate * 1024 / spp),
+			        (long unsigned int) MIRISDR_ENGINE_BLOCK_RATE,
+			        (long unsigned int) most);
+
+			p->rate = (uint32_t) most;
+
+			/* the clamp only ever lowers it, which can turn decimation off */
+			decim = ((p->decimation_bypass == MIRISDR_DECIMATION_BYPASS_ON) ||
+			         ((p->decimation_bypass == MIRISDR_DECIMATION_BYPASS_AUTO) &&
+			          (p->rate > MIRISDR_DECIMATION_AUTO_RATE))) ? (1 << 3) : 0;
+
+			if (p->rate < (decim ? 2 * MIRISDR_SAMPLE_RATE_MIN : MIRISDR_SAMPLE_RATE_MIN))
+				p->rate = decim ? 2 * MIRISDR_SAMPLE_RATE_MIN : MIRISDR_SAMPLE_RATE_MIN;
+
+			pll_rate = decim ? p->rate / 2 : p->rate;
+		}
+	}
+
 	/* typ forámtu a šířka pásma */
 	/* format type and bandwidth */
 	switch (p->format)
@@ -228,7 +276,13 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 	 */
 	ncand = mirisdr_pll_candidates(pll_rate, cand);
 
-	i = ncand ? cand[0] : 4;
+	if (!ncand)
+	{
+		fprintf(stderr, "no PLL divider puts the VCO in range for %u sps\n", p->rate);
+		goto failed;
+	}
+
+	i = cand[0];
 	vco = (uint64_t) pll_rate * i * 12;
 
 	/* z předchozího výpočtu je N minimálně 4 */

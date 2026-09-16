@@ -607,6 +607,7 @@ int mirisdr_read_async (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx,
     memset(&p->stats, 0, sizeof(p->stats));
     p->sync_run = 0;
     p->addr_valid = 0;
+    p->sync_ready = 0;
     /* použití správného rozhraní které zasílá data - není kritické */
     switch (p->transfer) {
     case MIRISDR_TRANSFER_BULK:

@@ -15,12 +15,20 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-/* limits of the sampling PLL */
+/* The VCO can go >720MHz, but the PLL can't do this reliably: the highest
+ * divider is n=15, and adding a fraction to it will request n=16 for a fraction
+ * of the time. This wraps and pulls the VCO in the other direction.
+ * Any rate with n=15 and a fraction diverges from the requested rate. */
 #define MIRISDR_VCO_MIN                 202000000ULL
-#define MIRISDR_VCO_MAX                 767999999ULL
+#define MIRISDR_VCO_MAX                 720000000ULL
 
 #define MIRISDR_SAMPLE_RATE_MIN         1300000
 #define MIRISDR_SAMPLE_RATE_MAX         15000000
+
+/* Verification on a large fleet of devices has shown there is an exact internal
+ * bandwidth limit of 56.20MB/s. If this is exceeded the samples and headers
+ * are no longer written to the right location, making the stream unusable. */
+#define MIRISDR_ENGINE_BLOCK_RATE       56000000ULL
 
 /* rate above which AUTO bypasses the decimator */
 #define MIRISDR_DECIMATION_AUTO_RATE    14500000

@@ -119,6 +119,7 @@ struct mirisdr_dev {
     int                 bias;
     int                 reg8;
     int                 fw_ours;
+    int                 sync_ready;     /* the sync path has started the stream */
     int64_t             pps_base;       /* stream index where the packet count was zeroed */
     uint64_t            pps_lost0;
     uint8_t             pps_edge0;

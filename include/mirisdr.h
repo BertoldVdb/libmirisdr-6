@@ -147,6 +147,10 @@ MIRISDR_API int mirisdr_get_stream_stats (mirisdr_dev_t *p, mirisdr_stream_stats
 MIRISDR_API int mirisdr_streaming_start (mirisdr_dev_t *p);             /* extra */
 MIRISDR_API int mirisdr_streaming_stop (mirisdr_dev_t *p);              /* extra */
 
+/* Stall the streaming endpoint or clear it, when in bulk mode.
+ * This is mostly for testing. */
+MIRISDR_API int mirisdr_set_endpoint_halt (mirisdr_dev_t *p, int on);   /* extra */
+
 /* frequency */
 MIRISDR_API int mirisdr_set_center_freq (mirisdr_dev_t *p, uint32_t freq);
 MIRISDR_API uint32_t mirisdr_get_center_freq (mirisdr_dev_t *p);

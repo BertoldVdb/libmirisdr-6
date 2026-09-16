@@ -27,6 +27,24 @@ failed:
     return -1;
 }
 
+/* SET_FEATURE / CLEAR_FEATURE of ENDPOINT_HALT on the stream endpoint */
+int mirisdr_set_endpoint_halt (mirisdr_dev_t *p, int on) {
+    if (!p) goto failed;
+    if (!p->dh) goto failed;
+
+    if (on) {
+        if (libusb_control_transfer(p->dh, 0x02, 3, 0, 0x81, NULL, 0,
+                                    CTRL_TIMEOUT) < 0) goto failed;
+    } else {
+        if (libusb_clear_halt(p->dh, 0x81) < 0) goto failed;
+    }
+
+    return 0;
+
+failed:
+    return -1;
+}
+
 int mirisdr_streaming_stop (mirisdr_dev_t *p) {
     if (!p) goto failed;
     if (!p->dh) goto failed;

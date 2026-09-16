@@ -19,6 +19,16 @@
 int mirisdr_read_sync (mirisdr_dev_t *p, void *buf, int len, int *n_read) {
     if (!p) goto failed;
 
+    if (!p->sync_ready) {
+        if (libusb_set_interface_alt_setting(p->dh, 0, p->alt_setting) < 0) goto failed;
+        if (mirisdr_streaming_start(p) < 0) goto failed;
+
+        memset(&p->stats, 0, sizeof(p->stats));
+        p->sync_run = 0;
+        p->addr_valid = 0;
+        p->sync_ready = 1;
+    }
+
     return libusb_bulk_transfer(p->dh, 0x81, buf, len, n_read, DEFAULT_BULK_TIMEOUT);
 
 failed:
