@@ -580,6 +580,7 @@ int mirisdr_read_async (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx,
     int r, semafor;
     int transfer_failed = 0;
     int cancel_tries = 0;
+    int stop_asked = 0;
     struct timeval tv = {1, 0};
 
     if (!p) goto failed;
@@ -690,6 +691,13 @@ int mirisdr_read_async (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx,
             if (!p->xfer) {
                 p->async_status = MIRISDR_ASYNC_INACTIVE;
                 break;
+            }
+
+            /* Ask the firmware to stop while the transfers are still queued,
+             * so the engine can drain */
+            if (!stop_asked) {
+                mirisdr_streaming_stop(p);
+                stop_asked = 1;
             }
 
             /* A stalled endpoint may never return its transfers, so do not wait

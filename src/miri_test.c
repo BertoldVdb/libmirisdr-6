@@ -1370,6 +1370,39 @@ static void chars_probe_ex (double n, struct chars_pt *o, int light)
 
 static void chars_probe (double n, struct chars_pt *o) { chars_probe_ex(n, o, 0); }
 
+/* Register 0 bits 0-5 force the capacitance the band search would otherwise
+   pick: bit 0 enables, 1-4 choose, bit 5 opens the loop and fixes tune voltage
+   (close?) to the reference used to determine when the next band should be used. */
+#define CHARS_FORCE(k)   (0x000200UL | 0x01UL | ((uint32_t)(k) << 1))
+#define CHARS_OPEN(k)    (CHARS_FORCE(k) | 0x20UL)
+
+static double chars_at_mhz (double mhz)
+{
+    double x = mhz / 48.0;
+
+    chars_word((unsigned) x, x - (unsigned) x);
+    usleep(220000);
+
+    return chars_vco();
+}
+
+/* walk from a frequency inside the band until it stops tracking */
+static double chars_edge_walk (double from, double step)
+{
+    double last = from, f = from;
+    int i;
+
+    for (i = 0; i < 24; i++)
+    {
+        f += step;
+        if ((f < 150.0) || (f > 800.0)) break;
+        if (fabs(chars_at_mhz(f) - f) > 12.0) break;
+        last = f;
+    }
+
+    return last;
+}
+
 static tres_t t_pll_characterise (void)
 {
     double lo_seen[16], hi_seen[16];
@@ -1434,6 +1467,45 @@ static tres_t t_pll_characterise (void)
                i, lo_seen[i], hi_seen[i], hi_seen[i] - lo_seen[i]);
         seen_any++;
     }
+
+    /* force each band and see its full range */
+    printf("\n     each band forced, against the span the search gives it\n");
+    printf("     (the search column is only as good as --step; use 1 to compare widths)\n\n");
+    printf("     band   search assigns      forced reaches      open loop\n");
+
+    for (i = 15; i >= 0; i--)
+    {
+        struct chars_pt p;
+        double f0, blo, bhi;
+
+        if (!lo_seen[i]) continue;
+
+        /* open loop first: one frequency, and it is inside the band */
+        mirisdr_write_reg(dev, 0x00, CHARS_OPEN(i));
+        usleep(250000);
+        chars_probe_ex(10.0, &p, 0);
+        f0 = p.got;
+
+        if ((f0 < 150.0) || (f0 > 800.0)) {
+            printf("     %X      %6.1f to %6.1f    open loop unusable\n",
+                   i, lo_seen[i], hi_seen[i]);
+            continue;
+        }
+
+        /* closed loop with the band still forced: walk out both ways */
+        mirisdr_write_reg(dev, 0x00, CHARS_FORCE(i));
+        usleep(250000);
+
+        blo = chars_edge_walk(f0, -12.0);
+        bhi = chars_edge_walk(f0, +12.0);
+
+        printf("     %X      %6.1f to %6.1f    %6.1f to %6.1f    %6.1f  (%.0f vs %.0f wide)\n",
+               i, lo_seen[i], hi_seen[i], blo, bhi, f0,
+               bhi - blo, hi_seen[i] - lo_seen[i]);
+    }
+
+    mirisdr_write_reg(dev, 0x00, 0x000200);
+    usleep(200000);
 
     printf("\n     locks from %.1f MHz up to at least %.1f, the top of this sweep\n",
            lock_lo, lock_hi);
@@ -1531,15 +1603,22 @@ static int chars_restamp (uint32_t rate)
     return (chars_stamps() == 4) ? 0 : -1;
 }
 
+/* The library clamps the rate to the engine's byte ceiling, which is what
+   this test is trying to measure, so we have to program the PLL here */
 static int chars_stamped_at (uint32_t rate)
 {
-    int n;
+    double vco = (double) rate * 48.0;
+    uint32_t n = (uint32_t) (vco / 48000000.0);
+    uint32_t fr = (uint32_t) ((vco / 48000000.0 - n) * 2097152.0);
+    int got;
 
-    if (mirisdr_set_sample_rate(dev, rate) < 0) return -1;
+    if (mirisdr_write_reg(dev, 0x04, fr & 0xFFFFF) < 0) return -1;
+    if (mirisdr_write_reg(dev, 0x03, 0x1D007 | (n << 8) | ((fr & 0x100000) ? 0x80 : 0)) < 0) return -1;
+
     usleep(350000);
-    n = chars_stamps();
+    got = chars_stamps();
 
-    return (n < 0) ? -1 : (n == 4);
+    return (got < 0) ? -1 : (got == 4);
 }
 
 /* walk up from lo until the stamps break, in `stepsize` increments */
@@ -1581,7 +1660,10 @@ static tres_t t_engine_ceiling (void)
     if (!coarse_good)  { say("no clean rate found at all"); return T_FAIL; }
     if (!coarse_bad)   { say("still clean at 15 Msps, the edge is above the clamp"); return T_FAIL; }
 
-    if (chars_restamp(coarse_good) < 0) { say("could not restamp for the fine pass"); return T_FAIL; }
+    if ((chars_restamp(coarse_good) < 0) && (chars_restamp(coarse_good) < 0)) {
+        say("could not restamp for the fine pass");
+        return T_FAIL;
+    }
 
     fine_good = chars_walk(coarse_good, coarse_bad, 10000, &fine_bad);
     if (!fine_good) { say("the fine pass found nothing clean"); return T_FAIL; }
