@@ -147,6 +147,24 @@ static uint32_t mirisdr_burst(mirisdr_dev_t *p)
 	}
 }
 
+static int mirisdr_async_drain (mirisdr_dev_t *p, int rounds) {
+    size_t i;
+    int r;
+    struct timeval tv = {1, 0};
+    p->xfer_draining = 1;
+    while (p->xfer_inflight > 0) {
+        if (rounds-- <= 0) return -1;
+        for (i = 0; i < p->xfer_buf_num; i++)
+            if (p->xfer[i]) libusb_cancel_transfer(p->xfer[i]);
+        if ((r = libusb_handle_events_timeout(p->ctx, &tv)) < 0) {
+            fprintf( stderr, "libusb_handle_events returned: %d\n", r);
+            if (r == LIBUSB_ERROR_INTERRUPTED) continue; /* stray */
+            return -1;
+        }
+    }
+    return 0;
+}
+
 /* volání pro zasílání dat */
 static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
     size_t i;
@@ -156,6 +174,8 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
     uint8_t *samples = p->samples;
 
     if (!p) goto failed;
+    /* one completion per submission, whatever its status */
+    p->xfer_inflight--;
 
     /* zpracujeme pouze kompletní přenos */
     if (xfer->status == LIBUSB_TRANSFER_COMPLETED) {
@@ -314,9 +334,11 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
             goto failed;
         }
 
-        xfer->buffer = raw;
+                xfer->buffer = raw;
 
         if (bytes > 0) mirisdr_feed_async(p, samples, bytes);
+        /* draining: the transfer is done, and should not be reused */
+        if (p->xfer_draining || (p->async_status != MIRISDR_ASYNC_RUNNING)) return;
 
         if (xfer->type == LIBUSB_TRANSFER_TYPE_BULK)
         {
@@ -344,11 +366,12 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
             }else
                 xfer->length = DEFAULT_BULK_BUFFER;
         }
-        /* pokračujeme dalším přenosem */
+                /* pokračujeme dalším přenosem */
         if (libusb_submit_transfer(xfer) < 0) {
             fprintf( stderr, "error re-submitting URB on device %u\n", p->index);
             goto failed;
         }
+        p->xfer_inflight++;
     } else if (xfer->status != LIBUSB_TRANSFER_CANCELLED) {
         fprintf( stderr, "error async transfer status %d on device %u\n", xfer->status, p->index);
         goto failed;
@@ -577,9 +600,8 @@ static int mirisdr_async_free (mirisdr_dev_t *p) {
 /* spuštění async části */
 int mirisdr_read_async (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx, uint32_t num, uint32_t len) {
     size_t i;
-    int r, semafor;
+    int r;
     int transfer_failed = 0;
-    int cancel_tries = 0;
     int stop_asked = 0;
     struct timeval tv = {1, 0};
 
@@ -664,17 +686,19 @@ int mirisdr_read_async (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx,
             goto failed_free;
         }
 
-        r = libusb_submit_transfer(p->xfer[i]);
-
-		if (r < 0) {
-			fprintf(stderr, "Failed to submit transfer %lu reason: %d\n", i, r);
-			goto failed_free;
-		}
+                r = libusb_submit_transfer(p->xfer[i]);
+        if (r < 0) {
+            fprintf(stderr, "Failed to submit transfer %lu reason: %d\n", i, r);
+            /* the ones before it are in flight: get them back first */
+            if (mirisdr_async_drain(p, 5) < 0) goto failed;
+            goto failed_free;
+        }
+        p->xfer_inflight++;
     }
 
     /* spustíme streamování dat */
+    p->xfer_draining = 0;
     mirisdr_streaming_start(p);
-
     p->async_status = MIRISDR_ASYNC_RUNNING;
 
     while (p->async_status != MIRISDR_ASYNC_INACTIVE) {
@@ -706,28 +730,15 @@ int mirisdr_read_async (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx,
              * are still owned by libusb, and freeing an in-flight transfer
              * corrupts memory. libusb_close()/libusb_exit() in mirisdr_close()
              * cleans up from here. */
-            if (++cancel_tries > 5) {
+                        if (mirisdr_async_drain(p, 5) < 0) {
                 fprintf(stderr, "libmirisdr: transfers would not cancel, "
                                 "abandoning them\n");
                 p->async_status = MIRISDR_ASYNC_INACTIVE;
                 return -1;
             }
-
-            /* Wait on what is still in flight */
-            semafor = 1;
-            for (i = 0; i < p->xfer_buf_num; i++) {
-                if (!p->xfer[i]) continue;
-
-                if (libusb_cancel_transfer(p->xfer[i]) == 0) semafor = 0;
-            }
-
-            /* nedošlo k žádnému vynuceném ukončení přenosu, skončíme */
-            if (semafor) {
-                p->async_status = MIRISDR_ASYNC_INACTIVE;
-                /* počkáme na dokončení všech procesů */
-                libusb_handle_events_timeout(p->ctx, &tv);
-                break;
-            }
+            /* every completion is in: nothing of ours is on libusb's list */
+            p->async_status = MIRISDR_ASYNC_INACTIVE;
+            break;
         } else if (p->async_status == MIRISDR_ASYNC_FAILED) {
             /* Do NOT free the transfers here: on this path some of them are
              * still submitted, and libusb_free_transfer() on an in-flight
@@ -773,15 +784,16 @@ int mirisdr_start_async (mirisdr_dev_t *p) {
     /* nedovolíme jiný stav než pozastavený */
     if (p->async_status != MIRISDR_ASYNC_PAUSED) goto failed;
 
-    /* reset interního bufferu */
+        /* reset interního bufferu */
     p->xfer_out_pos = 0;
+    p->xfer_draining = 0;
 
     for (i = 0; i < p->xfer_buf_num; i++) {
         if (!p->xfer[i]) continue;
-
         if (libusb_submit_transfer(p->xfer[i])< 0) {
             goto failed;
         }
+        p->xfer_inflight++;
     }
 
     if (p->async_status != MIRISDR_ASYNC_PAUSED) goto failed;
@@ -798,9 +810,6 @@ failed:
 
 /* zastavení streamování */
 int mirisdr_stop_async (mirisdr_dev_t *p) {
-    size_t i;
-    int r, semafor;
-    struct timeval tv = {1, 0};
 
     /* nedovolíme jiný stav než spuštěný */
     if (p->async_status != MIRISDR_ASYNC_RUNNING) goto failed;
@@ -809,27 +818,8 @@ int mirisdr_stop_async (mirisdr_dev_t *p) {
      * fires, and we can't disable the capture engine */
     mirisdr_streaming_stop(p);
 
-    while (p->async_status == MIRISDR_ASYNC_RUNNING) {
-        semafor = 1;
-        for (i = 0; i < p->xfer_buf_num; i++) {
-            if (!p->xfer[i]) continue;
-
-            /* pro isoc režim je completed i v případě chyb */
-            if (p->xfer[i]->status != LIBUSB_TRANSFER_CANCELLED) {
-                libusb_cancel_transfer(p->xfer[i]);
-                semafor = 0;
-            }
-        }
-
-        if (semafor) break;
-
-        /* počkáme na další událost */
-        if ((r = libusb_handle_events_timeout(p->ctx, &tv)) < 0) {
-            fprintf( stderr, "libusb_handle_events returned: %d\n", r);
-            if (r == LIBUSB_ERROR_INTERRUPTED) continue; /* stray */
-            goto failed;
-        }
-    }
+        /* every transfer back from libusb before the pause is declared */
+    if (mirisdr_async_drain(p, 10) < 0) goto failed;
 
     if (p->async_status != MIRISDR_ASYNC_RUNNING) goto failed;
 
