@@ -103,6 +103,8 @@ void usage(void)
         "\t    mixbuffer: 0, 6, 12, 18, 24\n"
         "\t    baseband: 0 - 59\n"
 		"\t[-b output_block_size (default: 16 * 16384)]\n"
+		"\t[-q swap I/Q (default: off)]\n"
+		"\t    in the real modes this chooses which converter is digitised\n"
 		"\t[-S force sync output (default: async)]\n"
 		"\tfilename (a '-' dumps samples to stdout)\n\n");
 #endif
@@ -167,6 +169,7 @@ int main(int argc, char **argv)
     int gain_mixer = 0, gain_lna = 0, gain_mb = 0, gain_bb = 0;
     int gain_one = 1;
 	int sync_mode = 0;
+	int swap_iq = 0;
 	FILE *file;
 	uint8_t *buffer;
 	uint32_t format = 0;
@@ -188,7 +191,7 @@ int main(int argc, char **argv)
 	int intval;
 
 #if !defined (_WIN32) || defined(__MINGW32__)
-	while ((opt = getopt(argc, argv, "b:d:D:T:e:f:g:G:i:m:s:w:S::")) != -1) {
+	while ((opt = getopt(argc, argv, "b:d:D:T:e:f:g:G:i:m:qs:w:S::")) != -1) {
 		switch (opt) {
 		case 'b':
 			out_block_size = (uint32_t)atof(optarg);
@@ -267,6 +270,9 @@ int main(int argc, char **argv)
 				format = 7;}
 			if (strcmp("autor", optarg) == 0) {
 				format = 8;}
+			break;
+		case 'q':
+			swap_iq = 1;
 			break;
 		case 's':
 			samp_rate = (uint32_t)atof(optarg);
@@ -402,6 +408,12 @@ int main(int argc, char **argv)
 		mirisdr_set_sample_format(dev, "AUTO");
 		break;
 	}
+
+	/* The real modes digitise one converter, so this picks which one. In the
+	   complex modes it swaps I and Q. */
+	if (mirisdr_set_swap_iq(dev, swap_iq) < 0)
+		exit(1);
+	fprintf(stderr, "I/Q swap is %s.\n", mirisdr_get_swap_iq(dev) ? "on" : "off");
 
 	/* Set USB transfer type */
 	if (mirisdr_set_transfer(dev, transfer_name) < 0)

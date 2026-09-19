@@ -76,6 +76,8 @@ static double now (void)
 static pthread_t        pump_thread;
 static int              pump_running;
 static volatile int     pump_bytes;
+static volatile int     pump_result;   /* what read_async returned: -1 means it
+                                          gave up on its transfers */
 
 static void stream_cb (unsigned char *buf, uint32_t len, void *ctx)
 {
@@ -86,7 +88,7 @@ static void stream_cb (unsigned char *buf, uint32_t len, void *ctx)
 static void *pump_main (void *arg)
 {
     (void) arg;
-    mirisdr_read_async(dev, stream_cb, NULL, 8, 65536);
+    pump_result = mirisdr_read_async(dev, stream_cb, NULL, 8, 65536);
     return NULL;
 }
 
@@ -95,6 +97,7 @@ static int pump_start (void)
     if (pump_running) return 0;
 
     pump_bytes = 0;
+    pump_result = 0;
 
     if (mirisdr_reset_buffer(dev) < 0) return -1;
     if (pthread_create(&pump_thread, NULL, pump_main, NULL)) return -1;
@@ -678,6 +681,48 @@ static tres_t t_stall_recovery (void)
     return (ok == 5) ? T_PASS : T_FAIL;
 }
 
+static tres_t t_stall_clear_then_cancel (void)
+{
+    mirisdr_stream_stats_t d;
+    double sps, t0, dt;
+    int i, clean = 0;
+
+    if (!fw_ours) { say("needs our firmware, which implements the halt"); return T_SKIP; }
+
+    for (i = 0; i < 5; i++)
+    {
+        if (stream_setup("BULK", "504_S8", 4000000) < 0) return T_FAIL;
+
+        if (mirisdr_set_endpoint_halt(dev, 1) < 0) {
+            say("the device refused to stall its endpoint");
+            return T_SKIP;
+        }
+
+        usleep(120000);
+
+        if (mirisdr_set_endpoint_halt(dev, 0) < 0) { say("the stall would not clear"); return T_FAIL; }
+
+        t0 = now();
+        pump_stop();
+        dt = now() - t0;
+
+        if (dt < 3.5) clean++;
+        else note("attempt %d took %.1f s to cancel", i + 1, dt);
+    }
+
+    /* and it has to still stream without being reopened */
+    if (stream_setup("BULK", "504_S8", 4000000) < 0) {
+        say("no stream after %d unstalled cancels", 5);
+        return T_FAIL;
+    }
+
+    sps = stream_rate(0.4, &d);
+
+    say("%d of 5 cancelled without giving up, then %.0f sps", clean, sps);
+
+    return (clean == 5 && within(sps, 4000000, 0.05)) ? T_PASS : T_FAIL;
+}
+
 /* Header bytes 8-11 are marked at startup; read them back through the remap */
 static tres_t t_header_stamp (void)
 {
@@ -1063,14 +1108,19 @@ static tres_t t_tuning (void)
 
 static tres_t t_gain (void)
 {
-    int gains[64], n, i, before;
+    int gains[256], n, i, before;
 
     pump_stop();
 
     before = mirisdr_get_tuner_gain(dev);
-    n = mirisdr_get_tuner_gains(dev, gains);
+
+    n = mirisdr_get_tuner_gains(dev, NULL);
 
     if (n <= 0) { say("the tuner reports no gain steps"); return T_FAIL; }
+    if (n > (int)(sizeof gains / sizeof gains[0]))
+    { say("%d gain steps, more than this test holds", n); return T_FAIL; }
+
+    n = mirisdr_get_tuner_gains(dev, gains);
 
     for (i = 0; i < n; i += (n > 8 ? n / 8 : 1))
     {
@@ -1709,6 +1759,7 @@ static const struct {
     { "fixes",    "rate changes keep the stream", t_rate_changes      },
     { "fixes",    "repeated stop and start",    t_stop_start          },
     { "fixes",    "stall and clear recovers",   t_stall_recovery      },
+    { "fixes",    "unstall before cancel",      t_stall_clear_then_cancel },
     { "fixes",    "header stamp present",       t_header_stamp        },
     { "fixes",    "no false grid shifts",       t_no_false_resync     },
     { "fixes",    "usb reset recovers",         t_usb_reset           },

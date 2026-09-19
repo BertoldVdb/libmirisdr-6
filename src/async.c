@@ -713,16 +713,12 @@ int mirisdr_read_async (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx,
                 return -1;
             }
 
-            /* ukončíme všechny přenosy */
+            /* Wait on what is still in flight */
             semafor = 1;
             for (i = 0; i < p->xfer_buf_num; i++) {
                 if (!p->xfer[i]) continue;
 
-                /* pro isoc režim je completed i v případě chyb */
-                if (p->xfer[i]->status != LIBUSB_TRANSFER_CANCELLED) {
-                    libusb_cancel_transfer(p->xfer[i]);
-                    semafor = 0;
-                }
+                if (libusb_cancel_transfer(p->xfer[i]) == 0) semafor = 0;
             }
 
             /* nedošlo k žádnému vynuceném ukončení přenosu, skončíme */
