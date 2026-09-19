@@ -95,8 +95,8 @@ MIRISDR_API uint32_t mirisdr_get_sample_rate (mirisdr_dev_t *p);
  *
  * Three modes are available:
  *   "AUTO" (default)  bypass only above 14.5 Msps
- *   "ON"              always bypass (the PLL runs at half the sample rate)
- *   "OFF"             never bypass  (the PLL runs at the sample rate)
+ *   "ON"              always bypass (the PLL runs at the sample rate)
+ *   "OFF"             never bypass  (the PLL runs at twice the sample rate)
  */
 MIRISDR_API int mirisdr_set_decimation_bypass (mirisdr_dev_t *p, const char *v);  /* extra */
 MIRISDR_API const char *mirisdr_get_decimation_bypass (mirisdr_dev_t *p);         /* extra */

@@ -103,6 +103,8 @@ struct mirisdr_dev {
     mirisdr_read_async_cb_t cb;
     void                *cb_ctx;
     size_t              xfer_buf_num;
+    int                 xfer_inflight;  /* transfers submitted and not yet completed */
+    int                 xfer_draining;  /* completions must not resubmit */
     struct libusb_transfer **xfer;
     unsigned char       **xfer_buf;
     int                 xfer_buf_devmem;
