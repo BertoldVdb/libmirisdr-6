@@ -309,11 +309,33 @@ typedef struct mirisdr_pps
 {
 	uint64_t sample;    /* count at low->high edge, in mirisdr_stream_stats_t.index units */
 	uint8_t  edges;
-	int      trusted;   /* no USB interrupt near this capture, ignore sample if 0. Self repairs */
+	int      trusted;   /* nothing was disturbing this capture, ignore sample if 0.
+	                       Self repairs.  What was, if anything, is in guard below */
+	uint8_t  guard;     /* why, if trusted is 0: see MIRISDR_PPS_GUARD_* below */
 	int      gapless;   /* nothing lost since the anchor, ignore sample if 0. Self repairs */
+	uint16_t frame;     /* USB frame the edge fell in, 11 bits, wraps every 2.048 s */
 } mirisdr_pps_t;
 
+/* This field explains the reason why a sample is untrustworthy. Mostly for debug.
+ * Other values (1, 2) mean a USB interrupt happened during capture. */
+#define MIRISDR_PPS_GUARD_NONE      0
+#define MIRISDR_PPS_GUARD_BASE      0xFB    /* the interval opened on the poll
+                                               loop's carry */
+#define MIRISDR_PPS_GUARD_TAIL      0xFC    /* the interval's first SOF fell
+                                               inside the streaming interrupt */
+#define MIRISDR_PPS_GUARD_STRADDLE  0xFD    /* a streaming interrupt opened
+                                               this interval while a SOF was
+                                               between its edge and its latch */
+#define MIRISDR_PPS_GUARD_CARRY     0xFE    /* the device's counter was mid
+                                               carry */
+#define MIRISDR_PPS_GUARD_HELD      0xFF    /* a bit banged UART or I2C
+                                               transfer was running */
+
 MIRISDR_API int mirisdr_enable_pps (mirisdr_dev_t *p, int run); /* extra */
+/* Take the edges from the USB start of frame instead of GPIO_0, syncing
+ * to the USB host clock. The divider divides the 2ms pulse rate (1-255).
+ * Applies on mirisdr_enable_pps. */
+MIRISDR_API int mirisdr_set_pps_source (mirisdr_dev_t *p, int sof, int divider); /* extra */
 MIRISDR_API int mirisdr_get_pps (mirisdr_dev_t *p, mirisdr_pps_t *out); /* extra */
 
 /* I2C master on GPIO_1 (SDA) and GPIO_2 (SCL) */

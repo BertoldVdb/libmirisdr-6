@@ -1056,13 +1056,14 @@ static tres_t t_call_gate (void)
 
     pump_stop();
 
-    if (mirisdr_write_mem(dev, 0x1200, stub, sizeof stub, 0) < 0) { say("could not place the stub"); return T_FAIL; }
+    /* Above the firmware's code, below its xdata at 0x1800 */
+    if (mirisdr_write_mem(dev, 0x1700, stub, sizeof stub, 0) < 0) { say("could not place the stub"); return T_FAIL; }
 
     memset(&regs, 0, sizeof regs);
     regs.r0 = 0x40;
     regs.r1 = 0x0F;
 
-    if (mirisdr_call(dev, 0x1200, &regs) < 0) { say("the call failed"); return T_FAIL; }
+    if (mirisdr_call(dev, 0x1700, &regs) < 0) { say("the call failed"); return T_FAIL; }
 
     if (regs.a != 0x4F)   { say("a came back %02X, wanted 4F", regs.a); return T_FAIL; }
     if (regs.b != 0x5A)   { say("b came back %02X, wanted 5A", regs.b); return T_FAIL; }
