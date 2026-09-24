@@ -156,99 +156,134 @@ int mirisdr_enable_pps (mirisdr_dev_t *p, int run)
     return mirisdr_pps_anchor(p);
 }
 
+/* The PPS_TIME reply. */
+typedef struct {
+    uint32_t full;          /* turns in the last full packet interval        */
+    uint32_t packets;       /* free running packet count                     */
+    uint32_t edge_tick;     /* the edge own tick in its interval             */
+    uint32_t edge_packet;   /* packet count when the edge was latched        */
+    uint8_t  run;           /* 0 once the host stopped, reset or rebooted    */
+    uint8_t  guard;         /* the firmware's verdict on the capture, 0 = clean */
+    uint8_t  edges;         /* edge count, wraps at 256                      */
+    uint8_t  carry;         /* PPS_CARRY_* bits                              */
+    uint16_t frame;         /* USB frame the edge fell in                    */
+    uint8_t  sofs;          /* SOF interrupts in the last full interval      */
+    uint8_t  edge_sof;      /* SOFs before the edge in its interval          */
+    uint32_t first_tick;    /* the interval's first SOF's tick               */
+} mirisdr_pps_time_t;
+
+#define PPS_CARRY_EDGE   1  /* the edge's tick was on the counter's wrap     */
+#define PPS_CARRY_FIRST  2  /* the interval's first SOF's tick was           */
+#define PPS_CARRY_USB    4  /* a USB interrupt ran between the streaming
+                               interrupt and the first SOF                  */
+
+static uint32_t mirisdr_pps_ticks (uint8_t lo, uint8_t hi)
+{
+    return (uint32_t) hi * 256 + ((256 - lo) & 0xFF);
+}
+
+static void mirisdr_pps_unpack (const uint8_t *b, mirisdr_pps_time_t *t)
+{
+    t->full        = mirisdr_pps_ticks(b[0], b[1]);
+    t->packets     = mirisdr_pps_le32(b + 2);
+    t->edge_tick   = mirisdr_pps_ticks(b[6], b[7]);
+    t->edge_packet = mirisdr_pps_le32(b + 8);
+    t->run         = b[12];
+    t->guard       = b[13];
+    t->edges       = b[14];
+    t->carry       = b[15];
+    t->frame       = (uint16_t) b[16] | ((uint16_t) b[17] << 8);
+    t->sofs        = b[20];
+    t->edge_sof    = b[21];
+    t->first_tick  = mirisdr_pps_ticks(b[22], b[23]);
+}
+
 int mirisdr_get_pps (mirisdr_dev_t *p, mirisdr_pps_t *out)
 {
     uint8_t b[PPS_TIME_LEN];
-    uint64_t ticks, first, now, edge, group;
+    mirisdr_pps_time_t t;
+    uint64_t now, edge, group;
     int64_t at;
-    double expect, fullc;
+    double first, expect, fullc, turns;
+    uint8_t wrap;
 
     if (!p || !p->dh || !out || !p->fw_ours || !p->pps_anchor_valid) return -1;
 
     if (libusb_control_transfer(p->dh, 0xC0, CMD_PPS_TIME, 0, 0, b, PPS_TIME_LEN,
                                 CTRL_TIMEOUT) != PPS_TIME_LEN) return -1;
 
-    /* Run flag */
-    if (!b[12]) return -1;
+    mirisdr_pps_unpack(b, &t);
+
+    if (!t.run) return -1;
+
+    /* The firmware's guard is a count, so we clamp to defined value */
+    if (t.guard == 1 || t.guard == 2) t.guard = MIRISDR_PPS_GUARD_USB;
 
     /* The packet count wraps after about thirty hours at the fastest the chip
        streams: track it from the free running half, which is read every time. */
-    now = mirisdr_pps_le32(b + 2);
+    if (t.packets < p->pps_irq_last) p->pps_irq_high++;
+    p->pps_irq_last = t.packets;
 
-    if (now < p->pps_irq_last) p->pps_irq_high++;
-
-    p->pps_irq_last = (uint32_t) now;
-    now|= (uint64_t) p->pps_irq_high << 32;
-
-    edge = mirisdr_pps_le32(b + 8) | ((uint64_t) p->pps_irq_high << 32);
-
+    now  = t.packets     | ((uint64_t) p->pps_irq_high << 32);
+    edge = t.edge_packet | ((uint64_t) p->pps_irq_high << 32);
     if (edge > now) edge-= 0x100000000ULL;      /* latched before the wrap */
 
-    ticks = (uint64_t) b[7] * 256 + ((256 - b[6]) & 0xFF);
-    first = (uint64_t) b[23] * 256 + ((256 - b[22]) & 0xFF);
+    /* Where the edge sits in its interval: on SOF the interval's first SOF
+       plus whole microframes, on GPIO_0 the latch itself, which the poll loop
+       took, so no SOF is involved. */
+    first = t.first_tick;
 
-    /* On GPIO_0 the poll loop latches the edge itself */
     if (!p->pps_src_sof) {
-        first = ticks;
-        b[21] = 0;
-        b[15] = b[6] ? 0 : 3;      /* one tick, so both carry bits track it */
+        first      = t.edge_tick;
+        t.edge_sof = 0;
+        t.carry    = (t.edge_tick & 0xFF) ? 0 : PPS_CARRY_EDGE | PPS_CARRY_FIRST;
     }
 
-    group = (uint64_t) p->addr_step * mirisdr_burst(p);
-
+    group  = (uint64_t) p->addr_step * mirisdr_burst(p);
     expect = p->rate ? (double) group * 1e9 / p->rate / MIRISDR_PPS_TURN_NS : 0;
-    fullc = expect - MIRISDR_PPS_STREAM_TURNS;
+    fullc  = expect - MIRISDR_PPS_STREAM_TURNS;
 
+    /* Validate against 30MHz clock */
+    if (expect > 0
+        && t.full > expect * MIRISDR_PPS_SCALE_LO
+        && t.full < expect * MIRISDR_PPS_SCALE_HI)
     {
-        uint32_t full = (uint32_t) b[1] * 256 + ((256 - b[0]) & 0xFF);
+        /* What one SOF handler costs the loop.  Nothing is placed with it
+           any more - it only says how much a handler is stalling. */
+        double ke = t.sofs ? (fullc - t.full) / t.sofs : 0;
 
-        /* Validate against 30MHz clock */
-        if (expect > 0
-            && full > expect * MIRISDR_PPS_SCALE_LO
-            && full < expect * MIRISDR_PPS_SCALE_HI)
-        {
-            /* What one SOF handler costs the loop.  Nothing is placed with it
-               any more - it only says how much a handler is stalling. */
-            double ke = b[20] ? (fullc - full) / b[20] : 0;
+        p->pps_seen = 1;
 
-            p->pps_seen = 1;
-
-            if (ke > 4.0 && ke < 60.0 && (p->pps_k_min <= 0 || ke < p->pps_k_min))
-                p->pps_k_min = ke;
-        }
+        if (ke > 4.0 && ke < 60.0 && (p->pps_k_min <= 0 || ke < p->pps_k_min))
+            p->pps_k_min = ke;
     }
     if (!p->pps_seen || fullc <= 0) return -1;   /* no interval seen yet */
 
+    wrap = t.edge_sof == 0 ? PPS_CARRY_EDGE : PPS_CARRY_EDGE | PPS_CARRY_FIRST;
 
-    /* A tick whose low byte has just wrapped is 256 turns, 51.2 us, either
-       way: the carry may or may not have run yet, mark as bad */
-    if ((b[15] & (b[21] == 0 ? 1 : 3)) && !b[13]) b[13] = MIRISDR_PPS_GUARD_CARRY;
+    if (!t.guard && (t.carry & wrap))
+        t.guard = MIRISDR_PPS_GUARD_CARRY;
 
-    if (p->pps_src_sof && (double) first >= MIRISDR_PPS_UFRAME_TURNS && !b[13])
-        b[13] = MIRISDR_PPS_GUARD_CARRY;
+    if (!t.guard && p->pps_src_sof && first >= MIRISDR_PPS_UFRAME_TURNS)
+        t.guard = MIRISDR_PPS_GUARD_CARRY;
 
-    /* A USB interrupt between the streaming interrupt and the first SOF */
-    if ((b[15] & 4) && !b[13]) b[13] = 2;
+    if (!t.guard && (t.carry & PPS_CARRY_USB))
+        t.guard = MIRISDR_PPS_GUARD_USB;
 
-    /* The edge landed on the streaming interrupt's tail, or ahead of it.  On
-       SOF that is the first SOF, on GPIO_0 the latch itself. */
-    if ((double) first < MIRISDR_PPS_TAIL_TURNS && !b[13])
-        b[13] = MIRISDR_PPS_GUARD_TAIL;
+    /* The edge landed on the streaming interrupt's tail, or ahead of it. */
+    if (!t.guard && first < MIRISDR_PPS_TAIL_TURNS)
+        t.guard = MIRISDR_PPS_GUARD_TAIL;
 
-    {
-        double turns = (double) first + MIRISDR_PPS_UFRAME_TURNS * b[21]
-                     + MIRISDR_PPS_STREAM_TURNS;
+    turns = first + MIRISDR_PPS_UFRAME_TURNS * t.edge_sof + MIRISDR_PPS_STREAM_TURNS;
 
-        at = p->pps_base + (int64_t) (edge * group)
-           + (int64_t) ((turns * (double) group) / expect);
+    at = p->pps_base + (int64_t) (edge * group)
+       + (int64_t) ((turns * (double) group) / expect);
 
-        out->sample = at < 0 ? 0 : (uint64_t) at;
-    }
-
-    out->edges = b[14];
-    out->trusted = !b[13];
-    out->guard = b[13];
-    out->frame = (uint16_t)b[16] | ((uint16_t)b[17] << 8);
+    out->sample  = at < 0 ? 0 : (uint64_t) at;
+    out->edges   = t.edges;
+    out->trusted = !t.guard;
+    out->guard   = t.guard;
+    out->frame   = t.frame;
 
     if (p->stats.lost != p->pps_lost0)
     {

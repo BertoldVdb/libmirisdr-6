@@ -318,9 +318,13 @@ typedef struct mirisdr_pps
 	uint16_t frame;     /* USB frame the edge fell in, 11 bits, wraps every 2.048 s */
 } mirisdr_pps_t;
 
-/* This field explains the reason why a sample is untrustworthy. Mostly for debug.
- * Other values (1, 2) mean a USB interrupt happened during capture. */
+/* This field explains the reason why a sample is untrustworthy. Mostly for debug. */
 #define MIRISDR_PPS_GUARD_NONE      0
+#define MIRISDR_PPS_GUARD_USB       2       /* a USB interrupt ran within the
+                                               two packet periods before the
+                                               capture, or between the
+                                               streaming interrupt and the
+                                               interval's first SOF */
 #define MIRISDR_PPS_GUARD_BASE      0xFB    /* the interval opened on the poll
                                                loop's carry */
 #define MIRISDR_PPS_GUARD_TAIL      0xFC    /* the interval's first SOF fell
