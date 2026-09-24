@@ -141,6 +141,8 @@ int mirisdr_enable_pps (mirisdr_dev_t *p, int run)
 {
     if (!p || !p->dh || !p->fw_ours) return -1;
 
+    if (run && !p->pps_src_sof) mirisdr_set_gpio_direction(p, 0, 0);
+
     p->pps_anchor_valid = 0;
 
     /* bit 1 asks for the anchor, which the next streaming interrupt takes */
@@ -166,6 +168,9 @@ int mirisdr_get_pps (mirisdr_dev_t *p, mirisdr_pps_t *out)
     if (libusb_control_transfer(p->dh, 0xC0, CMD_PPS_TIME, 0, 0, b, PPS_TIME_LEN,
                                 CTRL_TIMEOUT) != PPS_TIME_LEN) return -1;
 
+    /* Run flag */
+    if (!b[12]) return -1;
+
     /* The packet count wraps after about thirty hours at the fastest the chip
        streams: track it from the free running half, which is read every time. */
     now = mirisdr_pps_le32(b + 2);
@@ -181,6 +186,14 @@ int mirisdr_get_pps (mirisdr_dev_t *p, mirisdr_pps_t *out)
 
     ticks = (uint64_t) b[7] * 256 + ((256 - b[6]) & 0xFF);
     first = (uint64_t) b[23] * 256 + ((256 - b[22]) & 0xFF);
+
+    /* On GPIO_0 the poll loop latches the edge itself */
+    if (!p->pps_src_sof) {
+        first = ticks;
+        b[21] = 0;
+        b[15] = b[6] ? 0 : 3;      /* one tick, so both carry bits track it */
+    }
+
     group = (uint64_t) p->addr_step * mirisdr_burst(p);
 
     expect = p->rate ? (double) group * 1e9 / p->rate / MIRISDR_PPS_TURN_NS : 0;
@@ -207,26 +220,18 @@ int mirisdr_get_pps (mirisdr_dev_t *p, mirisdr_pps_t *out)
     if (!p->pps_seen || fullc <= 0) return -1;   /* no interval seen yet */
 
 
-    /* A tick whose low byte has just wrapped is 256 turns, 51.2 us */
-    if (b[21] == 0) {
-        if ((b[15] & 1) && !b[13]) b[13] = MIRISDR_PPS_GUARD_CARRY;
-    }
-    else if (b[15] & 2) {
-        if (b[15] & 1) { if (!b[13]) b[13] = MIRISDR_PPS_GUARD_CARRY; }
-        /* A first SOF lands within one microframe of the streaming interrupt */
-        else if ((double) first + 256.0 < MIRISDR_PPS_UFRAME_TURNS
-                 && (double) ticks - (double) first
-                    - MIRISDR_PPS_UFRAME_TURNS * b[21] > 128.0)
-            first += 256;
-    }
+    /* A tick whose low byte has just wrapped is 256 turns, 51.2 us, either
+       way: the carry may or may not have run yet, mark as bad */
+    if ((b[15] & (b[21] == 0 ? 1 : 3)) && !b[13]) b[13] = MIRISDR_PPS_GUARD_CARRY;
 
-    if ((double) first >= MIRISDR_PPS_UFRAME_TURNS && !b[13])
+    if (p->pps_src_sof && (double) first >= MIRISDR_PPS_UFRAME_TURNS && !b[13])
         b[13] = MIRISDR_PPS_GUARD_CARRY;
 
     /* A USB interrupt between the streaming interrupt and the first SOF */
     if ((b[15] & 4) && !b[13]) b[13] = 2;
 
-    /* The first SOF fell in the streaming interrupt's tail, or ahead of it */
+    /* The edge landed on the streaming interrupt's tail, or ahead of it.  On
+       SOF that is the first SOF, on GPIO_0 the latch itself. */
     if ((double) first < MIRISDR_PPS_TAIL_TURNS && !b[13])
         b[13] = MIRISDR_PPS_GUARD_TAIL;
 

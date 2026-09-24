@@ -15,8 +15,8 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-static int mirisdr_open_raw (mirisdr_dev_t **p, uint32_t index, int external_tuner);
-static int mirisdr_open_fd_raw (mirisdr_dev_t **p, int fd, int external_tuner);
+static int mirisdr_open_raw (mirisdr_dev_t **p, uint32_t index, int external_tuner, uint8_t gpio_in);
+static int mirisdr_open_fd_raw (mirisdr_dev_t **p, int fd, int external_tuner, uint8_t gpio_in);
 
 const uint8_t *mirisdr_default_firmware (uint32_t *size)
 {
@@ -421,8 +421,8 @@ static int mirisdr_fw_ids_ok (mirisdr_dev_t *p, int have, uint16_t vid, uint16_t
 static int mirisdr_fw_open (mirisdr_dev_t **dev, const mirisdr_open_config_t *cfg, uint32_t at)
 {
     uint8_t block[16];
-    int r = (cfg->fd >= 0) ? mirisdr_open_fd_raw(dev, cfg->fd, cfg->external_tuner)
-                           : mirisdr_open_raw(dev, at, cfg->external_tuner);
+    int r = (cfg->fd >= 0) ? mirisdr_open_fd_raw(dev, cfg->fd, cfg->external_tuner, cfg->gpio_input_mask)
+                           : mirisdr_open_raw(dev, at, cfg->external_tuner, cfg->gpio_input_mask);
 
     /* the ROM answers the memory requests too, so anything that needs our own
        firmware asks this rather than assuming */
@@ -457,6 +457,7 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
     uint16_t vid = 0, pid = 0;
     char serial[MIRISDR_FW_SERIAL_MAX + 1] = "";
     int have_ids = 0, have_serial = 0;
+    int from_rom;
     int r = -1;
 
     if (!out || !cfg) return -1;
@@ -515,16 +516,34 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
         goto out;
     }
 
-    if (mirisdr_running_from_rom(dev) == 0)
+    if ((from_rom = mirisdr_running_from_rom(dev)) < 0)
+    {
+        fprintf(stderr, "not loading: cannot tell whether the device runs from ROM or RAM\n");
+
+        r = -1;
+
+        goto out;
+    }
+
+    if (from_rom == 0)
     {
         if (mirisdr_reboot(dev, MIRISDR_BOOT_IGNORE_EEPROM) != MIRISDR_REOPEN) goto out;
 
         if ((r = mirisdr_fw_recycle(&dev, cfg, &path, &at, index))) goto out;
 
+        if ((from_rom = mirisdr_running_from_rom(dev)) < 0)
+        {
+            fprintf(stderr, "not loading: cannot tell what the device booted into\n");
+
+            r = -1;
+
+            goto out;
+        }
+
         /* Booting to the ROM landed on firmware even with the strap held wrong,
            so the handover is not the EEPROM's doing.  RAM cannot be written
            under it, but what booted is usable, so hand that back. */
-        if (mirisdr_running_from_rom(dev) != 1)
+        if (from_rom != 1)
         {
             fprintf(stderr, "not loading: the device boots firmware from its SPI flash\n");
 

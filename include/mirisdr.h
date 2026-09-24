@@ -242,6 +242,8 @@ typedef struct mirisdr_open_config
 	int            keep_running;    /* use running fw */
 	int            external_tuner; /* the board's tuner is not an MSi001, the library
                                     * will not try to control it when set */
+	uint8_t        gpio_input_mask; /* pins to hold as inputs from before the first
+                                     * register 8 write, one bit per pin. */
 } mirisdr_open_config_t;
 
 /* Please fill in the open_config struct using mirisdr_open_config_default(&cfg) and only
