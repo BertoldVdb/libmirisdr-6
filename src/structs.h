@@ -158,6 +158,7 @@ struct mirisdr_dev {
     int                 stats_head;    /* next block starts a delivered buffer */
     int                 sync_run;      /* consecutive bad blocks, drives resync */
     int                 addr_valid;
+    int                 addr_restart;  /* stream start since the last block */
 
     /* dc offset calibration */
     enum {

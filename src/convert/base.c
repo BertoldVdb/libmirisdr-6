@@ -15,6 +15,9 @@ static void mirisdr_addr_next (mirisdr_dev_t *p, const uint8_t *hdr, uint32_t st
 
     if (!p->addr_valid) {
         p->addr_valid = 1;
+    } else if (p->addr_restart && d < -MIRISDR_ADDR_JITTER && addr < 0x10000) {
+        p->addr_restart = 0;
+        mirisdr_ir_resync(p);
     } else if ((d > MIRISDR_ADDR_JITTER) || (d < -MIRISDR_ADDR_JITTER)) {
         fprintf(stderr, "%d samples lost, %08x:%08x\n", d, p->addr, addr);
         p->stats.gaps++;
