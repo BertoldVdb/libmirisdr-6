@@ -129,6 +129,10 @@ struct mirisdr_dev {
     uint32_t            pps_irq_last;
     uint32_t            pps_irq_high;
     uint8_t             pps_anchor_valid;
+    int                 pps_src_sof;    /* watch USB frames, not GPIO_0 */
+    int                 pps_div;        /* latch every Nth edge, 1 to 255 */
+    uint8_t             pps_seen;       /* an interval matching the clock has been seen */
+    double              pps_k_min;      /* least a SOF handler was seen to cost */
     uint16_t            i2c_delay;
     uint32_t            i2c_clock_ns;
     int                 ee_size;        /* what the EEPROM's address reaches, 0 if none */
@@ -154,6 +158,7 @@ struct mirisdr_dev {
     int                 stats_head;    /* next block starts a delivered buffer */
     int                 sync_run;      /* consecutive bad blocks, drives resync */
     int                 addr_valid;
+    int                 addr_restart;  /* stream start since the last block */
 
     /* dc offset calibration */
     enum {

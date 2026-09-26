@@ -21,6 +21,9 @@ int mirisdr_streaming_start (mirisdr_dev_t *p) {
 
     libusb_control_transfer(p->dh, 0x42, 0x43, 0x0, 0x0, NULL, 0, CTRL_TIMEOUT);
 
+    /* Do not report loss on old blocks */
+    p->addr_restart = 1;
+
     return 0;
 
 failed:
