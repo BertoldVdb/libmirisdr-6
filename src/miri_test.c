@@ -1056,13 +1056,14 @@ static tres_t t_call_gate (void)
 
     pump_stop();
 
-    if (mirisdr_write_mem(dev, 0x1200, stub, sizeof stub, 0) < 0) { say("could not place the stub"); return T_FAIL; }
+    /* Above the firmware's code, below its xdata at 0x1800 */
+    if (mirisdr_write_mem(dev, 0x1700, stub, sizeof stub, 0) < 0) { say("could not place the stub"); return T_FAIL; }
 
     memset(&regs, 0, sizeof regs);
     regs.r0 = 0x40;
     regs.r1 = 0x0F;
 
-    if (mirisdr_call(dev, 0x1200, &regs) < 0) { say("the call failed"); return T_FAIL; }
+    if (mirisdr_call(dev, 0x1700, &regs) < 0) { say("the call failed"); return T_FAIL; }
 
     if (regs.a != 0x4F)   { say("a came back %02X, wanted 4F", regs.a); return T_FAIL; }
     if (regs.b != 0x5A)   { say("b came back %02X, wanted 5A", regs.b); return T_FAIL; }
@@ -1279,10 +1280,22 @@ static tres_t t_i2c (void)
     return T_PASS;
 }
 
+static int cmp_i64 (const void *a, const void *b)
+{
+    int64_t x = *(const int64_t *) a, y = *(const int64_t *) b;
+
+    return x < y ? -1 : x > y;
+}
+
 static tres_t t_pps (void)
 {
-    mirisdr_pps_t a, b;
-    double t0;
+    mirisdr_pps_t q;
+    int64_t d[16];
+    uint64_t last = 0;
+    uint8_t edges = 0;
+    int seen = 0, have = 0, n = 0, nd = 0, i;
+    double t0, worst = 0, ppm;
+    int64_t med;
 
     if (!fw_ours) { say("needs our firmware"); return T_SKIP; }
     if (!opt_pps) { say("needs a 1PPS on GPIO_0 and --pps"); return T_SKIP; }
@@ -1291,26 +1304,122 @@ static tres_t t_pps (void)
 
     if (mirisdr_enable_pps(dev, 1) < 0) { say("could not enable"); return T_FAIL; }
 
-    if (mirisdr_get_pps(dev, &a) < 0) { mirisdr_enable_pps(dev, 0); say("could not read"); return T_FAIL; }
+    /* ten pulses, or twelve seconds: the deltas between them are the rate */
+    t0 = now();
+
+    while (now() - t0 < 12.0 && n < 10)
+    {
+        usleep(20000);
+
+        if (mirisdr_get_pps(dev, &q) < 0) continue;
+        if (seen && q.edges == edges) continue;
+
+        n++;
+        note("edge %u at sample %llu, trusted %d, gapless %d, guard %u", q.edges,
+             (unsigned long long) q.sample, q.trusted, q.gapless, q.guard);
+
+        if (q.trusted && q.gapless) {
+            if (have && (uint8_t) (q.edges - edges) == 1 && nd < 16) d[nd++] = (int64_t) (q.sample - last);
+            last = q.sample;
+            have = 1;
+        }
+        else have = 0;
+
+        edges = q.edges;
+        seen = 1;
+    }
+
+    mirisdr_enable_pps(dev, 0);
+
+    if (!n) { say("no edge arrived in 12 s"); return T_FAIL; }
+    if (nd < 2) { say("%d edges, but fewer than three trusted in a row", n); return T_FAIL; }
+
+    qsort(d, nd, sizeof d[0], cmp_i64);
+    med = d[nd / 2];
+
+    for (i = 0; i < nd; i++) {
+        double dev_us = (double) (d[i] - med) / 2.0;    /* 2 Msps: a sample is 0.5 us */
+
+        if (fabs(dev_us) > worst) worst = fabs(dev_us);
+    }
+
+    ppm = ((double) med - 2000000.0) / 2000000.0 * 1e6;
+
+    say("%d edges, %d deltas: median %lld samples a pulse (%+.1f ppm of 1 Hz at 2 Msps), worst %.1f us off",
+        n, nd, (long long) med, ppm, worst);
+
+    /* the device clock against the pulse within 0.1 %, the pulses within 5 us of each other */
+    return (fabs(ppm) < 1000.0 && worst <= 5.0) ? T_PASS : T_FAIL;
+}
+
+static tres_t t_sof (void)
+{
+    static int64_t d[400];
+    mirisdr_pps_t q;
+    uint64_t last = 0;
+    uint8_t edges = 0;
+    int seen = 0, have = 0, n = 0, trusted = 0, nd = 0, i;
+    double t0, worst = 0, ppm;
+    int64_t med;
+
+    if (!fw_ours) { say("needs our firmware"); return T_SKIP; }
+
+    if (stream_setup("BULK", "504_S8", 2000000) < 0) return T_FAIL;
+
+    if (mirisdr_set_pps_source(dev, 1, 25) < 0) { say("could not select the frame source"); return T_FAIL; }
+
+    if (mirisdr_enable_pps(dev, 1) < 0) {
+        mirisdr_set_pps_source(dev, 0, 1);
+        say("could not enable");
+        return T_FAIL;
+    }
 
     t0 = now();
 
     while (now() - t0 < 3.0)
     {
-        usleep(200000);
+        usleep(5000);
 
-        if (mirisdr_get_pps(dev, &b) < 0) continue;
-        if (b.edges != a.edges) break;
+        if (mirisdr_get_pps(dev, &q) < 0) continue;
+        if (seen && q.edges == edges) continue;
+
+        n++;
+
+        if (q.trusted && q.gapless) {
+            trusted++;
+            if (have && (uint8_t) (q.edges - edges) == 1 && nd < 400) d[nd++] = (int64_t) (q.sample - last);
+            last = q.sample;
+            have = 1;
+        }
+        else have = 0;
+
+        edges = q.edges;
+        seen = 1;
     }
 
     mirisdr_enable_pps(dev, 0);
+    mirisdr_set_pps_source(dev, 0, 1);
 
-    if (b.edges == a.edges) { say("no edge arrived in 3 s"); return T_FAIL; }
+    if (n < 40) { say("%d captures in 3 s, expected about 60", n); return T_FAIL; }
+    if (nd < 10) { say("%d captures, only %d trusted", n, trusted); return T_FAIL; }
 
-    say("edge %u at sample %llu, trusted %d, gapless %d", b.edges,
-        (unsigned long long) b.sample, b.trusted, b.gapless);
+    qsort(d, nd, sizeof d[0], cmp_i64);
+    med = d[nd / 2];
 
-    return T_PASS;
+    for (i = 0; i < nd; i++) {
+        double dev_us = (double) (d[i] - med) / 2.0;    /* 2 Msps: a sample is 0.5 us */
+
+        if (fabs(dev_us) > worst) worst = fabs(dev_us);
+    }
+
+    /* 25 odd frames are 50 ms of the host's frame clock */
+    ppm = ((double) med - 100000.0) / 100000.0 * 1e6;
+
+    say("%d captures, %d trusted, %d deltas: median %lld samples per 50 ms (%+.1f ppm of the frame clock), worst %.1f us off",
+        n, trusted, nd, (long long) med, ppm, worst);
+
+    /* a wrong tick wrap would be 51 us, a packet interrupt taken late 2 us */
+    return (fabs(ppm) < 1000.0 && worst <= 5.0) ? T_PASS : T_FAIL;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1788,6 +1897,7 @@ static const struct {
     { "extras",   "uart transmit",              t_uart                },
     { "extras",   "i2c bus",                    t_i2c                 },
     { "extras",   "pps timestamping",           t_pps                 },
+    { "extras",   "sof timestamping",           t_sof                 },
 };
 
 #define NTESTS ((int)(sizeof tests / sizeof tests[0]))

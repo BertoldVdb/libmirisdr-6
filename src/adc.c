@@ -19,11 +19,13 @@ int mirisdr_adc_init (mirisdr_dev_t *p) {
     if (!p) goto failed;
 
     /* inicializace - statická */
-    mirisdr_write_reg(p, 0x08, 0x006080); /* kernel driver */
+    p->reg8 = 0x006080;                   /* kernel driver */
+    update_reg_8(p);
     mirisdr_write_reg(p, 0x05, 0x00000c);
     mirisdr_write_reg(p, 0x00, 0x000200);
     mirisdr_write_reg(p, 0x02, 0x004801);
-    mirisdr_write_reg(p, 0x08, 0x00f380); /* kernel driver */
+    p->reg8 = 0x00f380;                   /* kernel driver */
+    update_reg_8(p);
 
     return 0;
 

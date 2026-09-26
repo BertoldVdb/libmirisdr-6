@@ -50,6 +50,17 @@ void update_reg_8 (mirisdr_dev_t *p)
     mirisdr_write_reg(p, 0x08, val);
 }
 
+void mirisdr_gpio_hold_input (mirisdr_dev_t *p, uint8_t mask)
+{
+    if (!p || !mask) return;
+
+    mask&= (1 << MIRISDR_GPIO_COUNT) - 1;
+
+    p->gpio_mask|= mask;
+    p->gpio_dir&= ~mask;
+    p->gpio_val&= ~mask;
+}
+
 static void mirisdr_gpio_claim (mirisdr_dev_t *p, unsigned int pin)
 {
     if (p->gpio_mask & (1 << pin)) return;
