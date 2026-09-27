@@ -465,7 +465,8 @@ int main (int argc, char **argv)
 
     if ((ee_size = mirisdr_eeprom_size(dev)) <= 0)
     {
-        fprintf(stderr, "  no EEPROM found on this device\n\n");
+        fprintf(stderr, "  no EEPROM found on this device\n"
+                        "  depending on the board design, a power cycle may be needed\n\n");
         mirisdr_close(dev);
 
         return 1;
