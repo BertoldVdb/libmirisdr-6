@@ -527,7 +527,8 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
 
     if (from_rom == 0)
     {
-        if (mirisdr_reboot(dev, MIRISDR_BOOT_IGNORE_EEPROM) != MIRISDR_REOPEN) goto out;
+        /* Try a plain reboot first */
+        if (mirisdr_reboot(dev, MIRISDR_BOOT_ROM) != MIRISDR_REOPEN) goto out;
 
         if ((r = mirisdr_fw_recycle(&dev, cfg, &path, &at, index))) goto out;
 
@@ -538,6 +539,23 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
             r = -1;
 
             goto out;
+        }
+
+        /* Firmware from flash: there is an EEPROM, so try to avoid it */
+        if (from_rom == 0)
+        {
+            if (mirisdr_reboot(dev, MIRISDR_BOOT_IGNORE_EEPROM) != MIRISDR_REOPEN) goto out;
+
+            if ((r = mirisdr_fw_recycle(&dev, cfg, &path, &at, index))) goto out;
+
+            if ((from_rom = mirisdr_running_from_rom(dev)) < 0)
+            {
+                fprintf(stderr, "not loading: cannot tell what the device booted into\n");
+
+                r = -1;
+
+                goto out;
+            }
         }
 
         /* Booting to the ROM landed on firmware even with the strap held wrong,
