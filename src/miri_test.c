@@ -253,6 +253,41 @@ static tres_t t_open_by_serial (void)
     return T_PASS;
 }
 
+static tres_t t_usb_position (void)
+{
+    uint8_t busnum = 0, devnum = 0;
+    char port[32] = "", small[2];
+
+    if (mirisdr_get_usb_position(dev, &busnum, &devnum, port, sizeof port) < 0) {
+        say("could not read the position");
+        return T_FAIL;
+    }
+    say("bus %u device %u, port %s", busnum, devnum, port);
+
+    /* a buffer too small for the path is an error, not a truncated path */
+    if (mirisdr_get_usb_position(dev, NULL, NULL, small, sizeof small) == 0) {
+        say("a 2-byte buffer took the path");
+        return T_FAIL;
+    }
+
+#ifdef __linux__
+    {
+        /* sysfs names the device by the same path: its devnum must agree */
+        char path[96];
+        unsigned sys_devnum = 0;
+        FILE *f;
+
+        snprintf(path, sizeof path, "/sys/bus/usb/devices/%s/devnum", port);
+        if (!(f = fopen(path, "r"))) { say("no %s", path); return T_FAIL; }
+        if (fscanf(f, "%u", &sys_devnum) != 1) sys_devnum = 0;
+        fclose(f);
+        if (sys_devnum != devnum) { say("sysfs says device %u", sys_devnum); return T_FAIL; }
+    }
+#endif
+
+    return T_PASS;
+}
+
 static tres_t t_identity (void)
 {
     uint8_t id[MIRISDR_FW_ID_LEN];
@@ -1850,6 +1885,7 @@ static const struct {
     { "identity", "device enumerates",          t_enumerate           },
     { "identity", "usb descriptors",            t_usb_strings         },
     { "identity", "open by serial",             t_open_by_serial      },
+    { "identity", "usb position",               t_usb_position        },
     { "identity", "firmware identity",          t_identity            },
     { "identity", "built-in firmware default",  t_firmware_precedence },
     { "identity", "firmware image patching",    t_fw_patch_roundtrip  },

@@ -68,6 +68,12 @@ MIRISDR_API int mirisdr_get_usb_strings (mirisdr_dev_t *dev, char *manufact, cha
 MIRISDR_API int mirisdr_get_usb_ids (mirisdr_dev_t *p, uint16_t *vid, uint16_t *pid); /* extra */
 /* The serial the device itself declares, returns 0 if none declared */
 MIRISDR_API int mirisdr_get_serial (mirisdr_dev_t *p, char *out, int len); /* extra */
+/* Where the device sits on the USB: bus number and device address (as lsusb shows them, either may
+   be NULL) and in port (len bytes, may be NULL) the port path as Linux sysfs names the device,
+   "<bus>-<port>[.<port>...]", e.g. "1-1.2"; 32 bytes hold any path. They find the device's host
+   controller (sysfs, or a service listing controllers with their devices, for USB SOF timing).
+   Returns 0, or -1 (no device, or len too small for the path) */
+MIRISDR_API int mirisdr_get_usb_position (mirisdr_dev_t *p, uint8_t *busnum, uint8_t *devnum, char *port, int len); /* extra */
 MIRISDR_API int mirisdr_set_hw_flavour (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_flavour);
 
 /* sync */

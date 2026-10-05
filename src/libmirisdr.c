@@ -428,6 +428,40 @@ int mirisdr_get_serial (mirisdr_dev_t *p, char *out, int len) {
     return (int) strlen(out);
 }
 
+int mirisdr_get_usb_position (mirisdr_dev_t *p, uint8_t *busnum, uint8_t *devnum, char *port, int len) {
+    libusb_device *d;
+    uint8_t bus;
+
+    if (!p || !p->dh) return -1;
+    if (!(d = libusb_get_device(p->dh))) return -1;
+
+    bus = libusb_get_bus_number(d);
+    if (busnum) *busnum = bus;
+    if (devnum) *devnum = libusb_get_device_address(d);
+
+    if (port) {
+#if LIBUSBX_API_VERSION >= 0x01000102
+        /* USB allows 7 tiers of hubs below the root */
+        uint8_t path[7];
+        int n, i, used;
+
+        if (len <= 0) return -1;
+        n = libusb_get_port_numbers(d, path, sizeof(path));
+        if (n < 0) return -1;
+
+        used = snprintf(port, len, "%u", bus);
+        for (i = 0; i < n && used < len; i++)
+            used += snprintf(port + used, len - used, i == 0 ? "-%u" : ".%u", path[i]);
+        if (used >= len) return -1;
+#else
+        /* libusb before 1.0.16 cannot tell the port path */
+        return -1;
+#endif
+    }
+
+    return 0;
+}
+
 int mirisdr_set_hw_flavour (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_flavour) {
     if (!p) goto failed;
 
