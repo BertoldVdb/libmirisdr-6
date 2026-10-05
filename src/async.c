@@ -90,7 +90,7 @@ static uint8_t *samples_realloc(mirisdr_dev_t *p, int size)
         if(p->samples)
             free(p->samples);
         p->samples=malloc(size);
-        p->samples_size=size;
+        p->samples_size=p->samples ? size : 0;
     }
     return p->samples;
 }
@@ -179,18 +179,6 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
 
     /* zpracujeme pouze kompletní přenos */
     if (xfer->status == LIBUSB_TRANSFER_COMPLETED) {
-        unsigned char *raw = xfer->buffer;
-
-        /* From uncoherent memory the format converters read one slow byte at a time,
-           so the block is moved with a wide copy first and they are pointed at
-           that instead. The transfer owns its buffer again below. */
-        if (p->xfer_buf_slow) {
-            memcpy(p->xfer_copy, xfer->buffer,
-                   (xfer->type == LIBUSB_TRANSFER_TYPE_ISOCHRONOUS)
-                   ? (size_t) xfer->length : (size_t) xfer->actual_length);
-            xfer->buffer = p->xfer_copy;
-        }
-
         p->stats_head = 1;
         /*
          * Určení správné velikosti bufferu, tato část musí být provedena
@@ -201,7 +189,7 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
         case LIBUSB_TRANSFER_TYPE_ISOCHRONOUS:
             switch (p->format) {
             case MIRISDR_FORMAT_252_S16:
-                samples = samples_realloc(p, 504 * DEFAULT_ISO_BUFFERS * DEFAULT_ISO_PACKETS * 2);
+                if (!(samples = samples_realloc(p, 504 * DEFAULT_ISO_BUFFERS * DEFAULT_ISO_PACKETS * 2))) goto failed;
                 for (i = 0; i < DEFAULT_ISO_PACKETS; i++) {
                     struct libusb_iso_packet_descriptor *packet = &xfer->iso_packet_desc[i];
 
@@ -215,7 +203,7 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
                 }
                 break;
             case MIRISDR_FORMAT_336_S16:
-                samples = samples_realloc(p, 672 * DEFAULT_ISO_BUFFERS * DEFAULT_ISO_PACKETS * 2);
+                if (!(samples = samples_realloc(p, 672 * DEFAULT_ISO_BUFFERS * DEFAULT_ISO_PACKETS * 2))) goto failed;
                 for (i = 0; i < DEFAULT_ISO_PACKETS; i++) {
                     struct libusb_iso_packet_descriptor *packet = &xfer->iso_packet_desc[i];
                     if ((packet->actual_length > 0) &&
@@ -226,7 +214,7 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
                 }
                 break;
             case MIRISDR_FORMAT_384_S16:
-                samples = samples_realloc(p, 768 * DEFAULT_ISO_BUFFERS * DEFAULT_ISO_PACKETS * 2);
+                if (!(samples = samples_realloc(p, 768 * DEFAULT_ISO_BUFFERS * DEFAULT_ISO_PACKETS * 2))) goto failed;
                 for (i = 0; i < DEFAULT_ISO_PACKETS; i++) {
                     struct libusb_iso_packet_descriptor *packet = &xfer->iso_packet_desc[i];
                     if ((packet->actual_length > 0) &&
@@ -237,7 +225,7 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
                 }
                 break;
             case MIRISDR_FORMAT_504_S16:
-                samples = samples_realloc(p, 1008 * DEFAULT_ISO_BUFFERS * DEFAULT_ISO_PACKETS * 2);
+                if (!(samples = samples_realloc(p, 1008 * DEFAULT_ISO_BUFFERS * DEFAULT_ISO_PACKETS * 2))) goto failed;
                 for (i = 0; i < DEFAULT_ISO_PACKETS; i++) {
                     struct libusb_iso_packet_descriptor *packet = &xfer->iso_packet_desc[i];
                     if ((packet->actual_length > 0) &&
@@ -248,7 +236,7 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
                 }
                 break;
             case MIRISDR_FORMAT_504_S8:
-                samples = samples_realloc(p, 1008 * DEFAULT_ISO_BUFFERS * DEFAULT_ISO_PACKETS);
+                if (!(samples = samples_realloc(p, 1008 * DEFAULT_ISO_BUFFERS * DEFAULT_ISO_PACKETS))) goto failed;
                 for (i = 0; i < DEFAULT_ISO_PACKETS; i++) {
                     struct libusb_iso_packet_descriptor *packet = &xfer->iso_packet_desc[i];
                     if ((packet->actual_length > 0) &&
@@ -259,7 +247,7 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
                 }
                 break;
             case MIRISDR_FORMAT_504_REAL_S16:
-                samples = samples_realloc(p, 504 * DEFAULT_ISO_BUFFERS * DEFAULT_ISO_PACKETS * 2);
+                if (!(samples = samples_realloc(p, 504 * DEFAULT_ISO_BUFFERS * DEFAULT_ISO_PACKETS * 2))) goto failed;
                 for (i = 0; i < DEFAULT_ISO_PACKETS; i++) {
                     struct libusb_iso_packet_descriptor *packet = &xfer->iso_packet_desc[i];
                     if ((packet->actual_length > 0) &&
@@ -270,7 +258,7 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
                 }
                 break;
             case MIRISDR_FORMAT_672_REAL_S16:
-                samples = samples_realloc(p, 672 * DEFAULT_ISO_BUFFERS * DEFAULT_ISO_PACKETS * 2);
+                if (!(samples = samples_realloc(p, 672 * DEFAULT_ISO_BUFFERS * DEFAULT_ISO_PACKETS * 2))) goto failed;
                 for (i = 0; i < DEFAULT_ISO_PACKETS; i++) {
                     struct libusb_iso_packet_descriptor *packet = &xfer->iso_packet_desc[i];
                     if ((packet->actual_length > 0) &&
@@ -281,7 +269,7 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
                 }
                 break;
             case MIRISDR_FORMAT_768_REAL_S16:
-                samples = samples_realloc(p, 768 * DEFAULT_ISO_BUFFERS * DEFAULT_ISO_PACKETS * 2);
+                if (!(samples = samples_realloc(p, 768 * DEFAULT_ISO_BUFFERS * DEFAULT_ISO_PACKETS * 2))) goto failed;
                 for (i = 0; i < DEFAULT_ISO_PACKETS; i++) {
                     struct libusb_iso_packet_descriptor *packet = &xfer->iso_packet_desc[i];
                     if ((packet->actual_length > 0) &&
@@ -296,35 +284,35 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
         case LIBUSB_TRANSFER_TYPE_BULK:
             switch (p->format) {
             case MIRISDR_FORMAT_252_S16:
-                samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024) * 1008);
+                if (!(samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024) * 1008))) goto failed;
                 bytes = mirisdr_samples_convert_252_s16(p, xfer->buffer, samples, xfer->actual_length);
                 break;
             case MIRISDR_FORMAT_336_S16:
-                samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024) * 1344);
+                if (!(samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024) * 1344))) goto failed;
                 bytes = mirisdr_samples_convert_336_s16(p, xfer->buffer, samples, xfer->actual_length);
                 break;
             case MIRISDR_FORMAT_384_S16:
-                samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024) * 1536);
+                if (!(samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024) * 1536))) goto failed;
                 bytes = mirisdr_samples_convert_384_s16(p, xfer->buffer, samples, xfer->actual_length);
                 break;
             case MIRISDR_FORMAT_504_S16:
-                samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024) * 2016);
+                if (!(samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024) * 2016))) goto failed;
                 bytes = mirisdr_samples_convert_504_s16(p, xfer->buffer, samples, xfer->actual_length);
                 break;
             case MIRISDR_FORMAT_504_S8:
-                samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024) * 1008);
+                if (!(samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024) * 1008))) goto failed;
                 bytes = mirisdr_samples_convert_504_s8(p, xfer->buffer, samples, xfer->actual_length);
                 break;
             case MIRISDR_FORMAT_504_REAL_S16:
-                samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024) * 1008);
+                if (!(samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024) * 1008))) goto failed;
                 bytes = mirisdr_samples_convert_252_s16(p, xfer->buffer, samples, xfer->actual_length);
                 break;
             case MIRISDR_FORMAT_672_REAL_S16:
-                samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024) * 1344);
+                if (!(samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024) * 1344))) goto failed;
                 bytes = mirisdr_samples_convert_336_s16(p, xfer->buffer, samples, xfer->actual_length);
                 break;
             case MIRISDR_FORMAT_768_REAL_S16:
-                samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024) * 1536);
+                if (!(samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024) * 1536))) goto failed;
                 bytes = mirisdr_samples_convert_384_s16(p, xfer->buffer, samples, xfer->actual_length);
                 break;
             }
@@ -333,8 +321,6 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
             fprintf( stderr, "not isoc or bulk transfer type on usb device: %u\n", p->index);
             goto failed;
         }
-
-                xfer->buffer = raw;
 
         if (bytes > 0) mirisdr_feed_async(p, samples, bytes);
         /* draining: the transfer is done, and should not be reused */
@@ -474,9 +460,12 @@ static double mirisdr_read_cost (const volatile uint8_t *buf, int len, int round
     return best;
 }
 
+/* Slow usbfs buffers are swapped for malloc'd ones: usbfs then copies in the
+   kernel, instead of the converters (or a memcpy) reading uncached memory. */
 static void mirisdr_probe_buffers (mirisdr_dev_t *p) {
     uint8_t *cached;
     double slow, fast;
+    size_t i;
 
     p->xfer_buf_slow = 0;
 
@@ -494,18 +483,30 @@ static void mirisdr_probe_buffers (mirisdr_dev_t *p) {
 
 #if MIRISDR_DEBUG >= 1
     fprintf(stderr, "transfer buffers: %.1f ns/byte against %.1f cached, %s\n",
-            slow, fast, p->xfer_buf_slow ? "copying each transfer" : "read in place");
+            slow, fast, p->xfer_buf_slow ? "using malloc buffers" : "read in place");
 #endif
 
-    if (p->xfer_buf_slow && !(p->xfer_copy = malloc(p->xfer_buf_size)))
-        p->xfer_buf_slow = 0;
+    if (!p->xfer_buf_slow) return;
+
+    for (i = 0; i < p->xfer_buf_num; i++) {
+        libusb_dev_mem_free(p->dh, p->xfer_buf[i], p->xfer_buf_size);
+        p->xfer_buf[i] = NULL;
+    }
+
+    p->xfer_buf_devmem = 0;
+
+    /* a failure leaves NULL, which the caller checks */
+    for (i = 0; i < p->xfer_buf_num; i++)
+        p->xfer_buf[i] = malloc(p->xfer_buf_size);
 }
+
+static int mirisdr_async_free (mirisdr_dev_t *p);
 
 static int mirisdr_async_alloc (mirisdr_dev_t *p) {
     size_t i;
 
     if (!p->xfer) {
-        p->xfer = malloc(p->xfer_buf_num * sizeof(*p->xfer));
+        if (!(p->xfer = calloc(p->xfer_buf_num, sizeof(*p->xfer)))) goto failed;
 
         for (i = 0; i < p->xfer_buf_num; i++) {
             switch (p->transfer) {
@@ -516,13 +517,14 @@ static int mirisdr_async_alloc (mirisdr_dev_t *p) {
                 p->xfer[i] = libusb_alloc_transfer(DEFAULT_ISO_PACKETS);
                 break;
             }
+            if (!p->xfer[i]) goto failed;
         }
     }
 
     if (!p->xfer_buf) {
         size_t j, bufsz;
 
-        p->xfer_buf = malloc(p->xfer_buf_num * sizeof(*p->xfer_buf));
+        if (!(p->xfer_buf = calloc(p->xfer_buf_num, sizeof(*p->xfer_buf)))) goto failed;
 
         switch (p->transfer) {
         case MIRISDR_TRANSFER_ISOC:
@@ -535,27 +537,37 @@ static int mirisdr_async_alloc (mirisdr_dev_t *p) {
         p->xfer_buf_size = bufsz;
 
         /* Prefer usbfs DMA-coherent buffers: saves ~5% CPU on N150 */
-        p->xfer_buf_devmem = 1;
-        for (i = 0; i < p->xfer_buf_num; i++) {
+        p->xfer_buf_devmem = (getenv("MIRISDR_NO_ZEROCOPY") == NULL);
+        for (i = 0; p->xfer_buf_devmem && i < p->xfer_buf_num; i++) {
             p->xfer_buf[i] = libusb_dev_mem_alloc(p->dh, bufsz);
             if (!p->xfer_buf[i]) { p->xfer_buf_devmem = 0; break; }
         }
         if (!p->xfer_buf_devmem) {
-            for (j = 0; j < i; j++)
+            for (j = 0; j < i; j++) {
                 libusb_dev_mem_free(p->dh, p->xfer_buf[j], bufsz);
+                p->xfer_buf[j] = NULL;
+            }
             for (i = 0; i < p->xfer_buf_num; i++)
-                p->xfer_buf[i] = malloc(bufsz);
+                if (!(p->xfer_buf[i] = malloc(bufsz))) goto failed;
         }
 
         mirisdr_probe_buffers(p);
+
+        for (i = 0; i < p->xfer_buf_num; i++)
+            if (!p->xfer_buf[i]) goto failed;
     }
 
     if ((!p->xfer_out) &&
         (p->xfer_out_len)) {
-        p->xfer_out = malloc(p->xfer_out_len * sizeof(*p->xfer_out));
+        if (!(p->xfer_out = malloc(p->xfer_out_len * sizeof(*p->xfer_out)))) goto failed;
     }
 
     return 0;
+
+failed:
+    fprintf(stderr, "libmirisdr: out of memory for the transfer buffers\n");
+    mirisdr_async_free(p);
+    return -1;
 }
 
 /* uvolnění asynchronních bufferů */
@@ -582,11 +594,6 @@ static int mirisdr_async_free (mirisdr_dev_t *p) {
 
         free(p->xfer_buf);
         p->xfer_buf = NULL;
-    }
-
-    if (p->xfer_copy) {
-        free(p->xfer_copy);
-        p->xfer_copy = NULL;
     }
 
     if (p->xfer_out) {
@@ -654,7 +661,7 @@ int mirisdr_read_async (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx,
         goto failed;
     }
 
-    mirisdr_async_alloc(p);
+    if (mirisdr_async_alloc(p) < 0) goto failed;
 
     /* spustíme přenosy */
     for (i = 0; i < p->xfer_buf_num; i++) {
