@@ -38,6 +38,7 @@ void mirisdr_open_config_default (mirisdr_open_config_t *cfg)
 
 #define MIRISDR_FW_GONE_MS      2000
 #define MIRISDR_FW_WAIT_MS      6000
+#define MIRISDR_FW_ACCESS_MS    20000   /* udev here has taken 4-10 s */
 
 static int mirisdr_fw_block (mirisdr_dev_t *p, uint8_t *block)
 {
@@ -101,7 +102,7 @@ static void mirisdr_fw_path_of (mirisdr_dev_t *p, mirisdr_fw_path_t *path)
     path->valid = path->nports > 0;
 }
 
-static int mirisdr_fw_find (const mirisdr_fw_path_t *path, uint32_t fallback)
+static int mirisdr_fw_find (const mirisdr_fw_path_t *path, uint32_t fallback, int *denied)
 {
     libusb_context *ctx = NULL;
     libusb_device **list;
@@ -140,6 +141,16 @@ static int mirisdr_fw_find (const mirisdr_fw_path_t *path, uint32_t fallback)
         count++;
     }
 
+    /* udev can take seconds to give the new node its permissions */
+    if ((found >= 0) && denied)
+    {
+        libusb_device_handle *h;
+        int r = libusb_open(list[i], &h);
+
+        if (r == 0) libusb_close(h);
+        *denied = (r == LIBUSB_ERROR_ACCESS);
+    }
+
     if (i_max >= 0) libusb_free_device_list(list, 1);
     libusb_exit(ctx);
 
@@ -148,27 +159,30 @@ static int mirisdr_fw_find (const mirisdr_fw_path_t *path, uint32_t fallback)
 
 static int mirisdr_fw_wait (const mirisdr_fw_path_t *path, uint32_t fallback)
 {
-    int waited, index;
+    int waited, index = -1, denied = 0;
 
     for (waited = 0; waited < MIRISDR_FW_GONE_MS; waited+= 100)
     {
-        if (mirisdr_fw_find(path, fallback) < 0) break;
+        if (mirisdr_fw_find(path, fallback, NULL) < 0) break;
         usleep(100000);
     }
 
     for (waited = 0; waited < MIRISDR_FW_WAIT_MS; waited+= 100)
     {
-        if ((index = mirisdr_fw_find(path, fallback)) >= 0)
-        {
-            usleep(300000);
-
-            return index;
-        }
-
+        if ((index = mirisdr_fw_find(path, fallback, &denied)) >= 0) break;
         usleep(100000);
     }
 
-    return -1;
+    for (waited = 0; (index >= 0) && denied && (waited < MIRISDR_FW_ACCESS_MS); waited+= 100)
+    {
+        usleep(100000);
+        index = mirisdr_fw_find(path, fallback, &denied);
+    }
+
+    if ((index >= 0) && !denied) usleep(300000);
+
+    /* still denied: the open reports it */
+    return index;
 }
 
 /* Locate the device descriptor */
