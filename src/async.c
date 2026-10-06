@@ -124,6 +124,109 @@ static int mirisdr_convert_bulk (mirisdr_dev_t *p, uint8_t *src, uint8_t *dst, i
    and 13-15 are spare. */
 static const uint8_t mirisdr_hdr_magic[4] = { 'B', 'V', 'D', 'B' };
 
+static int mirisdr_bulk_stamped (const uint8_t *block)
+{
+    return !memcmp(block + 8, mirisdr_hdr_magic, sizeof(mirisdr_hdr_magic));
+}
+
+static int mirisdr_parse_bulk (mirisdr_dev_t *p, const uint8_t *src, int n, uint8_t *dst)
+{
+    int out = 0, k, m;
+
+    /* the rest of a block the last transfer split */
+    while (p->bulk_carry_n) {
+        int had = p->bulk_carry_n;
+
+        k = 1024 - had;
+        if (n < k) k = n;
+        memcpy(p->bulk_carry + had, src, (size_t) k);
+        p->bulk_carry_n += k;
+        src += k;
+        n -= k;
+        if (p->bulk_carry_n < 1024) return out;
+
+        /* whole, unless the next block fails to start right after it */
+        if (mirisdr_bulk_stamped(p->bulk_carry) && (n < 12 || mirisdr_bulk_stamped(src))) {
+            out += mirisdr_convert_bulk(p, p->bulk_carry, dst, 1024);
+            p->bulk_carry_n = 0;
+            p->bulk_lost = 0;
+            break;
+        }
+
+        /* off the grid: a stamp inside it is where a block really starts */
+        for (m = 1; m + 12 <= 1024 && memcmp(p->bulk_carry + m + 8, mirisdr_hdr_magic, sizeof(mirisdr_hdr_magic)); m++) ;
+
+        if (m + 12 > 1024) {
+            /* none: a stamped block is whole and junk follows it, else drop it */
+            if (mirisdr_bulk_stamped(p->bulk_carry)) {
+                out += mirisdr_convert_bulk(p, p->bulk_carry, dst, 1024);
+                p->bulk_lost = 0;
+            }
+            p->bulk_carry_n = 0;
+            break;
+        }
+
+        if (!p->bulk_lost) {
+            p->bulk_lost = 1;
+            p->stats.resyncs++;
+        }
+        memmove(p->bulk_carry, p->bulk_carry + m, (size_t) (1024 - m));
+        p->bulk_carry_n = 1024 - m;
+    }
+
+    while (n >= 1024) {
+        if (!mirisdr_bulk_stamped(src)) {
+            if (!p->bulk_lost) {
+                p->bulk_lost = 1;
+                p->stats.resyncs++;
+            }
+            /* the next stamp, possibly in the last block, which is then carried */
+            for (k = 1; k + 12 <= n && memcmp(src + k + 8, mirisdr_hdr_magic, sizeof(mirisdr_hdr_magic)); k++) ;
+            if (k + 12 > n) {
+                /* none here; a block starting in the last 11 bytes is lost too */
+                return out;
+            }
+            fprintf(stderr, "libmirisdr: off the block grid, %d bytes skipped\n", k);
+            src += k;
+            n -= k;
+            continue;
+        }
+        p->bulk_lost = 0;
+
+        /* a run of stamped blocks at once */
+        for (m = 1; (m + 1) * 1024 <= n && mirisdr_bulk_stamped(src + m * 1024); m++) ;
+
+        /* the grid breaks after the run: if a stamp starts inside its last block, that
+           block was cut short, and the next one starts there */
+        if (m * 1024 + 12 <= n) {
+            const uint8_t *last = src + (m - 1) * 1024;
+            for (k = 1; k < 1024 && memcmp(last + k + 8, mirisdr_hdr_magic, sizeof(mirisdr_hdr_magic)); k++) ;
+            if (k < 1024) {
+                if (m > 1) out += mirisdr_convert_bulk(p, (uint8_t *) src, dst + out, (m - 1) * 1024);
+                if (!p->bulk_lost) {
+                    p->bulk_lost = 1;
+                    p->stats.resyncs++;
+                }
+                fprintf(stderr, "libmirisdr: a block cut short at %d bytes, skipped\n", k);
+                src += (m - 1) * 1024 + k;
+                n -= (m - 1) * 1024 + k;
+                continue;
+            }
+        }
+
+        out += mirisdr_convert_bulk(p, (uint8_t *) src, dst + out, m * 1024);
+        src += m * 1024;
+        n -= m * 1024;
+    }
+
+    if (n > 0) {
+        memcpy(p->bulk_carry, src, (size_t) n);
+        p->bulk_carry_n = n;
+    }
+
+    return out;
+}
+
 /* Where does the 1 kB block grid really start in this buffer?
    Returns -1 when nothing in it looks like the grid. */
 static int mirisdr_bulk_phase (mirisdr_dev_t *p, const uint8_t *b, int n)
@@ -305,8 +408,11 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
             }
             break;
         case LIBUSB_TRANSFER_TYPE_BULK:
-            if (!(samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024) * MIRISDR_BLOCK_OUT_MAX))) goto failed;
-            bytes = mirisdr_convert_bulk(p, xfer->buffer, samples, xfer->actual_length);
+            if (!(samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024 + 1) * MIRISDR_BLOCK_OUT_MAX))) goto failed;
+            if (p->fw_ours)
+                bytes = mirisdr_parse_bulk(p, xfer->buffer, xfer->actual_length, samples);
+            else
+                bytes = mirisdr_convert_bulk(p, xfer->buffer, samples, xfer->actual_length);
             break;
         default:
             fprintf( stderr, "not isoc or bulk transfer type on usb device: %u\n", p->index);
@@ -317,7 +423,8 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
         /* draining: the transfer is done, and should not be reused */
         if (p->xfer_draining || (p->async_status != MIRISDR_ASYNC_RUNNING)) return;
 
-        if (xfer->type == LIBUSB_TRANSFER_TYPE_BULK)
+        /* without the stamp, find the grid from the counters and shift the transfers onto it */
+        if ((xfer->type == LIBUSB_TRANSFER_TYPE_BULK) && !p->fw_ours)
         {
             if(p->sync_run > (int)p->xfer_buf_num)
             {
@@ -630,6 +737,8 @@ int mirisdr_read_async (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx,
     memset(&p->stats, 0, sizeof(p->stats));
     p->sync_run = 0;
     p->addr_valid = 0;
+    p->bulk_carry_n = 0;
+    p->bulk_lost = 0;
     p->ev_valid = 0;
     p->sync_ready = 0;
     /* použití správného rozhraní které zasílá data - není kritické */

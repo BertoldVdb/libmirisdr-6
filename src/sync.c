@@ -25,7 +25,7 @@ int mirisdr_read_sync (mirisdr_dev_t *p, void *buf, int len, int *n_read) {
     if (n_read) *n_read = 0;
 
     if (!p->sync_in && !(p->sync_in = malloc(DEFAULT_BULK_BUFFER))) goto failed;
-    if (!p->sync_out && !(p->sync_out = malloc((DEFAULT_BULK_BUFFER / 1024) * MIRISDR_BLOCK_OUT_MAX))) goto failed;
+    if (!p->sync_out && !(p->sync_out = malloc((DEFAULT_BULK_BUFFER / 1024 + 1) * MIRISDR_BLOCK_OUT_MAX))) goto failed;
 
     if (!p->sync_ready) {
         if (libusb_set_interface_alt_setting(p->dh, 0, p->alt_setting) < 0) goto failed;
@@ -34,6 +34,8 @@ int mirisdr_read_sync (mirisdr_dev_t *p, void *buf, int len, int *n_read) {
         memset(&p->stats, 0, sizeof(p->stats));
         p->sync_run = 0;
         p->addr_valid = 0;
+        p->bulk_carry_n = 0;
+        p->bulk_lost = 0;
         p->ev_valid = 0;
         p->sync_len = p->sync_pos = 0;
         p->sync_xlen = DEFAULT_BULK_BUFFER;
@@ -50,12 +52,16 @@ int mirisdr_read_sync (mirisdr_dev_t *p, void *buf, int len, int *n_read) {
             p->sync_xlen = DEFAULT_BULK_BUFFER;
 
             p->stats_head = 1;
-            p->sync_len = mirisdr_convert_bulk(p, p->sync_in, p->sync_out, n);
+            if (p->fw_ours)
+                p->sync_len = mirisdr_parse_bulk(p, p->sync_in, n, p->sync_out);
+            else
+                p->sync_len = mirisdr_convert_bulk(p, p->sync_in, p->sync_out, n);
             p->sync_pos = 0;
 
-            /* a few bad blocks in a row: off the 1 kB grid.  Blocks start at phase in
-               every read, so one read of 1024 - phase less puts the next on the grid. */
-            if (p->sync_run > 2) {
+            /* without the stamp: a few bad blocks in a row are off the 1 kB grid.  Blocks
+               start at phase in every read, so one read of 1024 - phase less puts the next
+               on the grid. */
+            if (!p->fw_ours && p->sync_run > 2) {
                 p->sync_run = 0;
                 if ((phase = mirisdr_bulk_phase(p, p->sync_in, n)) > 0) {
                     p->stats.resyncs++;

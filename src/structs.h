@@ -178,6 +178,9 @@ struct mirisdr_dev {
     mirisdr_stream_stats_t stats;
     int                 stats_head;    /* next block starts a delivered buffer */
     int                 sync_run;      /* consecutive bad blocks, drives resync */
+    uint8_t             bulk_carry[1024];   /* a block split between two transfers */
+    int                 bulk_carry_n;
+    int                 bulk_lost;     /* off the grid, counted as one resync */
     int                 addr_valid;
     int                 addr_restart;  /* stream start since the last block */
 
