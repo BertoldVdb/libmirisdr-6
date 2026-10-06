@@ -53,6 +53,7 @@ int mirisdr_streaming_stop (mirisdr_dev_t *p) {
     if (!p->dh) goto failed;
 
     libusb_control_transfer(p->dh, 0x42, 0x45, 0x0, 0x0, NULL, 0, CTRL_TIMEOUT);
+    p->sync_ready = 0;          /* the next sync read starts it again */
 
     return 0;
 

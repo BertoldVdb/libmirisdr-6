@@ -119,8 +119,14 @@ struct mirisdr_dev {
     int                 driver_active;
     int                 bias;
     int                 reg8;
+    uint32_t            tuner_reg0;     /* last tuner register 0 word, 0 before the first tune */
     int                 fw_ours;
     int                 sync_ready;     /* the sync path has started the stream */
+    uint8_t             *sync_in;       /* one bulk transfer as read */
+    uint8_t             *sync_out;      /* it converted, not yet handed out */
+    int                 sync_len;
+    int                 sync_pos;
+    int                 sync_xlen;      /* next read length, short once to shift the grid */
     int64_t             pps_base;       /* stream index where the packet count was zeroed */
     uint64_t            pps_lost0;
     uint8_t             pps_edge0;
@@ -150,6 +156,11 @@ struct mirisdr_dev {
     uint8_t             ir_partial;     /* pulse beginning was missing */
     mirisdr_ir_cb_t     ir_cb;
     void                *ir_ctx;
+    mirisdr_stream_event_cb_t ev_cb;
+    void                *ev_ctx;
+    uint16_t            ev_last;        /* the previous packet's header bytes 4-5 */
+    uint8_t             ev_valid;       /* ev_last holds a packet of this stream */
+    uint8_t             ev_missed;      /* packets were lost since ev_last */
 
     uint8_t             *samples;
     int                 samples_size;

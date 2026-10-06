@@ -18,11 +18,13 @@ static void mirisdr_addr_next (mirisdr_dev_t *p, const uint8_t *hdr, uint32_t st
     } else if (p->addr_restart && d < -MIRISDR_ADDR_JITTER && addr < 0x10000) {
         p->addr_restart = 0;
         mirisdr_ir_resync(p);
+        p->ev_valid = 0;
     } else if ((d > MIRISDR_ADDR_JITTER) || (d < -MIRISDR_ADDR_JITTER)) {
         fprintf(stderr, "%d samples lost, %08x:%08x\n", d, p->addr, addr);
         p->stats.gaps++;
         p->sync_run++;
         mirisdr_ir_resync(p);
+        p->ev_missed = 1;
 
         /* a counter that went backwards is a misaligned stream reading sample
            data as a header, not samples that went missing */
@@ -36,6 +38,8 @@ static void mirisdr_addr_next (mirisdr_dev_t *p, const uint8_t *hdr, uint32_t st
         p->stats_head = 0;
         p->stats.index = p->stats.samples + p->stats.lost;
     }
+
+    mirisdr_events_latch(p, hdr, p->stats.samples, p->stats.samples + p->stats.lost);
 
     p->stats.samples+= step;
     p->addr = addr + step;

@@ -328,6 +328,7 @@ int mirisdr_set_soft(mirisdr_dev_t *p)
         mirisdr_write_reg(p, 0x09, 0x0e);
         mirisdr_write_reg(p, 0x09, reg3);
 
+        p->tuner_reg0 = reg0;
         mirisdr_write_reg(p, 0x09, reg0);
         mirisdr_write_reg(p, 0x09, reg5);
         mirisdr_write_reg(p, 0x09, reg2);

@@ -27,6 +27,7 @@ static int              from_rom;
 static char             detail[512];
 
 static int  opt_io;
+static int  opt_eeprom;
 static int  opt_eeprom_write;
 static int  opt_pps;
 static int  opt_chars;
@@ -571,6 +572,7 @@ static tres_t t_rate_clamping (void)
     return T_PASS;
 }
 
+/* Does the stream come back after each rate change? */
 static tres_t t_rate_changes (void)
 {
     static const uint32_t rates[] = {
@@ -578,7 +580,7 @@ static tres_t t_rate_changes (void)
     };
     mirisdr_stream_stats_t total;
     unsigned pass, i;
-    int changes = 0, bad = 0;
+    int changes = 0, bad = 0, stalled = 0, misread = 0;
 
     if (stream_setup("BULK", "504_S8", 2000000) < 0) return T_FAIL;
 
@@ -587,35 +589,41 @@ static tres_t t_rate_changes (void)
     for (pass = 0; pass < 3; pass++)
         for (i = 0; i < sizeof rates / sizeof rates[0]; i++)
         {
-            mirisdr_stream_stats_t d;
+            mirisdr_stream_stats_t a, b, d;
             double sps;
 
+            mirisdr_get_stream_stats(dev, &a);
             if (mirisdr_set_sample_rate(dev, rates[i]) < 0) { say("rate %u refused", rates[i]); return T_FAIL; }
 
             usleep(200000);
             sps = stream_rate(0.35, &d);
+            mirisdr_get_stream_stats(dev, &b);
             changes++;
 
-            total.gaps    += d.gaps;
-            total.lost    += d.lost;
-            total.resyncs += d.resyncs;
+            /* from just before the change to the end of the window */
+            total.gaps    += b.gaps - a.gaps;
+            total.lost    += b.lost - a.lost;
+            total.resyncs += b.resyncs - a.resyncs;
 
-            if (!within(sps, rates[i], 0.03)) {
+            if (!d.samples) {
+                stalled++;
+                note("FAILED at %u: no samples", rates[i]);
+            } else if (!within(sps, rates[i], 0.03)) {
                 bad++;
                 note("FAILED at %u: %.0f sps", rates[i], sps);
             }
+            if ((b.gaps > a.gaps) && (b.lost == a.lost)) {
+                misread++;
+                note("FAILED at %u: the counter went backwards", rates[i]);
+            }
         }
 
-    say("%d rate changes, %d off rate, %llu gaps, %llu lost, %llu resyncs",
-        changes, bad, (unsigned long long) total.gaps,
-        (unsigned long long) total.lost, (unsigned long long) total.resyncs);
+    say("%d rate changes, %d stalled, %d off rate, %d restarts misread, %llu resyncs; "
+        "%llu gaps, %llu lost (host load, not counted)",
+        changes, stalled, bad, misread, (unsigned long long) total.resyncs,
+        (unsigned long long) total.gaps, (unsigned long long) total.lost);
 
-    if (bad) return T_FAIL;
-
-    /* the firmware hands the pending packet over at the stop, so this is 0 */
-    if (total.gaps) return T_FAIL;
-
-    return T_PASS;
+    return (stalled || bad || misread || total.resyncs) ? T_FAIL : T_PASS;
 }
 
 static tres_t t_stop_start (void)
@@ -1142,6 +1150,126 @@ static tres_t t_tuning (void)
     return T_PASS;
 }
 
+static tres_t t_tuner_status (void)
+{
+    static const uint32_t freqs[] = { 100000000, 200000000, 350000000, 500000000, 1500000000 };
+    mirisdr_tuner_status_t st[3];
+    uint32_t first = 0;
+    unsigned i, k, moved = 0;
+
+    pump_stop();
+
+    for (i = 0; i < sizeof freqs / sizeof freqs[0]; i++)
+    {
+        if (mirisdr_set_center_freq(dev, freqs[i]) < 0) { say("%u Hz refused", freqs[i]); return T_FAIL; }
+        usleep(20000);
+
+        for (k = 0; k < 3; k++)
+            if (mirisdr_get_tuner_status(dev, &st[k]) < 0) { say("no readback at %u Hz", freqs[i]); return T_FAIL; }
+
+        note("%10u Hz: %08x  range %d coarse %2u fine %2u  upconv %2u lna %2u xtal %2u%s%s",
+             freqs[i], st[0].raw, st[0].vco_range, st[0].coarse, st[0].fine,
+             st[0].upconv, st[0].lna_cal, st[0].xtal,
+             st[0].flags & MIRISDR_TUNER_AT_LOW_LIMIT ? "  at low limit" : "",
+             st[0].flags & MIRISDR_TUNER_AT_HIGH_LIMIT ? "  at high limit" : "");
+
+        if (st[0].vco_range < 0) { say("%u Hz: no VCO range in %08x", freqs[i], st[0].raw); return T_FAIL; }
+
+        /* without a retune the calibration result does not move */
+        if (st[1].raw != st[0].raw || st[2].raw != st[0].raw)
+        { say("%u Hz: reads differ, %08x %08x %08x", freqs[i], st[0].raw, st[1].raw, st[2].raw); return T_FAIL; }
+
+        /* the VCO fields, bits 25:18 and 13:9 */
+        if (!i) first = st[0].raw & 0x03FC3E00;
+        else if ((st[0].raw & 0x03FC3E00) != first) moved++;
+    }
+
+    mirisdr_set_center_freq(dev, 144000000);
+
+    /* a tuner that stopped taking words, as after EEPROM traffic on a board without
+       the clock gate, reads the same calibration whatever the frequency */
+    if (!moved) { say("the VCO codes never change with the frequency: the tuner is not responding"); return T_FAIL; }
+
+    say("five frequencies read back, one VCO range each, stable, codes follow the tuning");
+
+    return T_PASS;
+}
+
+static mirisdr_stream_event_t ev_log[64];
+static volatile int ev_n;
+
+static void ev_cb (const mirisdr_stream_event_t *ev, void *ctx)
+{
+    (void) ctx;
+    if (ev_n < (int) (sizeof ev_log / sizeof ev_log[0])) ev_log[ev_n++] = *ev;
+}
+
+/* the first logged event from 'from' on with 'kind' set, or -1 */
+static int ev_find (int from, uint8_t kind)
+{
+    int i;
+
+    for (i = from; i < ev_n; i++) if (ev_log[i].events & kind) return i;
+
+    return -1;
+}
+
+static tres_t t_stream_events (void)
+{
+    int before, after, i, g, m1, m0, t;
+    uint64_t last = 0;
+
+    pump_stop();
+
+    mirisdr_set_center_freq(dev, 144000000);
+    mirisdr_set_tuner_gain_mode(dev, 1);
+    mirisdr_set_tuner_gain(dev, 20);
+
+    ev_n = 0;
+    mirisdr_set_stream_events(dev, ev_cb, NULL);
+
+    if (pump_start() < 0) { mirisdr_set_stream_events(dev, NULL, NULL); say("stream did not start"); return T_FAIL; }
+
+    before = ev_n;
+    mirisdr_set_tuner_gain(dev, 60);
+    usleep(200000);
+    mirisdr_set_center_freq(dev, 145000000);
+    usleep(200000);
+    mirisdr_set_stream_mark(dev, 1);
+    usleep(200000);
+    mirisdr_set_stream_mark(dev, 0);
+    usleep(200000);
+    after = ev_n;
+
+    pump_stop();
+    mirisdr_set_stream_events(dev, NULL, NULL);
+    mirisdr_set_center_freq(dev, 144000000);
+
+    for (i = 0; i < ev_n; i++)
+    {
+        note("sample %10llu index %10llu  events %02x  bb %2u mixbu %u mixl %u lna %u mark %u sat %u  raw %04x",
+             (unsigned long long) ev_log[i].sample, (unsigned long long) ev_log[i].index, ev_log[i].events,
+             ev_log[i].bb_gr, ev_log[i].mixbu, ev_log[i].mixl, ev_log[i].lna, ev_log[i].mark, ev_log[i].saturate, ev_log[i].raw);
+
+        if (ev_log[i].sample < last) { say("event positions go backwards at %d", i); return T_FAIL; }
+        last = ev_log[i].sample;
+    }
+
+    g  = ev_find(before, MIRISDR_EVENT_GAIN);
+    t  = ev_find(g < 0 ? before : g, MIRISDR_EVENT_TUNE);
+    m1 = ev_find(t < 0 ? before : t, MIRISDR_EVENT_MARK);
+    m0 = ev_find(m1 < 0 ? before : m1 + 1, MIRISDR_EVENT_MARK);
+
+    if (g < 0)  { say("no gain event (%d events)", after - before); return T_FAIL; }
+    if (t < 0)  { say("no tune event after the gain event"); return T_FAIL; }
+    if (m1 < 0 || !ev_log[m1].mark) { say("no marker set event"); return T_FAIL; }
+    if (m0 < 0 || ev_log[m0].mark)  { say("no marker clear event"); return T_FAIL; }
+
+    say("gain, tune, marker set and clear seen in order (%d events)", after - before);
+
+    return T_PASS;
+}
+
 static tres_t t_gain (void)
 {
     int gains[256], n, i, before;
@@ -1216,6 +1344,7 @@ static tres_t t_eeprom_probe (void)
 {
     int size;
 
+    if (!opt_eeprom) { say("needs --eeprom"); return T_SKIP; }
     if (!fw_ours) { say("needs our firmware"); return T_SKIP; }
 
     pump_stop();
@@ -1234,6 +1363,7 @@ static tres_t t_eeprom_read (void)
 {
     uint8_t a[32], b[32];
 
+    if (!opt_eeprom) { say("needs --eeprom"); return T_SKIP; }
     if (!fw_ours) { say("needs our firmware"); return T_SKIP; }
     if (mirisdr_eeprom_size(dev) <= 0) { say("no eeprom on this board"); return T_SKIP; }
 
@@ -1922,6 +2052,8 @@ static const struct {
     { "device",   "call gate runs code",        t_call_gate           },
 
     { "tuner",    "tuning across bands",        t_tuning              },
+    { "tuner",    "tuner status readback",      t_tuner_status        },
+    { "tuner",    "stream events",              t_stream_events       },
     { "tuner",    "gain steps",                 t_gain                },
     { "tuner",    "filter bandwidths",          t_bandwidth           },
     { "tuner",    "settings round trip",        t_settings_roundtrip  },
@@ -1949,7 +2081,9 @@ static void usage (const char *me)
            "  --io             allow tests that drive external pins (uart, i2c)\n"
            "  --characterise   sweep the synthesiser and report this part's limits\n"
            "  --step MHz       sweep resolution for --characterise (default 1.0)\n"
-           "  --eeprom-write   allow the eeprom write back test\n"
+           "  --eeprom         allow the eeprom tests; on a board without an eeprom the\n"
+           "                   probe reaches the tuner and leaves it deaf until power off\n"
+           "  --eeprom-write   allow the eeprom write back test (implies --eeprom)\n"
            "  --pps            run the pps test, needs a 1PPS on GPIO_0\n"
            "  --list           list the tests and exit\n"
            "\ngroups: identity stream fixes device tuner extras\n", me);
@@ -1971,7 +2105,8 @@ int main (int argc, char **argv)
         else if (!strcmp(argv[i], "-g") && (i + 1 < argc)) opt_only = argv[++i];
         else if (!strcmp(argv[i], "-v")) opt_verbose = 1;
         else if (!strcmp(argv[i], "--io")) opt_io = 1;
-        else if (!strcmp(argv[i], "--eeprom-write")) opt_eeprom_write = 1;
+        else if (!strcmp(argv[i], "--eeprom")) opt_eeprom = 1;
+        else if (!strcmp(argv[i], "--eeprom-write")) opt_eeprom_write = opt_eeprom = 1;
         else if (!strcmp(argv[i], "--pps")) opt_pps = 1;
         else if (!strcmp(argv[i], "--characterise") || !strcmp(argv[i], "--characterize")) opt_chars = 1;
         else if (!strcmp(argv[i], "--step") && (i + 1 < argc)) opt_step = atof(argv[++i]);

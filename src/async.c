@@ -95,6 +95,29 @@ static uint8_t *samples_realloc(mirisdr_dev_t *p, int size)
     return p->samples;
 }
 
+#define MIRISDR_BLOCK_OUT_MAX   2016
+
+static int mirisdr_convert_bulk (mirisdr_dev_t *p, uint8_t *src, uint8_t *dst, int cnt)
+{
+    switch (p->format) {
+    case MIRISDR_FORMAT_252_S16:
+    case MIRISDR_FORMAT_504_REAL_S16:
+        return mirisdr_samples_convert_252_s16(p, src, dst, cnt);
+    case MIRISDR_FORMAT_336_S16:
+    case MIRISDR_FORMAT_672_REAL_S16:
+        return mirisdr_samples_convert_336_s16(p, src, dst, cnt);
+    case MIRISDR_FORMAT_384_S16:
+    case MIRISDR_FORMAT_768_REAL_S16:
+        return mirisdr_samples_convert_384_s16(p, src, dst, cnt);
+    case MIRISDR_FORMAT_504_S16:
+        return mirisdr_samples_convert_504_s16(p, src, dst, cnt);
+    case MIRISDR_FORMAT_504_S8:
+        return mirisdr_samples_convert_504_s8(p, src, dst, cnt);
+    default:
+        return 0;
+    }
+}
+
 /* Our firmware stamps header bytes 8-11 of every buffer at startup - bytes the
    capture engine never writes - so the mark rides along in every packet the
    part sends.  Byte 12 carries which of the four ring buffers it came from,
@@ -282,40 +305,8 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
             }
             break;
         case LIBUSB_TRANSFER_TYPE_BULK:
-            switch (p->format) {
-            case MIRISDR_FORMAT_252_S16:
-                if (!(samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024) * 1008))) goto failed;
-                bytes = mirisdr_samples_convert_252_s16(p, xfer->buffer, samples, xfer->actual_length);
-                break;
-            case MIRISDR_FORMAT_336_S16:
-                if (!(samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024) * 1344))) goto failed;
-                bytes = mirisdr_samples_convert_336_s16(p, xfer->buffer, samples, xfer->actual_length);
-                break;
-            case MIRISDR_FORMAT_384_S16:
-                if (!(samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024) * 1536))) goto failed;
-                bytes = mirisdr_samples_convert_384_s16(p, xfer->buffer, samples, xfer->actual_length);
-                break;
-            case MIRISDR_FORMAT_504_S16:
-                if (!(samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024) * 2016))) goto failed;
-                bytes = mirisdr_samples_convert_504_s16(p, xfer->buffer, samples, xfer->actual_length);
-                break;
-            case MIRISDR_FORMAT_504_S8:
-                if (!(samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024) * 1008))) goto failed;
-                bytes = mirisdr_samples_convert_504_s8(p, xfer->buffer, samples, xfer->actual_length);
-                break;
-            case MIRISDR_FORMAT_504_REAL_S16:
-                if (!(samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024) * 1008))) goto failed;
-                bytes = mirisdr_samples_convert_252_s16(p, xfer->buffer, samples, xfer->actual_length);
-                break;
-            case MIRISDR_FORMAT_672_REAL_S16:
-                if (!(samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024) * 1344))) goto failed;
-                bytes = mirisdr_samples_convert_336_s16(p, xfer->buffer, samples, xfer->actual_length);
-                break;
-            case MIRISDR_FORMAT_768_REAL_S16:
-                if (!(samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024) * 1536))) goto failed;
-                bytes = mirisdr_samples_convert_384_s16(p, xfer->buffer, samples, xfer->actual_length);
-                break;
-            }
+            if (!(samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024) * MIRISDR_BLOCK_OUT_MAX))) goto failed;
+            bytes = mirisdr_convert_bulk(p, xfer->buffer, samples, xfer->actual_length);
             break;
         default:
             fprintf( stderr, "not isoc or bulk transfer type on usb device: %u\n", p->index);
@@ -342,9 +333,11 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
                    and it oscillates. */
                 p->sync_run = -(int) (p->xfer_buf_num * (DEFAULT_BULK_BUFFER / 1024));
 
+                /* Blocks start at phase in every transfer, so one transfer
+                   1024 - phase short puts the next on the grid. */
                 if (phase > 0) {
                     p->stats.resyncs++;
-                    xfer->length = DEFAULT_BULK_BUFFER - phase;
+                    xfer->length = DEFAULT_BULK_BUFFER - 1024 + phase;
                     fprintf(stderr,"libmirisdr: block grid is %d bytes out, shifting.\n", phase);
                 } else {
                     xfer->length = DEFAULT_BULK_BUFFER;
@@ -637,6 +630,7 @@ int mirisdr_read_async (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx,
     memset(&p->stats, 0, sizeof(p->stats));
     p->sync_run = 0;
     p->addr_valid = 0;
+    p->ev_valid = 0;
     p->sync_ready = 0;
     /* použití správného rozhraní které zasílá data - není kritické */
     switch (p->transfer) {

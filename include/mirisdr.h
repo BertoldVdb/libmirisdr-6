@@ -384,6 +384,58 @@ typedef void (*mirisdr_ir_cb_t) (const mirisdr_ir_pulse_t *pulse, void *ctx);
 MIRISDR_API int mirisdr_set_ir (mirisdr_dev_t *p, uint32_t tick_ns, mirisdr_ir_cb_t cb, void *ctx); /* extra */
 MIRISDR_API uint32_t mirisdr_get_ir (mirisdr_dev_t *p);                 /* extra */
 
+/* This function allows you to read the current tuner state. Afaik there is no
+ * way to know if the PLL is locked, the HIGH and LOW limit flags only indicate
+ * you are tuning near the edge of your chip, but that you try to tune beyond it. */
+#define MIRISDR_TUNER_SYNTH_OFF      0x01   /* no VCO range selected */
+#define MIRISDR_TUNER_AT_LOW_LIMIT   0x02   /* lowest range, coarse 22, fine 31 */
+#define MIRISDR_TUNER_AT_HIGH_LIMIT  0x04   /* highest range, fine 0 */
+
+typedef struct mirisdr_tuner_status
+{
+	uint32_t raw;
+	int8_t   vco_range;  /* 0-2 from the one-hot range bits, -1 when none is set */
+	uint8_t  coarse;     /* VCO coarse code, 5 bits */
+	uint8_t  fine;       /* VCO fine code, 5 bits */
+	uint8_t  upconv;     /* up-converter LO calibration, 4 bits */
+	uint8_t  lna_cal;    /* L-band LNA calibration, 4 bits */
+	uint8_t  xtal;       /* a count set by the crystal selection, 5 bits */
+	uint8_t  top;        /* bits 27:26, so far always 3 */
+	uint8_t  flags;      /* MIRISDR_TUNER_* */
+} mirisdr_tuner_status_t;
+
+MIRISDR_API int mirisdr_get_tuner_status (mirisdr_dev_t *p, mirisdr_tuner_status_t *st); /* extra */
+
+/* Every packet header carries the gain the tuner is running and three bits that
+ * toggle when a gain word, a synthesizer word or a sample rate write takes effect.
+ * The callback runs for each packet where something changed, before that packet's
+ * samples are delivered. The gain/tune/rate/mark flags are set on the next buffer
+ * that is encoded by the chip after the action. */
+#define MIRISDR_EVENT_GAIN      0x01    /* a gain word took effect */
+#define MIRISDR_EVENT_TUNE      0x02    /* a synthesizer word took effect */
+#define MIRISDR_EVENT_RATE      0x04    /* the sample rate register was written */
+#define MIRISDR_EVENT_MARK      0x08    /* the marker set by mirisdr_set_stream_mark changed */
+#define MIRISDR_EVENT_MISSED    0x80    /* packets were lost before this one */
+
+typedef struct mirisdr_stream_event
+{
+	uint64_t sample;     /* samples delivered before this packet's first sample */
+	uint64_t index;      /* the same point as an absolute index, lost samples included */
+	uint8_t  events;     /* MIRISDR_EVENT_* */
+	uint8_t  bb_gr;      /* gain in effect: baseband gain reduction, 6 bits */
+	uint8_t  mixbu;      /* up-converter mixer gain reduction, 2 bits */
+	uint8_t  mixl;       /* IQ mixer gain reduction */
+	uint8_t  lna;        /* LNA gain reduction */
+	uint8_t  mark;       /* the marker's level */
+	uint8_t  saturate;   /* the output clips rather than wraps (register 7 bit 2) */
+	uint16_t raw;        /* header bytes 4-5 */
+} mirisdr_stream_event_t;
+
+typedef void (*mirisdr_stream_event_cb_t) (const mirisdr_stream_event_t *ev, void *ctx);
+
+MIRISDR_API int mirisdr_set_stream_events (mirisdr_dev_t *p, mirisdr_stream_event_cb_t cb, void *ctx); /* extra */
+MIRISDR_API int mirisdr_set_stream_mark (mirisdr_dev_t *p, int on);     /* extra */
+
 /*
  * DC Calibration
  *

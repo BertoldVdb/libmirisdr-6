@@ -51,6 +51,8 @@
 #include "i2c.c"
 #include "pps.c"
 #include "ir.c"
+#include "tuner.c"
+#include "events.c"
 #include "adc.c"
 #include "convert/base.c"
 #include "async.c"
@@ -320,6 +322,8 @@ int mirisdr_close (mirisdr_dev_t *p) {
     if (p->ctx) libusb_exit(p->ctx);
 
     if (p->samples) free(p->samples);
+    if (p->sync_in) free(p->sync_in);
+    if (p->sync_out) free(p->sync_out);
 
     free(p);
 
