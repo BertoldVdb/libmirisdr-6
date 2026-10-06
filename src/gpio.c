@@ -47,6 +47,8 @@ void update_reg_8 (mirisdr_dev_t *p)
         if (p->gpio_val & (1 << pin)) val|= 1 << (pin + 8);
     }
 
+    if (p->reg8_valid && (p->reg8_sent == val)) return;
+
     mirisdr_write_reg(p, 0x08, val);
 }
 

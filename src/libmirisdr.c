@@ -341,6 +341,10 @@ int mirisdr_reset (mirisdr_dev_t *p) {
 
     /* měli bychom uvolnit zařízení předem? */
 
+    /* the part may come back with its registers at their defaults */
+    p->reg8_valid = 0;
+    p->tuner_valid = 0;
+
     if ((r = libusb_reset_device(p->dh)) < 0) {
         fprintf( stderr, "failed to reset miri usb device %u with code %d\n", p->index, r);
         goto failed;

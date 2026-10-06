@@ -60,7 +60,7 @@ hw_switch_freq_plan_t *hw_switch_freq_plan[2] = {
 
 int mirisdr_set_soft(mirisdr_dev_t *p)
 {
-    uint32_t reg0 = 0, reg2 = 2, reg5 = 5, reg3 = 3, regd = 0x0d;
+    uint32_t reg0 = 0, reg2 = 0, reg5 = 0, reg3 = 0, regd = 0;
     uint64_t n, thresh, frac, lo_div = 0, fvco = 0, rfvco = 0, offset = 0, afc = 0, a, b, c;
     int i;
 
@@ -96,9 +96,9 @@ int mirisdr_set_soft(mirisdr_dev_t *p)
 
     if (switch_plan.mode == MIRISDR_MODE_AM)
     {
-        reg0 |= MIRISDR_MODE_AM << 4;
-        reg0 |= switch_plan.upconvert_mixer_on << 9;
-        reg0 |= switch_plan.am_port << 11;
+        reg0 |= MIRISDR_MODE_AM;
+        reg0 |= switch_plan.upconvert_mixer_on << 5;
+        reg0 |= switch_plan.am_port << 7;
 
         if (switch_plan.upconvert_mixer_on)
         {
@@ -115,7 +115,7 @@ int mirisdr_set_soft(mirisdr_dev_t *p)
     }
     else
     {
-        reg0 |= switch_plan.mode << 4;
+        reg0 |= switch_plan.mode;
         lo_div = switch_plan.lo_div;
 
         if (switch_plan.mode == MIRISDR_MODE_VHF) {
@@ -168,23 +168,23 @@ int mirisdr_set_soft(mirisdr_dev_t *p)
 
     /* RF syntetizer je vždy aktivní */
     /* RF synthesizer is always active */
-    reg0 |= MIRISDR_RF_SYNTHESIZER_ON << 10;
+    reg0 |= MIRISDR_RF_SYNTHESIZER_ON << 6;
 
     /* režim IF filtru - zatím nefunguje? */
     /* IF filter mode - has not worked? */
     switch (p->if_freq)
     {
     case MIRISDR_IF_ZERO:
-        reg0 |= MIRISDR_IF_MODE_ZERO << 12;
+        reg0 |= MIRISDR_IF_MODE_ZERO << 8;
         break;
     case MIRISDR_IF_450KHZ:
-        reg0 |= MIRISDR_IF_MODE_450KHZ << 12;
+        reg0 |= MIRISDR_IF_MODE_450KHZ << 8;
         break;
     case MIRISDR_IF_1620KHZ:
-        reg0 |= MIRISDR_IF_MODE_1620KHZ << 12;
+        reg0 |= MIRISDR_IF_MODE_1620KHZ << 8;
         break;
     case MIRISDR_IF_2048KHZ:
-        reg0 |= MIRISDR_IF_MODE_2048KHZ << 12;
+        reg0 |= MIRISDR_IF_MODE_2048KHZ << 8;
         break;
     }
 
@@ -193,32 +193,32 @@ int mirisdr_set_soft(mirisdr_dev_t *p)
     switch (p->bandwidth)
     {
     case MIRISDR_BW_200KHZ:
-        reg0 |= 0x00 << 14;
+        reg0 |= 0x00 << 10;
         break;
     case MIRISDR_BW_300KHZ:
-        reg0 |= 0x01 << 14;
+        reg0 |= 0x01 << 10;
         break;
     case MIRISDR_BW_600KHZ:
-        reg0 |= 0x02 << 14;
+        reg0 |= 0x02 << 10;
         break;
     case MIRISDR_BW_1536KHZ:
-        reg0 |= 0x03 << 14;
+        reg0 |= 0x03 << 10;
         break;
     case MIRISDR_BW_5MHZ:
-        reg0 |= 0x04 << 14;
+        reg0 |= 0x04 << 10;
         break;
     case MIRISDR_BW_6MHZ:
-        reg0 |= 0x05 << 14;
+        reg0 |= 0x05 << 10;
         break;
     case MIRISDR_BW_7MHZ:
-        reg0 |= 0x06 << 14;
+        reg0 |= 0x06 << 10;
         break;
     case MIRISDR_BW_8MHZ:
-        reg0 |= 0x07 << 14;
+        reg0 |= 0x07 << 10;
         break;
     case MIRISDR_BW_MAX:
-        reg0 |= 0x07 << 14;
-        regd |= (1<<4);
+        reg0 |= 0x07 << 10;
+        regd |= 1;
         break;
     }
 
@@ -227,27 +227,27 @@ int mirisdr_set_soft(mirisdr_dev_t *p)
     switch (p->xtal)
     {
     case MIRISDR_XTAL_19_2M:
-        reg0 |= 0x00 << 17;
+        reg0 |= 0x00 << 13;
         break;
     case MIRISDR_XTAL_22M:
-        reg0 |= 0x01 << 17;
+        reg0 |= 0x01 << 13;
         break;
     case MIRISDR_XTAL_24M:
     case MIRISDR_XTAL_24_576M:
-        reg0 |= 0x02 << 17;
+        reg0 |= 0x02 << 13;
         break;
     case MIRISDR_XTAL_26M:
-        reg0 |= 0x03 << 17;
+        reg0 |= 0x03 << 13;
         break;
     case MIRISDR_XTAL_38_4M:
-        reg0 |= 0x04 << 17;
+        reg0 |= 0x04 << 13;
         break;
     }
 
     /* 4 bity pro režimy snížené spotřeby */
     /* 4 bits for power saving modes */
-    reg0 |= MIRISDR_IF_LPMODE_NORMAL << 20;
-    reg0 |= MIRISDR_VCO_LPMODE_NORMAL << 23;
+    reg0 |= MIRISDR_IF_LPMODE_NORMAL << 16;
+    reg0 |= MIRISDR_VCO_LPMODE_NORMAL << 19;
 
     /* vco frekvence, je lepší použít 64bitový rozsah */
     /* VCO frequency is better to use a 64-bit range */
@@ -291,15 +291,15 @@ int mirisdr_set_soft(mirisdr_dev_t *p)
     rfvco=(96000000UL * (n * thresh * 4096UL + (frac * 4096UL + afc))) / (thresh * 4096UL * lo_div);
     afc = ((p->freq + offset - rfvco) * thresh * 4096UL * lo_div) /96000000UL;
 
-    reg3 |= (afc & 4095) << 4;
-    reg5 |= (0xFFF & thresh) << 4;
+    reg3 |= (afc & 4095);
+    reg5 |= (0xFFF & thresh);
     /* rezervováno, musí být 0x28 */
     /* Reserved, must be 0x28 */
-    reg5 |= MIRISDR_RF_SYNTHESIZER_RESERVED_PROGRAMMING << 16;
+    reg5 |= MIRISDR_RF_SYNTHESIZER_RESERVED_PROGRAMMING << 12;
 
-    reg2 |= (0xFFF & frac) << 4;
-    reg2 |= (0x3F & n) << 16;
-    reg2 |= MIRISDR_LBAND_LNA_CALIBRATION_OFF << 22;
+    reg2 |= (0xFFF & frac);
+    reg2 |= (0x3F & n) << 12;
+    reg2 |= MIRISDR_LBAND_LNA_CALIBRATION_OFF << 18;
 
     /* kernel driver nastavuje až při změně frekvence */
     /* kernel driver adjusts to changing frequencies  */
@@ -325,14 +325,16 @@ int mirisdr_set_soft(mirisdr_dev_t *p)
        has this port wired somewhere else, or nowhere */
     if (!p->external_tuner)
     {
-        mirisdr_write_reg(p, 0x09, 0x0e);
-        mirisdr_write_reg(p, 0x09, reg3);
+        int synth = 0;
 
-        p->tuner_reg0 = reg0;
-        mirisdr_write_reg(p, 0x09, reg0);
-        mirisdr_write_reg(p, 0x09, reg5);
-        mirisdr_write_reg(p, 0x09, reg2);
-        mirisdr_write_reg(p, 0x09, regd);
+        /* only what changed; register 2 starts the calibration, so it follows any of 0, 3 and 5 */
+        mirisdr_tuner_write(p, 14, p->tuner_ovr14, 0);
+        synth |= mirisdr_tuner_write(p, 3, reg3, 0) != 0;
+        synth |= mirisdr_tuner_write(p, 0, reg0, 0) != 0;
+        synth |= mirisdr_tuner_write(p, 5, reg5, 0) != 0;
+        mirisdr_tuner_write(p, 2, reg2, synth);
+        p->tuner_regd = regd;
+        mirisdr_tuner_write(p, 13, regd | p->tuner_ovr13, 0);
     }
 
 //    if (band_select[i] != 0)

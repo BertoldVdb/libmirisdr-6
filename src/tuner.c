@@ -19,10 +19,10 @@
  *
  *   31:28  0
  *   27:26  always 11 so far
- *   25:23  VCO range, one-hot: 001 low, 010 middle, 100 high, 000 synthesizer off
- *   22:18  VCO coarse code
+ *   25:23  VCO coarse, the range, one-hot: 001 low, 010 middle, 100 high, 000 off
+ *   22:18  unknown, a second search after the band search; maybe VCO amplitude
  *   17:14  up-converter LO calibration (updated while the up-converter is on)
- *   13:9   VCO fine code
+ *   13:9   VCO fine, the tank capacitor band within the range
  *    8:5   L-band LNA calibration (updated by a register 2 write with bit 22)
  *    4:0   a count set by XTALSEL, +-1 between calibrations
  */
@@ -39,11 +39,11 @@ int mirisdr_get_tuner_status (mirisdr_dev_t *p, mirisdr_tuner_status_t *st)
     /* the tuner port is wired somewhere else, or nowhere */
     if (p->external_tuner) goto failed;
 
-    /* clock with register 0 as a safety, so nothing before the first tune */
-    if (!p->tuner_reg0) goto failed;
+    /* clock with the register 0 word the tuner already has, so nothing before the first tune */
+    if (!(p->tuner_valid & 1)) goto failed;
 
     if (mirisdr_write_reg(p, 0x09, MIRISDR_TUNER_READBACK) < 0) goto failed;
-    if (mirisdr_write_reg(p, 0x09, p->tuner_reg0) < 0) goto failed;
+    if (mirisdr_write_reg(p, 0x09, p->tuner_reg[0]) < 0) goto failed;
     if (mirisdr_read_reg(p, 4, b, 4) != 4) goto failed;
 
     v = b[0] | b[1] << 8 | (uint32_t) b[2] << 16 | (uint32_t) b[3] << 24;
@@ -54,18 +54,62 @@ int mirisdr_get_tuner_status (mirisdr_dev_t *p, mirisdr_tuner_status_t *st)
     memset(st, 0, sizeof *st);
     st->raw     = v;
     st->top     = (v >> 26) & 3;
-    st->coarse  = (v >> 18) & 31;
+    st->unknown = (v >> 18) & 31;
     st->fine    = (v >> 9) & 31;
     st->upconv  = (v >> 14) & 15;
     st->lna_cal = (v >> 5) & 15;
     st->xtal    = v & 31;
 
     range = (v >> 23) & 7;
-    st->vco_range = range == 1 ? 0 : range == 2 ? 1 : range == 4 ? 2 : -1;
+    st->coarse = range == 1 ? 0 : range == 2 ? 1 : range == 4 ? 2 : -1;
 
     if (!range) st->flags |= MIRISDR_TUNER_SYNTH_OFF;
-    if (range == 1 && st->coarse == 22 && st->fine == 31) st->flags |= MIRISDR_TUNER_AT_LOW_LIMIT;
+    if (range == 1 && st->fine == 31 && st->unknown == 22) st->flags |= MIRISDR_TUNER_AT_LOW_LIMIT;
     if (range == 4 && st->fine == 0) st->flags |= MIRISDR_TUNER_AT_HIGH_LIMIT;
+
+    return 0;
+
+failed:
+    return -1;
+}
+
+/*
+ * Overrides, data bits:
+ *
+ *   register 14   0      hold the VCO
+ *                 5:1    fine
+ *                 6      hold the up-converter code
+ *                 10:7   up-converter code
+ *                 18:17  range: 01 low, 10 middle, 11 high
+ *   register 13   0      wide IF filter (the library's BW_MAX, kept separately)
+ *                 6      hold the L-band LNA code
+ *                 10:7   L-band LNA code
+ */
+
+int mirisdr_set_tuner_override (mirisdr_dev_t *p, const mirisdr_tuner_override_t *ov)
+{
+    uint32_t r13 = 0, r14 = 0;
+
+    if (!p) goto failed;
+    if (p->external_tuner) goto failed;
+
+    if (ov)
+    {
+        if (ov->coarse > 2 || ov->fine > 31 || ov->upconv > 15 || ov->lna_cal > 15) goto failed;
+
+        if (ov->hold_vco)    r14 |= 1 | (uint32_t) ov->fine << 1 | (uint32_t) (ov->coarse + 1) << 17;
+        if (ov->hold_upconv) r14 |= 1 << 6 | (uint32_t) ov->upconv << 7;
+        if (ov->hold_lna)    r13 |= 1 << 6 | (uint32_t) ov->lna_cal << 7;
+    }
+
+    p->tuner_ovr13 = r13;
+    p->tuner_ovr14 = r14;
+
+    /* before the first tune they go out with it */
+    if (!(p->tuner_valid & 1)) return 0;
+
+    if (mirisdr_tuner_write(p, 14, p->tuner_ovr14, 0) < 0) goto failed;
+    if (mirisdr_tuner_write(p, 13, p->tuner_regd | p->tuner_ovr13, 0) < 0) goto failed;
 
     return 0;
 

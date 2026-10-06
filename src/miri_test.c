@@ -1167,13 +1167,13 @@ static tres_t t_tuner_status (void)
         for (k = 0; k < 3; k++)
             if (mirisdr_get_tuner_status(dev, &st[k]) < 0) { say("no readback at %u Hz", freqs[i]); return T_FAIL; }
 
-        note("%10u Hz: %08x  range %d coarse %2u fine %2u  upconv %2u lna %2u xtal %2u%s%s",
-             freqs[i], st[0].raw, st[0].vco_range, st[0].coarse, st[0].fine,
+        note("%10u Hz: %08x  coarse %d fine %2u unknown %2u  upconv %2u lna %2u xtal %2u%s%s",
+             freqs[i], st[0].raw, st[0].coarse, st[0].fine, st[0].unknown,
              st[0].upconv, st[0].lna_cal, st[0].xtal,
              st[0].flags & MIRISDR_TUNER_AT_LOW_LIMIT ? "  at low limit" : "",
              st[0].flags & MIRISDR_TUNER_AT_HIGH_LIMIT ? "  at high limit" : "");
 
-        if (st[0].vco_range < 0) { say("%u Hz: no VCO range in %08x", freqs[i], st[0].raw); return T_FAIL; }
+        if (st[0].coarse < 0) { say("%u Hz: no VCO range in %08x", freqs[i], st[0].raw); return T_FAIL; }
 
         /* without a retune the calibration result does not move */
         if (st[1].raw != st[0].raw || st[2].raw != st[0].raw)
@@ -1191,6 +1191,48 @@ static tres_t t_tuner_status (void)
     if (!moved) { say("the VCO codes never change with the frequency: the tuner is not responding"); return T_FAIL; }
 
     say("five frequencies read back, one VCO range each, stable, codes follow the tuning");
+
+    return T_PASS;
+}
+
+static tres_t t_tuner_override (void)
+{
+    mirisdr_tuner_override_t ov;
+    mirisdr_tuner_status_t a, b, c;
+
+    pump_stop();
+
+    if (mirisdr_set_center_freq(dev, 159000000) < 0) { say("159 MHz refused"); return T_FAIL; }
+    usleep(20000);
+    if (mirisdr_get_tuner_status(dev, &a) < 0 || a.coarse < 0) { say("no calibrated readback"); return T_FAIL; }
+
+    /* one fine code off stays inside the PLL's pull-in */
+    memset(&ov, 0, sizeof ov);
+    ov.hold_vco = 1;    ov.coarse = a.coarse;  ov.fine = a.fine < 31 ? a.fine + 1 : 30;
+    ov.hold_upconv = 1; ov.upconv = 5;
+    ov.hold_lna = 1;    ov.lna_cal = 7;
+    if (mirisdr_set_tuner_override(dev, &ov) < 0) { say("override refused"); return T_FAIL; }
+
+    /* kept across a retune */
+    mirisdr_set_center_freq(dev, 159100000);
+    usleep(20000);
+    if (mirisdr_get_tuner_status(dev, &b) < 0) { say("no readback with the override"); mirisdr_set_tuner_override(dev, NULL); return T_FAIL; }
+    note("calibrated coarse %d fine %2u, held coarse %d fine %2u upconv %2u lna %2u",
+         a.coarse, a.fine, b.coarse, b.fine, b.upconv, b.lna_cal);
+
+    mirisdr_set_tuner_override(dev, NULL);
+    mirisdr_set_center_freq(dev, 159000000);
+    usleep(20000);
+    if (mirisdr_get_tuner_status(dev, &c) < 0) { say("no readback after clearing"); return T_FAIL; }
+    note("cleared coarse %d fine %2u", c.coarse, c.fine);
+
+    if (b.coarse != ov.coarse || b.fine != ov.fine || b.upconv != ov.upconv || b.lna_cal != ov.lna_cal)
+    { say("the held values do not read back"); return T_FAIL; }
+
+    if (c.coarse != a.coarse || c.fine + 1 < a.fine || c.fine > a.fine + 1)
+    { say("clearing did not bring the calibration back"); return T_FAIL; }
+
+    say("held VCO, up-converter and LNA codes read back across a retune, cleared to the calibration");
 
     return T_PASS;
 }
@@ -2053,6 +2095,7 @@ static const struct {
 
     { "tuner",    "tuning across bands",        t_tuning              },
     { "tuner",    "tuner status readback",      t_tuner_status        },
+    { "tuner",    "tuner overrides",            t_tuner_override      },
     { "tuner",    "stream events",              t_stream_events       },
     { "tuner",    "gain steps",                 t_gain                },
     { "tuner",    "filter bandwidths",          t_bandwidth           },

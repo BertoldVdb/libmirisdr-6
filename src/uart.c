@@ -61,6 +61,9 @@ int mirisdr_uart_write (mirisdr_dev_t *p, uint32_t baud, const uint8_t *buf, int
            next transfer that waits for the line, not this one. */
         ms = (unsigned int) ((uint64_t) n * 10 * bit_ns / 1000000) + CTRL_TIMEOUT;
 
+        /* the firmware drives the line through register 8 */
+        p->reg8_valid = 0;
+
         if (libusb_control_transfer(p->dh, 0x40, CMD_UART_TX, (uint16_t) delay, 0,
                                     (unsigned char *) buf + done, (uint16_t) n, ms) != n) return -1;
 

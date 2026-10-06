@@ -388,15 +388,15 @@ MIRISDR_API uint32_t mirisdr_get_ir (mirisdr_dev_t *p);                 /* extra
  * way to know if the PLL is locked, the HIGH and LOW limit flags only indicate
  * you are tuning near the edge of your chip, but that you try to tune beyond it. */
 #define MIRISDR_TUNER_SYNTH_OFF      0x01   /* no VCO range selected */
-#define MIRISDR_TUNER_AT_LOW_LIMIT   0x02   /* lowest range, coarse 22, fine 31 */
-#define MIRISDR_TUNER_AT_HIGH_LIMIT  0x04   /* highest range, fine 0 */
+#define MIRISDR_TUNER_AT_LOW_LIMIT   0x02   /* coarse 0, fine 31, unknown 22 */
+#define MIRISDR_TUNER_AT_HIGH_LIMIT  0x04   /* coarse 2, fine 0 */
 
 typedef struct mirisdr_tuner_status
 {
 	uint32_t raw;
-	int8_t   vco_range;  /* 0-2 from the one-hot range bits, -1 when none is set */
-	uint8_t  coarse;     /* VCO coarse code, 5 bits */
-	uint8_t  fine;       /* VCO fine code, 5 bits */
+	int8_t   coarse;     /* VCO range 0-2 from the one-hot bits, -1 when none is set */
+	uint8_t  fine;       /* VCO capacitor band within the range, 5 bits */
+	uint8_t  unknown;    /* set by a second search after the band, 5 bits; falls with frequency */
 	uint8_t  upconv;     /* up-converter LO calibration, 4 bits */
 	uint8_t  lna_cal;    /* L-band LNA calibration, 4 bits */
 	uint8_t  xtal;       /* a count set by the crystal selection, 5 bits */
@@ -405,6 +405,20 @@ typedef struct mirisdr_tuner_status
 } mirisdr_tuner_status_t;
 
 MIRISDR_API int mirisdr_get_tuner_status (mirisdr_dev_t *p, mirisdr_tuner_status_t *st); /* extra */
+
+/* Force specific tuner calibration. Kept across retunes, NULL clears them all. */
+typedef struct mirisdr_tuner_override
+{
+	uint8_t  hold_vco;
+	uint8_t  coarse;      /* VCO range 0-2 */
+	uint8_t  fine;        /* VCO capacitor band, 0-31 */
+	uint8_t  hold_upconv;
+	uint8_t  upconv;      /* up-converter LO code, 0-15 */
+	uint8_t  hold_lna;
+	uint8_t  lna_cal;     /* L-band LNA code, 0-15 */
+} mirisdr_tuner_override_t;
+
+MIRISDR_API int mirisdr_set_tuner_override (mirisdr_dev_t *p, const mirisdr_tuner_override_t *ov); /* extra */
 
 /* Every packet header carries the gain the tuner is running and three bits that
  * toggle when a gain word, a synthesizer word or a sample rate write takes effect.

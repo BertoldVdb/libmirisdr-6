@@ -20,7 +20,7 @@
 
 int mirisdr_set_gain(mirisdr_dev_t *p)
 {
-    uint32_t reg1 = 1, reg6 = 6;
+    uint32_t reg1 = 0, reg6 = 0;
 #if MIRISDR_DEBUG >= 1
     fprintf(stderr,
 #if MIRISDR_DEBUG >= 3
@@ -52,52 +52,52 @@ int mirisdr_set_gain(mirisdr_dev_t *p)
 //    mirisdr_write_reg(p, 0x08, 0xf380);
 
     /* Receiver Gain Control */
-    /* 0-3 => registr */
-    /* 4-9 => baseband, 0 - 59, 60-63 je stejné jako 59 */
-    /* 10-11 => mixer gain reduction pouze pro AM režim */
-    /* 12 => mixer gain reduction -19dB */
-    /* 13 => lna gain reduction -24dB */
-    /* 14-16 => DC kalibrace */
-    /* 17 => zrychlená DC kalibrace */
-    reg1 |= p->gain_reduction_baseband << 4;
+    /* datové bity, bez adresy */
+    /* 0-5 => baseband, 0 - 59, 60-63 je stejné jako 59 */
+    /* 6-7 => mixer gain reduction pouze pro AM režim */
+    /* 8 => mixer gain reduction -19dB */
+    /* 9 => lna gain reduction -24dB */
+    /* 10-12 => DC kalibrace */
+    /* 13 => zrychlená DC kalibrace */
+    reg1 |= p->gain_reduction_baseband;
 
     // Mixbuffer is on AM1 and AM2 inputs only
     if (p->band == MIRISDR_BAND_AM1)
     {
-        reg1 |= (p->gain_reduction_mixbuffer & 0x03) << 10;
+        reg1 |= (p->gain_reduction_mixbuffer & 0x03) << 6;
     }
     else if (p->band == MIRISDR_BAND_AM2)
     {
-        reg1 |= (p->gain_reduction_mixbuffer == 0 ? 0x0 : 0x03) << 10;
+        reg1 |= (p->gain_reduction_mixbuffer == 0 ? 0x0 : 0x03) << 6;
     }
     else
     {
-        reg1 |= 0x0 << 10;
+        reg1 |= 0x0 << 6;
     }
 
-    reg1 |= p->gain_reduction_mixer << 12;
+    reg1 |= p->gain_reduction_mixer << 8;
 
     // LNA is not on AM1 nor AM2 inputs
     if ((p->band == MIRISDR_BAND_AM1) || (p->band == MIRISDR_BAND_AM2))
     {
-        reg1 |= 0x0 << 13;
+        reg1 |= 0x0 << 9;
     }
     else
     {
-        reg1 |= p->gain_reduction_lna << 13;
+        reg1 |= p->gain_reduction_lna << 9;
     }
 
-    reg1 |= (p->dc_mode & 0x7) << 14;
+    reg1 |= (p->dc_mode & 0x7) << 10;
     reg1 |= ((p->dc_speedup)? MIRISDR_DC_OFFSET_CALIBRATION_SPEEDUP_ON :
-                              MIRISDR_DC_OFFSET_CALIBRATION_SPEEDUP_OFF) << 17;
+                              MIRISDR_DC_OFFSET_CALIBRATION_SPEEDUP_OFF) << 13;
     if (p->external_tuner) return 0;
 
-    mirisdr_write_reg(p, 0x09, reg1);
+    mirisdr_tuner_write(p, 1, reg1, 0);
 
     /* DC Offset Calibration setup */
-    reg6 |= (p->dc_track & 0x3f) << 4;
-    reg6 |= (p->dc_period & 0xfff) << 10;
-    mirisdr_write_reg(p, 0x09, reg6);
+    reg6 |= (p->dc_track & 0x3f);
+    reg6 |= (p->dc_period & 0xfff) << 6;
+    mirisdr_tuner_write(p, 6, reg6, 0);
 //// set to 0xf300 to select AM input added Dec 5 2014 SM5BSZ
 //    if (p->freq < 50000000)
 //      {

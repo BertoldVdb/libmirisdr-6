@@ -71,6 +71,9 @@ static int mirisdr_i2c_xfer (mirisdr_dev_t *p, uint8_t addr, unsigned int flags,
 
     ms = (unsigned int) ((uint64_t) (len + 1) * 9 * p->i2c_clock_ns / 1000000) + CTRL_TIMEOUT;
 
+    /* the firmware drives the lines through register 8 */
+    p->reg8_valid = 0;
+
     if (libusb_control_transfer(p->dh, in ? 0xC0 : 0x40, in ? CMD_I2C_READ : CMD_I2C_WRITE,
                                 (uint16_t) (addr | (flags << 8)), p->i2c_delay,
                                 buf, (uint16_t) len, ms) != len) return -1;
@@ -93,6 +96,8 @@ int mirisdr_i2c_read (mirisdr_dev_t *p, uint8_t addr, unsigned int flags,
 int mirisdr_i2c_recover (mirisdr_dev_t *p)
 {
     if (!p || !p->dh || !p->fw_ours) return -1;
+
+    p->reg8_valid = 0;
 
     if (libusb_control_transfer(p->dh, 0x40, CMD_I2C_RECOVER, 0, p->i2c_delay,
                                 NULL, 0, CTRL_TIMEOUT) < 0) return -1;

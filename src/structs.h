@@ -119,7 +119,14 @@ struct mirisdr_dev {
     int                 driver_active;
     int                 bias;
     int                 reg8;
-    uint32_t            tuner_reg0;     /* last tuner register 0 word, 0 before the first tune */
+    uint32_t            reg8_sent;      /* last word written to register 8 */
+    int                 reg8_valid;     /* register 8 still holds reg8_sent */
+    uint32_t            tuner_reg[16];  /* last word written to each MSi001 register, 0 if never */
+    uint16_t            tuner_valid;    /* per register: the tuner holds tuner_reg */
+    uint8_t             tuner_turned;   /* the next word clocks a readback and is not latched */
+    uint32_t            tuner_regd;     /* last register 13 data, without the override bits */
+    uint32_t            tuner_ovr13;    /* override bits added to the register 13 data */
+    uint32_t            tuner_ovr14;    /* register 14 data, the override bits */
     int                 fw_ours;
     int                 sync_ready;     /* the sync path has started the stream */
     uint8_t             *sync_in;       /* one bulk transfer as read */
