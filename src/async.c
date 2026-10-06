@@ -819,6 +819,15 @@ int mirisdr_stop_async (mirisdr_dev_t *p) {
      * fires, and we can't disable the capture engine */
     mirisdr_streaming_stop(p);
 
+    /* The firmware sends the buffer it holds when it stops, as two 512 byte packets.
+       Cancelling between them leaves the second in its FIFO, to start the next
+       stream half a block out. */
+#if defined(_WIN32) && !defined(__MINGW32__)
+    Sleep(2);
+#else
+    usleep(2000);
+#endif
+
         /* every transfer back from libusb before the pause is declared */
     if (mirisdr_async_drain(p, 10) < 0) goto failed;
 

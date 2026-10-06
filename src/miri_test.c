@@ -613,6 +613,9 @@ static tres_t t_rate_changes (void)
                 bad++;
                 note("FAILED at %u: %.0f sps", rates[i], sps);
             }
+            if (b.resyncs > a.resyncs)
+                note("resync at %u -> %u: %llu, %llu gaps", i ? rates[i - 1] : rates[sizeof rates / sizeof rates[0] - 1],
+                     rates[i], (unsigned long long) (b.resyncs - a.resyncs), (unsigned long long) (b.gaps - a.gaps));
             if ((b.gaps > a.gaps) && (b.lost == a.lost)) {
                 misread++;
                 note("FAILED at %u: the counter went backwards", rates[i]);
