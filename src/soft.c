@@ -58,7 +58,20 @@ hw_switch_freq_plan_t *hw_switch_freq_plan[2] = {
         hw_switch_freq_plan_sdrplay
 };
 
+static int mirisdr_set_soft_words(mirisdr_dev_t *p);
+
+/* one list request for the whole tune */
 int mirisdr_set_soft(mirisdr_dev_t *p)
+{
+    int r;
+
+    mirisdr_batch_begin(p);
+    r = mirisdr_set_soft_words(p);
+
+    return r + mirisdr_batch_end(p);
+}
+
+static int mirisdr_set_soft_words(mirisdr_dev_t *p)
 {
     uint32_t reg0 = 0, reg2 = 0, reg5 = 0, reg3 = 0, regd = 0;
     uint64_t n, thresh, frac, lo_div = 0, fvco = 0, rfvco = 0, offset = 0, afc = 0, a, b, c;
@@ -412,8 +425,10 @@ int mirisdr_set_soft(mirisdr_dev_t *p)
 int mirisdr_set_center_freq(mirisdr_dev_t *p, uint32_t freq)
 {
     p->freq = freq;
+    mirisdr_batch_begin(p);
     int r = mirisdr_set_soft(p);
     r += mirisdr_set_gain(p); // restore gain
+    r += mirisdr_batch_end(p);
     return r;
 }
 
@@ -449,8 +464,10 @@ int mirisdr_set_if_freq(mirisdr_dev_t *p, uint32_t freq)
         goto failed;
     }
 
+    mirisdr_batch_begin(p);
     int r = mirisdr_set_soft(p);
     r += mirisdr_set_gain(p); // restore gain
+    r += mirisdr_batch_end(p);
     return r;
 
     failed: return -1;
@@ -547,8 +564,10 @@ int mirisdr_set_bandwidth(mirisdr_dev_t *p, uint32_t bw)
         p->bandwidth = MIRISDR_BW_200KHZ;
         p->if_freq = MIRISDR_IF_450KHZ;
     }
+    mirisdr_batch_begin(p);
     int r = mirisdr_set_soft(p);
     r += mirisdr_set_gain(p); // restore gain
+    r += mirisdr_batch_end(p);
     return r;
 }
 

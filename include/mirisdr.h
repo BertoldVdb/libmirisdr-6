@@ -420,6 +420,32 @@ typedef struct mirisdr_tuner_override
 
 MIRISDR_API int mirisdr_set_tuner_override (mirisdr_dev_t *p, const mirisdr_tuner_override_t *ov); /* extra */
 
+/* Register lists, run by the firmware without host involvement: a tune, or a
+ * scan that hops on stream interrupts. An entry with reg below 0x20
+ * writes that register as mirisdr_write_reg() would. The commands below take a 16 bit val.
+ * Up to 63 entries a bank. A list replaces the running one unless queued, n = 0 stops.
+ * PPS pauses while a list runs, and register writes are refused: stop it first. */
+#define MIRISDR_LIST_WAIT_US    0x80    /* busy wait, val microseconds */
+#define MIRISDR_LIST_WAIT_IRQ   0x81    /* val stream interrupts, counted from the previous wait */
+#define MIRISDR_LIST_REPEAT     0x82    /* back to the start, val more passes, 0 = forever */
+#define MIRISDR_LIST_SWITCH     0x83    /* to the other bank, if it is queued */
+#define MIRISDR_LIST_WAIT_SPI   0x84    /* the SPI master (registers 0x0B-0x0D) done, at most val
+                                           polls of ~0.5 us, 0 = 65536; a timeout stops the list */
+#define MIRISDR_LIST_QUEUE      0x01    /* flag: load behind the running list */
+
+typedef struct mirisdr_list_entry {
+    uint8_t reg;
+    uint32_t val;
+} mirisdr_list_entry_t;
+
+typedef struct mirisdr_list_status {
+    uint8_t running, waiting, queued, bank, pps_paused, spi_timeout, entry;
+    uint16_t passes;
+} mirisdr_list_status_t;
+
+MIRISDR_API int mirisdr_load_list (mirisdr_dev_t *p, int bank, int flags, const mirisdr_list_entry_t *e, int n); /* extra */
+MIRISDR_API int mirisdr_get_list_status (mirisdr_dev_t *p, mirisdr_list_status_t *st); /* extra */
+
 /* Every packet header carries the gain the tuner is running and three bits that
  * toggle when a gain word, a synthesizer word or a sample rate write takes effect.
  * The callback runs for each packet where something changed, before that packet's

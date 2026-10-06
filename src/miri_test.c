@@ -195,7 +195,8 @@ static int device_reopen (void)
     if (dev) mirisdr_close(dev);
     dev = NULL;
 
-    for (tries = 0; tries < 20; tries++) {
+    /* udev can take 10 s to open a re-enumerated device to us */
+    for (tries = 0; tries < 40; tries++) {
         usleep(500000);
 
         if (device_open() == 0) return 0;
@@ -936,9 +937,8 @@ static tres_t t_pll_unlockable (void)
         mirisdr_reboot(dev, MIRISDR_BOOT_RAM);
         mirisdr_close(dev);
         dev = NULL;
-        sleep(3);
 
-        if (device_open() < 0) { say("parked, and it did not come back"); return T_FAIL; }
+        if (device_reopen() < 0) { say("parked, and it did not come back"); return T_FAIL; }
         if (stream_setup("BULK", "504_S8", 2000000) < 0) { say("parked, no stream after the reboot"); return T_FAIL; }
 
         sps = stream_rate_settled(0.5, &d);
@@ -1063,14 +1063,14 @@ static tres_t t_write_mem (void)
     pump_stop();
 
     /* scratch above the image, below xdata */
-    if (mirisdr_read_mem(dev, 0x1700, save, sizeof save, 0) < 0) { say("could not read the scratch area"); return T_FAIL; }
+    if (mirisdr_read_mem(dev, 0x1900, save, sizeof save, 0) < 0) { say("could not read the scratch area"); return T_FAIL; }
 
     for (i = 0; i < sizeof probe; i++) probe[i] = (uint8_t) (0xA5 ^ i);
 
-    if (mirisdr_write_mem(dev, 0x1700, probe, sizeof probe, 0) < 0) { say("write failed"); return T_FAIL; }
-    if (mirisdr_read_mem(dev, 0x1700, back, sizeof back, 0) < 0) { say("read back failed"); return T_FAIL; }
+    if (mirisdr_write_mem(dev, 0x1900, probe, sizeof probe, 0) < 0) { say("write failed"); return T_FAIL; }
+    if (mirisdr_read_mem(dev, 0x1900, back, sizeof back, 0) < 0) { say("read back failed"); return T_FAIL; }
 
-    mirisdr_write_mem(dev, 0x1700, save, sizeof save, 0);
+    mirisdr_write_mem(dev, 0x1900, save, sizeof save, 0);
 
     if (memcmp(probe, back, sizeof probe)) { say("what came back differs from what went in"); return T_FAIL; }
 
@@ -1099,14 +1099,14 @@ static tres_t t_call_gate (void)
 
     pump_stop();
 
-    /* Above the firmware's code, below its xdata at 0x1800 */
-    if (mirisdr_write_mem(dev, 0x1700, stub, sizeof stub, 0) < 0) { say("could not place the stub"); return T_FAIL; }
+    /* 0x1A00-0x1BFF is kept free between the firmware's code and its xdata */
+    if (mirisdr_write_mem(dev, 0x1A00, stub, sizeof stub, 0) < 0) { say("could not place the stub"); return T_FAIL; }
 
     memset(&regs, 0, sizeof regs);
     regs.r0 = 0x40;
     regs.r1 = 0x0F;
 
-    if (mirisdr_call(dev, 0x1700, &regs) < 0) { say("the call failed"); return T_FAIL; }
+    if (mirisdr_call(dev, 0x1A00, &regs) < 0) { say("the call failed"); return T_FAIL; }
 
     if (regs.a != 0x4F)   { say("a came back %02X, wanted 4F", regs.a); return T_FAIL; }
     if (regs.b != 0x5A)   { say("b came back %02X, wanted 5A", regs.b); return T_FAIL; }
@@ -1912,8 +1912,7 @@ static tres_t t_pll_characterise (void)
         mirisdr_reboot(dev, MIRISDR_BOOT_RAM);
         mirisdr_close(dev);
         dev = NULL;
-        sleep(3);
-        if (device_open() < 0) { say("parked it and it did not come back"); return T_FAIL; }
+        if (device_reopen() < 0) { say("parked it and it did not come back"); return T_FAIL; }
         if (stream_setup("BULK", "504_S8", 2000000) < 0) { say("parked, no stream after the reboot"); return T_FAIL; }
         if (!within(stream_rate_settled(0.5, NULL), 2000000, 0.05)) {
             say("parked, and a core reboot did not clear it");
@@ -1959,9 +1958,8 @@ static int chars_restamp (uint32_t rate)
     mirisdr_reboot(dev, MIRISDR_BOOT_RAM);
     mirisdr_close(dev);
     dev = NULL;
-    sleep(3);
 
-    if (device_open() < 0) return -1;
+    if (device_reopen() < 0) return -1;
     if (stream_setup("BULK", "252_S16", rate) < 0) return -1;
 
     usleep(300000);

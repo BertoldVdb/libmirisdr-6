@@ -18,7 +18,19 @@
 
 #include "gain.h"
 
+static int mirisdr_set_gain_words(mirisdr_dev_t *p);
+
 int mirisdr_set_gain(mirisdr_dev_t *p)
+{
+    int r;
+
+    mirisdr_batch_begin(p);
+    r = mirisdr_set_gain_words(p);
+
+    return r + mirisdr_batch_end(p);
+}
+
+static int mirisdr_set_gain_words(mirisdr_dev_t *p)
 {
     uint32_t reg1 = 0, reg6 = 0;
 #if MIRISDR_DEBUG >= 1

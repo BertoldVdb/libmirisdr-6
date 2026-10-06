@@ -124,6 +124,10 @@ struct mirisdr_dev {
     uint32_t            tuner_reg[16];  /* last word written to each MSi001 register, 0 if never */
     uint16_t            tuner_valid;    /* per register: the tuner holds tuner_reg */
     uint8_t             tuner_turned;   /* the next word clocks a readback and is not latched */
+    uint8_t             batch[256];     /* register words held for one list request */
+    int                 batch_n;
+    int                 batch_depth;
+    int                 batch_running;  /* a tune list may still be running */
     uint32_t            tuner_regd;     /* last register 13 data, without the override bits */
     uint32_t            tuner_ovr13;    /* override bits added to the register 13 data */
     uint32_t            tuner_ovr14;    /* register 14 data, the override bits */

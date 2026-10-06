@@ -15,6 +15,105 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#define CMD_REG_LIST            0x5A
+#define CMD_REG_LIST_STATUS     0x5B
+#define MIRISDR_LIST_MAX        63      /* a bank is one page */
+
+static int mirisdr_batch_flush (mirisdr_dev_t *p)
+{
+    int n = p->batch_n;
+
+    if (!n) return 0;
+    p->batch_n = 0;
+
+    if (libusb_control_transfer(p->dh, 0x42, CMD_REG_LIST, 0, 0, p->batch, (uint16_t) (n * 4),
+                                CTRL_TIMEOUT) == n * 4)
+    {
+        p->batch_running = 1;
+        return 0;
+    }
+
+    /* what went out is not known */
+    p->tuner_valid = 0;
+    p->reg8_valid = 0;
+
+    return -1;
+}
+
+/* Hold register writes for one list request, nested. If firmware doesn't support it, does nothing. */
+static void mirisdr_batch_begin (mirisdr_dev_t *p)
+{
+    p->batch_depth++;
+}
+
+static int mirisdr_batch_end (mirisdr_dev_t *p)
+{
+    if (p->batch_depth && --p->batch_depth) return 0;
+
+    return mirisdr_batch_flush(p);
+}
+
+int mirisdr_load_list (mirisdr_dev_t *p, int bank, int flags, const mirisdr_list_entry_t *e, int n)
+{
+    uint8_t buf[4 * MIRISDR_LIST_MAX];
+    int i;
+
+    if (!p || !p->dh || !p->fw_ours) return -1;
+    if ((bank & ~1) || (n < 0) || (n > MIRISDR_LIST_MAX) || (n && !e)) return -1;
+
+    for (i = 0; i < n; i++)
+    {
+        buf[4 * i]     = e[i].reg;
+        buf[4 * i + 1] = (uint8_t) e[i].val;
+        buf[4 * i + 2] = (uint8_t) (e[i].val >> 8);
+        buf[4 * i + 3] = (uint8_t) (e[i].val >> 16);
+    }
+
+    /* the list writes behind the caches' back */
+    p->tuner_valid = 0;
+    p->reg8_valid = 0;
+
+    return (libusb_control_transfer(p->dh, 0x42, CMD_REG_LIST,
+                                    (uint16_t) (bank | ((flags & MIRISDR_LIST_QUEUE) ? 2 : 0)),
+                                    (uint16_t) ((flags >> 8) & 0xff), n ? buf : NULL, (uint16_t) (4 * n),
+                                    CTRL_TIMEOUT) == 4 * n) ? 0 : -1;
+}
+
+/* The firmware refuses register writes while a list runs; a tune's list is done in
+   microseconds, so wait for it rather than fail */
+static void mirisdr_batch_wait (mirisdr_dev_t *p)
+{
+    uint8_t b[4];
+    int i;
+
+    for (i = 0; i < 100; i++)
+    {
+        if (libusb_control_transfer(p->dh, 0xC2, CMD_REG_LIST_STATUS, 0, 0, b, 4, CTRL_TIMEOUT) != 4) break;
+        if (!(b[0] & 1)) break;
+    }
+
+    p->batch_running = 0;
+}
+
+int mirisdr_get_list_status (mirisdr_dev_t *p, mirisdr_list_status_t *st)
+{
+    uint8_t b[4];
+
+    if (!p || !p->dh || !p->fw_ours || !st) return -1;
+
+    if (libusb_control_transfer(p->dh, 0xC2, CMD_REG_LIST_STATUS, 0, 0, b, 4, CTRL_TIMEOUT) != 4) return -1;
+
+    st->running    = b[0] & 1;
+    st->waiting    = (b[0] >> 1) & 1;
+    st->queued     = (b[0] >> 2) & 3;
+    st->bank       = (b[0] >> 4) & 1;
+    st->pps_paused = (b[0] >> 5) & 1;
+    st->spi_timeout = (b[0] >> 6) & 1;
+    st->entry      = b[1];
+    st->passes     = (uint16_t) (b[2] | b[3] << 8);
+
+    return 0;
+}
 
 /* Every word to the tuner passes here, raw writes included, so the cache stays true */
 static void mirisdr_tuner_track (mirisdr_dev_t *p, uint32_t w, int ok)
@@ -55,7 +154,21 @@ int mirisdr_write_reg (mirisdr_dev_t *p, uint8_t reg, uint32_t val) {
     fprintf( stderr, "write reg: 0x%02x, val 0x%08x\n", reg, val);
 #endif
 
-    r = libusb_control_transfer(p->dh, 0x42, 0x41, value, index, NULL, 0, CTRL_TIMEOUT);
+    if (p->batch_depth && p->fw_ours)
+    {
+        uint8_t *e = p->batch + 4 * p->batch_n;
+
+        e[0] = reg;
+        e[1] = (uint8_t) val;
+        e[2] = (uint8_t) (val >> 8);
+        e[3] = (uint8_t) (val >> 16);
+        r = (++p->batch_n == MIRISDR_LIST_MAX) ? mirisdr_batch_flush(p) : 0;
+    }
+    else
+    {
+        if (p->batch_running) mirisdr_batch_wait(p);
+        r = libusb_control_transfer(p->dh, 0x42, 0x41, value, index, NULL, 0, CTRL_TIMEOUT);
+    }
 
     if (reg == 0x09) mirisdr_tuner_track(p, val, r >= 0);
 
