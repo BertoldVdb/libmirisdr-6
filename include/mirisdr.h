@@ -441,7 +441,8 @@ typedef struct mirisdr_tuner_status
 	uint8_t  unknown;    /* set by a second search after the band, 5 bits; falls with frequency */
 	uint8_t  upconv;     /* up-converter LO calibration, 4 bits */
 	uint8_t  lna_cal;    /* L-band LNA calibration, 4 bits */
-	uint8_t  xtal;       /* a count set by the crystal selection, 5 bits */
+	uint8_t  filter;     /* IF filter calibration code, 5 bits: timed against the crystal
+	                        XTALSEL sets. Higher is narrower */
 	uint8_t  top;        /* bits 27:26, so far always 3 */
 	uint8_t  flags;      /* MIRISDR_TUNER_* */
 } mirisdr_tuner_status_t;
@@ -458,6 +459,9 @@ typedef struct mirisdr_tuner_override
 	uint8_t  upconv;      /* up-converter LO code, 0-15 */
 	uint8_t  hold_lna;
 	uint8_t  lna_cal;     /* L-band LNA code, 0-15 */
+	uint8_t  hold_filter; /* the status still reads the calibrated code */
+	uint8_t  filter;      /* IF filter code, 0-31, 0 the widest; with the
+	                         bandwidth MIRISDR_BW_MAX is this held at 0 */
 } mirisdr_tuner_override_t;
 
 MIRISDR_API int mirisdr_set_tuner_override (mirisdr_dev_t *p, const mirisdr_tuner_override_t *ov); /* extra */

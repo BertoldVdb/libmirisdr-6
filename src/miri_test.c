@@ -1170,9 +1170,9 @@ static tres_t t_tuner_status (void)
         for (k = 0; k < 3; k++)
             if (mirisdr_get_tuner_status(dev, &st[k]) < 0) { say("no readback at %u Hz", freqs[i]); return T_FAIL; }
 
-        note("%10u Hz: %08x  coarse %d fine %2u unknown %2u  upconv %2u lna %2u xtal %2u%s%s",
+        note("%10u Hz: %08x  coarse %d fine %2u unknown %2u  upconv %2u lna %2u filter %2u%s%s",
              freqs[i], st[0].raw, st[0].coarse, st[0].fine, st[0].unknown,
-             st[0].upconv, st[0].lna_cal, st[0].xtal,
+             st[0].upconv, st[0].lna_cal, st[0].filter,
              st[0].flags & MIRISDR_TUNER_AT_LOW_LIMIT ? "  at low limit" : "",
              st[0].flags & MIRISDR_TUNER_AT_HIGH_LIMIT ? "  at high limit" : "");
 

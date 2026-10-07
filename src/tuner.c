@@ -24,7 +24,8 @@
  *   17:14  up-converter LO calibration (updated while the up-converter is on)
  *   13:9   VCO fine, the tank capacitor band within the range
  *    8:5   L-band LNA calibration (updated by a register 2 write with bit 22)
- *    4:0   a count set by XTALSEL, +-1 between calibrations
+ *    4:0   IF filter calibration code, timed against the crystal XTALSEL names,
+ *          +-1 between calibrations; the code in force unless overridden
  */
 
 #define MIRISDR_TUNER_READBACK  0x00001C    /* register 12, data bit 0 */
@@ -58,7 +59,7 @@ int mirisdr_get_tuner_status (mirisdr_dev_t *p, mirisdr_tuner_status_t *st)
     st->fine    = (v >> 9) & 31;
     st->upconv  = (v >> 14) & 15;
     st->lna_cal = (v >> 5) & 15;
-    st->xtal    = v & 31;
+    st->filter  = v & 31;
 
     range = (v >> 23) & 7;
     st->coarse = range == 1 ? 0 : range == 2 ? 1 : range == 4 ? 2 : -1;
@@ -81,7 +82,8 @@ failed:
  *                 6      hold the up-converter code
  *                 10:7   up-converter code
  *                 18:17  range: 01 low, 10 middle, 11 high
- *   register 13   0      wide IF filter (the library's BW_MAX, kept separately)
+ *   register 13   0      hold the IF filter code (the library's BW_MAX holds 0)
+ *                 5:1    IF filter code, 0 the widest
  *                 6      hold the L-band LNA code
  *                 10:7   L-band LNA code
  */
@@ -95,11 +97,13 @@ int mirisdr_set_tuner_override (mirisdr_dev_t *p, const mirisdr_tuner_override_t
 
     if (ov)
     {
-        if (ov->coarse > 2 || ov->fine > 31 || ov->upconv > 15 || ov->lna_cal > 15) goto failed;
+        if (ov->coarse > 2 || ov->fine > 31 || ov->upconv > 15 || ov->lna_cal > 15 || ov->filter > 31) goto failed;
 
         if (ov->hold_vco)    r14 |= 1 | (uint32_t) ov->fine << 1 | (uint32_t) (ov->coarse + 1) << 17;
         if (ov->hold_upconv) r14 |= 1 << 6 | (uint32_t) ov->upconv << 7;
         if (ov->hold_lna)    r13 |= 1 << 6 | (uint32_t) ov->lna_cal << 7;
+        /* ORed with the BW_MAX bit, which is the same hold: a held code wins */
+        if (ov->hold_filter) r13 |= 1 | (uint32_t) ov->filter << 1;
     }
 
     p->tuner_ovr13 = r13;
