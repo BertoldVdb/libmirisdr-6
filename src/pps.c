@@ -26,12 +26,13 @@
 
 static uint32_t mirisdr_burst (mirisdr_dev_t *p);
 
-#define CMD_PPS_TIME            0x51
 #define CMD_PPS_ENABLE          0x52
-#define CMD_PPS_ANCHOR          0x53
+
+/* The counters and the anchor are blocks the firmware keeps, read with request
+   0x42 at the addresses its firmware block gives */
 
 #define PPS_TIME_LEN            24
-#define PPS_ANCHOR_LEN          18
+#define PPS_ANCHOR_LEN          17      /* 4 counters, then valid */
 
 /* 200ns loop duration, accept 1% higher (interruptions can't speed up the loop) and
  * 10% lower (inrerruptions only slow down) */
@@ -88,8 +89,7 @@ static int mirisdr_pps_anchor (mirisdr_dev_t *p)
 
     for (tries = 0; tries < 100; tries++)
     {
-        if (libusb_control_transfer(p->dh, 0xC0, CMD_PPS_ANCHOR, 0, 0, b, PPS_ANCHOR_LEN,
-                                    CTRL_TIMEOUT) != PPS_ANCHOR_LEN) return -1;
+        if (!p->fw_anchor_at || mirisdr_read_block(p, p->fw_anchor_at, 0, 0, b, PPS_ANCHOR_LEN) < 0) return -1;
 
         if (b[16]) break;
 
@@ -117,8 +117,7 @@ static int mirisdr_pps_anchor (mirisdr_dev_t *p)
 
     /* whatever is latched now was captured against the count this anchor has
        just reset, so it is not placeable until the next pulse */
-    if (libusb_control_transfer(p->dh, 0xC0, CMD_PPS_TIME, 0, 0, b, PPS_TIME_LEN,
-                                CTRL_TIMEOUT) != PPS_TIME_LEN) return -1;
+    if (!p->fw_pps_at || mirisdr_read_block(p, p->fw_pps_at, 1, 0, b, PPS_TIME_LEN) < 0) return -1;
 
     p->pps_edge0 = b[14];
     p->pps_stale = 1;
@@ -209,8 +208,8 @@ int mirisdr_get_pps (mirisdr_dev_t *p, mirisdr_pps_t *out)
 
     if (!p || !p->dh || !out || !p->fw_ours || !p->pps_anchor_valid) return -1;
 
-    if (libusb_control_transfer(p->dh, 0xC0, CMD_PPS_TIME, 0, 0, b, PPS_TIME_LEN,
-                                CTRL_TIMEOUT) != PPS_TIME_LEN) return -1;
+    /* the block the firmware keeps, read as one snapshot */
+    if (!p->fw_pps_at || mirisdr_read_block(p, p->fw_pps_at, 1, 0, b, PPS_TIME_LEN) < 0) return -1;
 
     mirisdr_pps_unpack(b, &t);
 

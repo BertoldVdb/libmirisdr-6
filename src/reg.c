@@ -16,20 +16,29 @@
  */
 
 #define CMD_REG_LIST            0x5A
-#define CMD_REG_LIST_STATUS     0x5B
 #define MIRISDR_LIST_MAX        63      /* a bank is one page */
+
+/* Up to 64 bytes in one request with our firmware, copied with interrupts off so
+   they are one snapshot: xdata, or internal RAM.  The ROM gives 4 at a time. */
+static int mirisdr_read_block (mirisdr_dev_t *p, uint16_t addr, int iram, int remap, uint8_t *buf, int len)
+{
+    return (libusb_control_transfer(p->dh, 0xC0, 0x42, (uint16_t) ((remap ? 1 : 0) | (iram ? 2 : 0)),
+                                    (uint16_t) (iram ? addr : addr - 0xC000), buf, (uint16_t) len,
+                                    CTRL_TIMEOUT) == len) ? 0 : -1;
+}
+
+/* The firmware's list block: run, waiting, PPS paused, SPI timeout, queued, bank,
+   entry offset, passes */
+#define MIRISDR_LIST_BLOCK      9
 
 /* The firmware refuses register writes while a list runs. Do short wait for the list to be done */
 static void mirisdr_batch_wait (mirisdr_dev_t *p)
 {
-    uint8_t b[4];
+    uint8_t run;
     int i;
 
-    for (i = 0; i < 100; i++)
-    {
-        if (libusb_control_transfer(p->dh, 0xC2, CMD_REG_LIST_STATUS, 0, 0, b, 4, CTRL_TIMEOUT) != 4) break;
-        if (!(b[0] & 1)) break;
-    }
+    for (i = 0; p->fw_list_at && i < 100; i++)
+        if (mirisdr_read_block(p, p->fw_list_at, 1, 0, &run, 1) < 0 || !run) break;
 
     p->batch_running = 0;
 }
@@ -101,20 +110,20 @@ int mirisdr_load_list (mirisdr_dev_t *p, int bank, int flags, const mirisdr_list
 
 int mirisdr_get_list_status (mirisdr_dev_t *p, mirisdr_list_status_t *st)
 {
-    uint8_t b[4];
+    uint8_t b[MIRISDR_LIST_BLOCK];
 
-    if (!p || !p->dh || !p->fw_ours || !st) return -1;
+    if (!p || !p->dh || !p->fw_ours || !p->fw_list_at || !st) return -1;
 
-    if (libusb_control_transfer(p->dh, 0xC2, CMD_REG_LIST_STATUS, 0, 0, b, 4, CTRL_TIMEOUT) != 4) return -1;
+    if (mirisdr_read_block(p, p->fw_list_at, 1, 0, b, sizeof b) < 0) return -1;
 
-    st->running    = b[0] & 1;
-    st->waiting    = (b[0] >> 1) & 1;
-    st->queued     = (b[0] >> 2) & 3;
-    st->bank       = (b[0] >> 4) & 1;
-    st->pps_paused = (b[0] >> 5) & 1;
-    st->spi_timeout = (b[0] >> 6) & 1;
-    st->entry      = b[1];
-    st->passes     = (uint16_t) (b[2] | b[3] << 8);
+    st->running     = b[0];
+    st->waiting     = b[1];
+    st->pps_paused  = b[2];
+    st->spi_timeout = b[3];
+    st->queued      = b[4];
+    st->bank        = b[5];
+    st->entry       = b[6] >> 2;
+    st->passes      = (uint16_t) (b[7] | b[8] << 8);
 
     return 0;
 }

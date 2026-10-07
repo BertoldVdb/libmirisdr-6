@@ -33,6 +33,13 @@ int mirisdr_read_mem (mirisdr_dev_t *p, uint16_t addr, uint8_t *buf, int len, in
         int n = len - done;
         uint16_t at = (uint16_t) (addr + done);
 
+        if (p->fw_ours) {
+            if (n > 64) n = 64;
+            if (mirisdr_read_block(p, at, 0, remap, buf + done, n) < 0) goto failed;
+            done+= n;
+            continue;
+        }
+
         if (libusb_control_transfer(p->dh, 0xC0, CMD_RREG, remap ? 1 : 0,
                                     (uint16_t) (at - 0xC000), four, sizeof(four),
                                     CTRL_TIMEOUT) != (int) sizeof(four)) goto failed;

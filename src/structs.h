@@ -132,6 +132,9 @@ struct mirisdr_dev {
     uint32_t            tuner_ovr13;    /* override bits added to the register 13 data */
     uint32_t            tuner_ovr14;    /* register 14 data, the override bits */
     int                 fw_ours;
+    uint8_t             fw_pps_at;      /* status blocks, from the firmware block: internal RAM, */
+    uint16_t            fw_anchor_at;   /* xdata, */
+    uint8_t             fw_list_at;     /* internal RAM; 0 when the firmware has none */
     int                 sync_ready;     /* the sync path has started the stream */
     uint8_t             *sync_in;       /* one bulk transfer as read */
     uint8_t             *sync_out;      /* it converted, not yet handed out */

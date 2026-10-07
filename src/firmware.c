@@ -442,6 +442,18 @@ static int mirisdr_fw_open (mirisdr_dev_t **dev, const mirisdr_open_config_t *cf
        firmware asks this rather than assuming */
     if (r == 0) (*dev)->fw_ours = (mirisdr_fw_block(*dev, block) == 0);
 
+    /* where its status blocks are, after the block's first 16 bytes; older
+       images have zeros there */
+    if ((r == 0) && (*dev)->fw_ours) {
+        uint8_t t[4];
+
+        if (mirisdr_read_mem(*dev, MIRISDR_FW_BLOCK + 16, t, sizeof t, 0) == 0) {
+            (*dev)->fw_pps_at = t[0];
+            (*dev)->fw_anchor_at = (uint16_t) (t[1] | t[2] << 8);
+            (*dev)->fw_list_at = t[3];
+        }
+    }
+
     return r;
 }
 
