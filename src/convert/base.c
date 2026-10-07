@@ -7,6 +7,54 @@
  */
 #define MIRISDR_ADDR_JITTER 4
 
+/* Output bytes a sample, I/Q pair or real value, takes */
+static uint32_t mirisdr_unit_bytes (mirisdr_dev_t *p) {
+    switch (p->format) {
+    case MIRISDR_FORMAT_504_S8:
+    case MIRISDR_FORMAT_504_REAL_S16:
+    case MIRISDR_FORMAT_672_REAL_S16:
+    case MIRISDR_FORMAT_768_REAL_S16:
+        return 2;
+    default:
+        return 4;
+    }
+}
+
+/* A gap of 'missing' samples before the block being converted: queue it for the
+   callback that delivers it, and the zeros for gap fill. Returns the samples filled. */
+static uint64_t mirisdr_gap_note (mirisdr_dev_t *p, uint64_t missing) {
+    uint64_t f = 0, ub = mirisdr_unit_bytes(p), at;
+    int i;
+
+    if (!p->gap_track) return 0;
+
+    /* up to one bulk transfer's worth */
+    if (p->gap_fill && p->fills_n < (int) (sizeof p->fills / sizeof p->fills[0])) {
+        f = missing;
+        if (f > 16 * (uint64_t) p->addr_step) f = 16 * (uint64_t) p->addr_step;
+        p->fills[p->fills_n].off = (uint32_t) ((p->stats.samples - p->conv_samples - p->conv_filled) * ub);
+        p->fills[p->fills_n].n = (uint32_t) f;
+        p->fills_n++;
+        p->conv_filled += f;
+    }
+
+    at = p->fed_bytes + (p->stats.samples - p->conv_samples) * ub;
+    i = p->gapq_n;
+    if (i == (int) (sizeof p->gapq / sizeof p->gapq[0])) {
+        /* full: fold into the last, so the timeline still adds up */
+        i--;
+        p->gapq[i].samples += missing;
+        p->gapq[i].filled += (uint32_t) f;
+    } else {
+        p->gapq[i].at = at;
+        p->gapq[i].samples = missing;
+        p->gapq[i].filled = (uint32_t) f;
+        p->gapq_n++;
+    }
+
+    return f;
+}
+
 /* Called once per 1024 byte block with its header, which carries the sample
    counter and the IR block last completed run (if enabled). */
 static void mirisdr_addr_next (mirisdr_dev_t *p, const uint8_t *hdr, uint32_t step) {
@@ -28,7 +76,14 @@ static void mirisdr_addr_next (mirisdr_dev_t *p, const uint8_t *hdr, uint32_t st
 
         /* a counter that went backwards is a misaligned stream reading sample
            data as a header, not samples that went missing */
-        if (d > 0) p->stats.lost+= (uint32_t) d;
+        if (d > 0) {
+            uint64_t f = mirisdr_gap_note(p, (uint32_t) d);
+
+            /* filled samples are delivered, at their own index */
+            p->stats.lost += (uint32_t) d - f;
+            p->stats.samples += f;
+            p->stats.filled += f;
+        }
     } else {
         if (d) p->stats.jitter++;
         p->sync_run = 0;

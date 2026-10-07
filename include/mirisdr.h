@@ -145,9 +145,51 @@ typedef struct mirisdr_stream_stats
 	uint64_t jitter;    /* number of jitter events. These happen at very high rates and are harmless. */
 	uint64_t resyncs;   /* byte alignment recoveries */
 	uint64_t index;     /* absolute index of the first sample in the buffer */
+	uint64_t filled;    /* samples gap fill put in the stream, counted in samples, not in lost */
 } mirisdr_stream_stats_t;
 
 MIRISDR_API int mirisdr_get_stream_stats (mirisdr_dev_t *p, mirisdr_stream_stats_t *s); /* extra */
+
+/*
+ * Where samples are missing in the buffer a mirisdr_read_async() callback is being
+ * called with. The buffer's sample at position p has the absolute index:
+ * index + p + the sum of (samples - filled)
+ * over the gaps with 0 < offset <= p.
+ * Note: A gap at offset 0 lies before its first sample.
+ *
+ * Each 1 kB USB block has at most one gap before it, so a buffer of automatic
+ * length (one transfer, up to 24 blocks) never overflows gaps. A larger fixed
+ * length can, and the gaps past MIRISDR_GAPS_MAX count in gap_samples only.
+ */
+#define MIRISDR_GAPS_MAX 24
+
+typedef struct mirisdr_gap
+{
+	uint32_t offset;    /* samples of the buffer before the gap, filled ones of earlier gaps included */
+	uint32_t filled;    /* of the missing samples, how many gap fill put in, from offset on */
+	uint64_t samples;   /* samples missing here */
+} mirisdr_gap_t;
+
+typedef struct mirisdr_buffer_info
+{
+	uint64_t sample;        /* samples delivered before this buffer, filled ones included */
+	uint64_t index;         /* absolute index of its first sample */
+	uint64_t gap_samples;   /* samples missing inside it, all gaps added up */
+	uint32_t gaps_len;
+	mirisdr_gap_t gaps[MIRISDR_GAPS_MAX];
+} mirisdr_buffer_info_t;
+
+/* Call from inside the read_async callback only */
+MIRISDR_API int mirisdr_get_buffer_info (mirisdr_dev_t *p, mirisdr_buffer_info_t *info); /* extra */
+
+/* Gap fill, read_async only: missing samples are replaced by zeros right before the
+ * samples that follow the gap. Off by default. */
+MIRISDR_API int mirisdr_set_gap_fill (mirisdr_dev_t *p, int on); /* extra */
+
+/* A fake device for unit tests */
+MIRISDR_API int mirisdr_open_null (mirisdr_dev_t **p, const char *format); /* extra */
+MIRISDR_API int mirisdr_feed_bulk (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx, uint32_t buf_len,
+                                   const uint8_t *data, uint32_t n); /* extra */
 
 /* streaming control */
 MIRISDR_API int mirisdr_streaming_start (mirisdr_dev_t *p);             /* extra */

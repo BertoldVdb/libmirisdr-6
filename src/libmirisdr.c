@@ -64,6 +64,7 @@
 #include "streaming.c"
 #include "soft.c"
 #include "sync.c"
+#include "null.c"
 
 int mirisdr_setup (mirisdr_dev_t **out_dev, mirisdr_dev_t *dev) {
     int r;
@@ -322,6 +323,7 @@ int mirisdr_close (mirisdr_dev_t *p) {
     if (p->ctx) libusb_exit(p->ctx);
 
     if (p->samples) free(p->samples);
+    if (p->xfer_out) free(p->xfer_out);
     if (p->sync_in) free(p->sync_in);
     if (p->sync_out) free(p->sync_out);
 

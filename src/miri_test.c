@@ -2050,11 +2050,199 @@ static tres_t t_engine_ceiling (void)
     return T_PASS;
 }
 
+
+/* ------------------------------------------------------------------ */
+/* decode: the bulk parser and gap handling, offline                   */
+/* ------------------------------------------------------------------ */
+
+/* Synthetic 504_S8 streams: stamped blocks whose header counter is the first
+   sample's index, and every sample carrying its own index (mod 65536) as its
+   I/Q bytes, so the callback can check each one against the buffer info. */
+#define DEC_STEP 504
+
+typedef struct {
+    int      blocks;        /* to generate */
+    int      skip_at[8];    /* block numbers whose blocks go missing, from each on... */
+    int      skip_n[8];     /* ...this many */
+    int      junk_at[8];    /* half a block of junk after this block */
+    int      cut;           /* this block keeps only its first half, -1 none */
+    int      nskip, njunk;
+} dec_plan_t;
+
+static struct {
+    uint64_t delivered;     /* samples */
+    uint64_t gaps, missing, filled;
+    int      bad;           /* samples not where the info says */
+    int      calls;
+} dec;
+
+static uint8_t *dec_gen (const dec_plan_t *pl, uint32_t *len)
+{
+    uint8_t *b = malloc((size_t) (pl->blocks + 2 * pl->njunk) * 1024 + 1024), *h;
+    uint64_t idx = 0;
+    uint32_t n = 0;
+    int k, j, i;
+
+    for (k = 0; k < pl->blocks; k++) {
+        for (j = 0; j < pl->nskip; j++)
+            if (pl->skip_at[j] == k) idx += (uint64_t) pl->skip_n[j] * DEC_STEP;
+
+        h = b + n;
+        memset(h, 0, 16);
+        h[0] = (uint8_t) idx; h[1] = (uint8_t) (idx >> 8); h[2] = (uint8_t) (idx >> 16); h[3] = (uint8_t) (idx >> 24);
+        memcpy(h + 8, "BVDB", 4);
+        for (i = 0; i < DEC_STEP; i++) {
+            uint64_t v = idx + (uint64_t) i;
+            h[16 + 2 * i] = (uint8_t) v;
+            h[17 + 2 * i] = (uint8_t) (v >> 8);
+        }
+        idx += DEC_STEP;
+        n += (k == pl->cut) ? 512 : 1024;
+
+        for (j = 0; j < pl->njunk; j++)
+            if (pl->junk_at[j] == k) {
+                for (i = 0; i < 512; i++) b[n + i] = (uint8_t) rand();
+                n += 512;
+            }
+    }
+
+    *len = n;
+    return b;
+}
+
+static void dec_cb (unsigned char *buf, uint32_t len, void *ctx)
+{
+    mirisdr_dev_t *d = (mirisdr_dev_t *) ctx;
+    mirisdr_buffer_info_t in;
+    uint32_t n = len / 2, p, g = 0;
+    uint64_t lost = 0;
+
+    dec.calls++;
+    if (mirisdr_get_buffer_info(d, &in) < 0) { dec.bad++; return; }
+    if (in.sample != dec.delivered) dec.bad++;
+
+    for (p = 0; p < n; p++) {
+        uint16_t v = (uint16_t) (buf[2 * p] | buf[2 * p + 1] << 8);
+        int zero = 0;
+
+        /* gaps up to this sample: their unfilled part shifts the index, their
+           filled part sits right here */
+        while (g < in.gaps_len && in.gaps[g].offset <= p) {
+            if (in.gaps[g].offset > 0 || p == 0) {
+                if (in.gaps[g].offset > 0) lost += in.gaps[g].samples - in.gaps[g].filled;
+                dec.gaps++;
+                dec.missing += in.gaps[g].samples;
+                dec.filled += in.gaps[g].filled;
+            }
+            g++;
+        }
+        for (uint32_t k = 0; k < in.gaps_len; k++)
+            if (p >= in.gaps[k].offset && p < in.gaps[k].offset + in.gaps[k].filled) zero = 1;
+
+        if (zero ? v != 0 : v != (uint16_t) (in.index + p + lost)) {
+            if (!dec.bad && getenv("DEC_DEBUG")) {
+                fprintf(stderr, "misplaced: call %d sample %llu p %u v %u want %u zero %d lost %llu; info sample %llu index %llu gaps %u:",
+                        dec.calls, (unsigned long long) dec.delivered, p, v, zero ? 0 : (uint16_t) (in.index + p + lost), zero,
+                        (unsigned long long) lost, (unsigned long long) in.sample, (unsigned long long) in.index, in.gaps_len);
+                for (uint32_t k = 0; k < in.gaps_len; k++) fprintf(stderr, " [%u %u %llu]", in.gaps[k].offset, in.gaps[k].filled, (unsigned long long) in.gaps[k].samples);
+                fprintf(stderr, " len %u\n", n);
+            }
+            dec.bad++;
+        }
+    }
+    dec.delivered += n;
+}
+
+/* Feed a plan in random transfer sizes, 'buf' 0 for buffers as converted */
+static int dec_run (const dec_plan_t *pl, int fill, uint32_t buf, mirisdr_stream_stats_t *st)
+{
+    mirisdr_dev_t *d;
+    uint32_t len, at = 0, t;
+    uint8_t *b = dec_gen(pl, &len);
+
+    memset(&dec, 0, sizeof dec);
+    if (mirisdr_open_null(&d, "504_S8") < 0) { free(b); return -1; }
+    mirisdr_set_gap_fill(d, fill);
+
+    while (at < len) {
+        t = 1 + (uint32_t) rand() % (16 * 1024);
+        if (t > len - at) t = len - at;
+        mirisdr_feed_bulk(d, dec_cb, d, buf, b + at, t);
+        at += t;
+    }
+    mirisdr_get_stream_stats(d, st);
+    mirisdr_close(d);
+    free(b);
+
+    return 0;
+}
+
+/* Every sample where the info says; the counts as expected */
+static tres_t dec_check (const char *what, const dec_plan_t *pl, int fill, uint64_t want_missing,
+                         uint64_t want_filled, uint64_t want_resyncs)
+{
+    static const uint32_t bufs[2] = { 0, 4096 };
+    mirisdr_stream_stats_t st;
+    int seed, b;
+
+    for (seed = 1; seed <= 50; seed++)
+        for (b = 0; b < 2; b++) {
+            srand((unsigned) seed);
+            if (dec_run(pl, fill, bufs[b], &st) < 0) { say("%s: no null device", what); return T_FAIL; }
+            if (dec.bad || dec.missing != want_missing || dec.filled != want_filled ||
+                st.resyncs != want_resyncs || st.filled != want_filled ||
+                st.lost != want_missing - want_filled) {
+                say("%s, seed %d, buffers %u: %d misplaced, %llu missing %llu filled (stats %llu lost %llu filled %llu resyncs)",
+                    what, seed, bufs[b], dec.bad, (unsigned long long) dec.missing, (unsigned long long) dec.filled,
+                    (unsigned long long) st.lost, (unsigned long long) st.filled, (unsigned long long) st.resyncs);
+                return T_FAIL;
+            }
+        }
+    return T_PASS;
+}
+
+static tres_t t_dec_clean (void)
+{
+    dec_plan_t pl = { .blocks = 600, .cut = -1 };
+
+    if (dec_check("clean", &pl, 0, 0, 0, 0) != T_PASS) return T_FAIL;
+    say("600 blocks, 50 transfer splittings x 2 buffer sizes, every sample in place");
+    return T_PASS;
+}
+
+static tres_t t_dec_gaps (void)
+{
+    dec_plan_t pl = { .blocks = 600, .cut = -1, .nskip = 3,
+                      .skip_at = { 100, 101, 400 }, .skip_n = { 1, 2, 20 } };
+
+    if (dec_check("gaps", &pl, 0, 23 * DEC_STEP, 0, 0) != T_PASS) return T_FAIL;
+    /* filled up to 16 blocks a gap: 1 + 2 + 16 */
+    if (dec_check("gaps filled", &pl, 1, 23 * DEC_STEP, 19 * DEC_STEP, 0) != T_PASS) return T_FAIL;
+    say("missing blocks placed to the sample, with and without gap fill (20 blocks fill 16)");
+    return T_PASS;
+}
+
+static tres_t t_dec_slips (void)
+{
+    dec_plan_t junk = { .blocks = 600, .cut = -1, .njunk = 3, .junk_at = { 100, 101, 500 } };
+    dec_plan_t cut  = { .blocks = 600, .cut = 300 };
+
+    if (dec_check("half blocks of junk", &junk, 0, 0, 0, 3) != T_PASS) return T_FAIL;
+    if (dec_check("a block cut short", &cut, 0, DEC_STEP, 0, 1) != T_PASS) return T_FAIL;
+    if (dec_check("a block cut short, filled", &cut, 1, DEC_STEP, DEC_STEP, 1) != T_PASS) return T_FAIL;
+    say("junk skipped and a cut block dropped, one resync each, nothing else lost");
+    return T_PASS;
+}
+
 static const struct {
     const char *group;
     const char *name;
     tres_t    (*fn)(void);
 } tests[] = {
+    { "decode",   "bulk blocks, clean",         t_dec_clean           },
+    { "decode",   "bulk gaps and gap fill",     t_dec_gaps            },
+    { "decode",   "bulk slips",                 t_dec_slips           },
+
     { "identity", "device enumerates",          t_enumerate           },
     { "identity", "usb descriptors",            t_usb_strings         },
     { "identity", "open by serial",             t_open_by_serial      },
@@ -2130,7 +2318,7 @@ static void usage (const char *me)
            "  --eeprom-write   allow the eeprom write back test (implies --eeprom)\n"
            "  --pps            run the pps test, needs a 1PPS on GPIO_0\n"
            "  --list           list the tests and exit\n"
-           "\ngroups: identity stream fixes device tuner extras\n", me);
+           "\ngroups: decode identity stream fixes device tuner extras\n", me);
 }
 
 int main (int argc, char **argv)
@@ -2188,6 +2376,9 @@ int main (int argc, char **argv)
         }
     }
 
+    /* the decode group needs no device */
+    if (opt_only && !strcmp(opt_only, "decode")) goto run;
+
     if (device_open() < 0) {
         fprintf(stderr, "cannot open the device\n");
         return 1;
@@ -2203,6 +2394,8 @@ int main (int argc, char **argv)
 
     printf("\n  miri_test - %s firmware, %s\n\n",
            fw_ours ? "our" : "factory", from_rom ? "from ROM" : "from RAM");
+
+run:
 
     for (i = 0; i < NTESTS; i++)
     {
@@ -2225,6 +2418,8 @@ int main (int argc, char **argv)
         if (detail[0]) printf("  %s", detail);
         printf("\n");
 
+        if (!dev) continue;
+
         pump_stop();
 
         if (!device_healthy()) {
@@ -2237,8 +2432,10 @@ int main (int argc, char **argv)
         }
     }
 
-    pump_stop();
-    mirisdr_close(dev);
+    if (dev) {
+        pump_stop();
+        mirisdr_close(dev);
+    }
 
     printf("\n  %d passed, %d failed, %d skipped\n\n", n_pass, n_fail, n_skip);
 

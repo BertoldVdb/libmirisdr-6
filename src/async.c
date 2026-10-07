@@ -17,6 +17,55 @@
 
 #include "async.h"
 
+static void mirisdr_cb_call (mirisdr_dev_t *p, unsigned char *buf, uint32_t len) {
+    mirisdr_buffer_info_t *in = &p->cb_info;
+    uint64_t ub = mirisdr_unit_bytes(p), start = p->cb_bytes, end = start + len, later = 0;
+    int k = 0, j;
+
+    memset(in, 0, sizeof *in);
+    in->sample = start / ub;
+
+    /* the queue's gaps up to this buffer's end, in order */
+    while (k < p->gapq_n && p->gapq[k].at < end) {
+        uint64_t unfilled = p->gapq[k].samples - p->gapq[k].filled, keep = 0;
+
+        /* zeros running past the end go on in the next buffer, as a gap of
+           nothing but fill at its start */
+        if (p->gapq[k].at + (uint64_t) p->gapq[k].filled * ub > end)
+            keep = (p->gapq[k].at + (uint64_t) p->gapq[k].filled * ub - end) / ub;
+
+        if (in->gaps_len < MIRISDR_GAPS_MAX) {
+            mirisdr_gap_t *g = &in->gaps[in->gaps_len++];
+
+            g->offset  = p->gapq[k].at > start ? (uint32_t) ((p->gapq[k].at - start) / ub) : 0;
+            g->filled  = p->gapq[k].filled - (uint32_t) keep;
+            g->samples = p->gapq[k].samples - keep;
+        }
+        in->gap_samples += p->gapq[k].samples - keep;
+
+        /* a gap at the start lies before its first sample */
+        if (p->gapq[k].at <= start) p->cb_lost += unfilled;
+        else later += unfilled;
+
+        if (keep) {
+            p->gapq[k].at = end;
+            p->gapq[k].samples = keep;
+            p->gapq[k].filled = (uint32_t) keep;
+            break;
+        }
+        k++;
+    }
+    for (j = k; j < p->gapq_n; j++) p->gapq[j - k] = p->gapq[j];
+    p->gapq_n -= k;
+
+    in->index = in->sample + p->cb_lost;
+
+    p->cb(buf, len, p->cb_ctx);
+
+    p->cb_lost += later;
+    p->cb_bytes = end;
+}
+
 /* uložení dat */
 static int mirisdr_feed_async (mirisdr_dev_t *p, unsigned char *samples, uint32_t bytes) {
     uint32_t i;
@@ -27,12 +76,12 @@ static int mirisdr_feed_async (mirisdr_dev_t *p, unsigned char *samples, uint32_
     /* automatická velikost */
     if (!p->xfer_out_len) {
         /* přímé zaslání */
-        p->cb(samples, bytes, p->cb_ctx);
+        mirisdr_cb_call(p, samples, bytes);
     /* fixní velikost bufferu bez předchozích dat */
     } else if (p->xfer_out_pos == 0) {
         /* buffer přesně odpovídá - málo časté, přímé zaslání */
         if (bytes == p->xfer_out_len) {
-            p->cb(samples, bytes, p->cb_ctx);
+            mirisdr_cb_call(p, samples, bytes);
         /* buffer je kratší */
         } else if (bytes < p->xfer_out_len) {
             memcpy(p->xfer_out, samples, bytes);
@@ -48,13 +97,13 @@ static int mirisdr_feed_async (mirisdr_dev_t *p, unsigned char *samples, uint32_
                     }
                     break;
                 }
-                p->cb(samples + i, p->xfer_out_len, p->cb_ctx);
+                mirisdr_cb_call(p, samples + i, p->xfer_out_len);
             }
         }
     /* data jsou přesně, využije se interní buffer */
     } else if (p->xfer_out_pos + bytes == p->xfer_out_len) {
         memcpy(p->xfer_out + p->xfer_out_pos, samples, bytes);
-        p->cb(p->xfer_out, p->xfer_out_len, p->cb_ctx);
+        mirisdr_cb_call(p, p->xfer_out, p->xfer_out_len);
         p->xfer_out_pos = 0;
     /* není dostatek dat */
     } else if (p->xfer_out_pos + bytes < p->xfer_out_len) {
@@ -63,7 +112,7 @@ static int mirisdr_feed_async (mirisdr_dev_t *p, unsigned char *samples, uint32_
     /* dat je více než potřebujeme, nejsložitější případ */
     } else {
         memcpy(p->xfer_out + p->xfer_out_pos, samples, p->xfer_out_len - p->xfer_out_pos);
-        p->cb(p->xfer_out, p->xfer_out_len, p->cb_ctx);
+        mirisdr_cb_call(p, p->xfer_out, p->xfer_out_len);
         for (i = p->xfer_out_len - p->xfer_out_pos;; i+= p->xfer_out_len) {
             if (i + p->xfer_out_len > bytes) {
                 if (bytes > i) {
@@ -74,13 +123,38 @@ static int mirisdr_feed_async (mirisdr_dev_t *p, unsigned char *samples, uint32_
                 }
                 break;
             }
-            p->cb(samples + i, p->xfer_out_len, p->cb_ctx);
+            mirisdr_cb_call(p, samples + i, p->xfer_out_len);
         }
     }
     return 0;
 
 failed:
     return -1;
+}
+
+static void mirisdr_feed_converted (mirisdr_dev_t *p, unsigned char *samples, uint32_t bytes) {
+    static unsigned char zeros[4096];
+    uint32_t at = 0, ub = mirisdr_unit_bytes(p), k;
+    uint64_t z;
+    int i;
+
+    for (i = 0; i < p->fills_n; i++) {
+        if (p->fills[i].off > at) {
+            mirisdr_feed_async(p, samples + at, p->fills[i].off - at);
+            p->fed_bytes += p->fills[i].off - at;
+            at = p->fills[i].off;
+        }
+        for (z = (uint64_t) p->fills[i].n * ub; z; z -= k) {
+            k = z > sizeof zeros ? (uint32_t) sizeof zeros : (uint32_t) z;
+            mirisdr_feed_async(p, zeros, k);
+            p->fed_bytes += k;
+        }
+    }
+    if (bytes > at) {
+        mirisdr_feed_async(p, samples + at, bytes - at);
+        p->fed_bytes += bytes - at;
+    }
+    p->fills_n = 0;
 }
 
 static uint8_t *samples_realloc(mirisdr_dev_t *p, int size)
@@ -306,6 +380,9 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
     /* zpracujeme pouze kompletní přenos */
     if (xfer->status == LIBUSB_TRANSFER_COMPLETED) {
         p->stats_head = 1;
+        p->conv_samples = p->stats.samples;
+        p->conv_filled = 0;
+        p->fills_n = 0;
         /*
          * Určení správné velikosti bufferu, tato část musí být provedena
          * v jednom kroku, jinak může dojít ke změně formátu uprostřed procesu,
@@ -419,7 +496,7 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
             goto failed;
         }
 
-        if (bytes > 0) mirisdr_feed_async(p, samples, bytes);
+        if (bytes > 0 || p->fills_n) mirisdr_feed_converted(p, samples, bytes);
         /* draining: the transfer is done, and should not be reused */
         if (p->xfer_draining || (p->async_status != MIRISDR_ASYNC_RUNNING)) return;
 
@@ -739,6 +816,12 @@ int mirisdr_read_async (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx,
     p->addr_valid = 0;
     p->bulk_carry_n = 0;
     p->bulk_lost = 0;
+    p->gap_track = 1;
+    p->gapq_n = 0;
+    p->fills_n = 0;
+    p->fed_bytes = 0;
+    p->cb_bytes = 0;
+    p->cb_lost = 0;
     p->ev_valid = 0;
     p->sync_ready = 0;
     /* použití správného rozhraní které zasílá data - není kritické */
@@ -948,4 +1031,20 @@ int mirisdr_stop_async (mirisdr_dev_t *p) {
 
 failed:
     return -1;
+}
+
+int mirisdr_get_buffer_info (mirisdr_dev_t *p, mirisdr_buffer_info_t *info) {
+    if (!p || !info) return -1;
+
+    *info = p->cb_info;
+
+    return 0;
+}
+
+int mirisdr_set_gap_fill (mirisdr_dev_t *p, int on) {
+    if (!p) return -1;
+
+    p->gap_fill = !!on;
+
+    return 0;
 }
