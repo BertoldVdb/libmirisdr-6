@@ -221,6 +221,12 @@ static int mirisdr_parse_bulk (mirisdr_dev_t *p, const uint8_t *src, int n, uint
 
         /* whole, unless the next block fails to start right after it */
         if (mirisdr_bulk_stamped(p->bulk_carry) && (n < 12 || mirisdr_bulk_stamped(src))) {
+            /* re-locking, a block needs the next stamp seen: drop it and the few
+               bytes after it, the next transfer syncs again */
+            if (n < 12 && p->bulk_lost) {
+                p->bulk_carry_n = 0;
+                return out;
+            }
             out += mirisdr_convert_bulk(p, p->bulk_carry, dst, 1024);
             p->bulk_carry_n = 0;
             p->bulk_lost = 0;
@@ -265,10 +271,16 @@ static int mirisdr_parse_bulk (mirisdr_dev_t *p, const uint8_t *src, int n, uint
             n -= k;
             continue;
         }
-        p->bulk_lost = 0;
 
         /* a run of stamped blocks at once */
         for (m = 1; (m + 1) * 1024 <= n && mirisdr_bulk_stamped(src + m * 1024); m++) ;
+
+        /* re-locking, and the stamp that would confirm a lone block is not in this
+           transfer: drop it and what follows, the next transfer syncs again */
+        if (m == 1 && n < 1024 + 12 && p->bulk_lost) return out;
+
+        /* two stamps a block apart: on the grid again */
+        if (m > 1) p->bulk_lost = 0;
 
         /* the grid breaks after the run: if a stamp starts inside its last block, that
            block was cut short, and the next one starts there */
@@ -288,7 +300,9 @@ static int mirisdr_parse_bulk (mirisdr_dev_t *p, const uint8_t *src, int n, uint
             }
         }
 
+        /* a whole block, then the next stamp or junk with no stamp inside it */
         out += mirisdr_convert_bulk(p, (uint8_t *) src, dst + out, m * 1024);
+        p->bulk_lost = 0;
         src += m * 1024;
         n -= m * 1024;
     }

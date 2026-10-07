@@ -2067,6 +2067,7 @@ typedef struct {
     int      junk_at[8];    /* half a block of junk after this block */
     int      cut;           /* this block keeps only its first half, -1 none */
     int      nskip, njunk;
+    int      fake;          /* the junk carries a stamp where a header's would be */
 } dec_plan_t;
 
 static struct {
@@ -2102,6 +2103,7 @@ static uint8_t *dec_gen (const dec_plan_t *pl, uint32_t *len)
         for (j = 0; j < pl->njunk; j++)
             if (pl->junk_at[j] == k) {
                 for (i = 0; i < 512; i++) b[n + i] = (uint8_t) rand();
+                if (pl->fake) memcpy(b + n + 8, "BVDB", 4);
                 n += 512;
             }
     }
@@ -2178,8 +2180,10 @@ static int dec_run (const dec_plan_t *pl, int fill, uint32_t buf, mirisdr_stream
 }
 
 /* Every sample where the info says; the counts as expected */
-static tres_t dec_check (const char *what, const dec_plan_t *pl, int fill, uint64_t want_missing,
-                         uint64_t want_filled, uint64_t want_resyncs)
+/* missing may exceed want_missing by up to 'slack' blocks: a block right after a slip
+   that ends a transfer cannot be confirmed, and is dropped */
+static tres_t dec_check_slack (const char *what, const dec_plan_t *pl, int fill, uint64_t want_missing,
+                               uint64_t want_filled, uint64_t want_resyncs, int slack)
 {
     static const uint32_t bufs[2] = { 0, 4096 };
     mirisdr_stream_stats_t st;
@@ -2189,9 +2193,10 @@ static tres_t dec_check (const char *what, const dec_plan_t *pl, int fill, uint6
         for (b = 0; b < 2; b++) {
             srand((unsigned) seed);
             if (dec_run(pl, fill, bufs[b], &st) < 0) { say("%s: no null device", what); return T_FAIL; }
-            if (dec.bad || dec.missing != want_missing || dec.filled != want_filled ||
-                st.resyncs != want_resyncs || st.filled != want_filled ||
-                st.lost != want_missing - want_filled) {
+            if (dec.bad || dec.missing < want_missing || dec.missing > want_missing + (uint64_t) slack * DEC_STEP ||
+                dec.missing % DEC_STEP || st.resyncs != want_resyncs ||
+                dec.filled != want_filled + (fill ? dec.missing - want_missing : 0) ||
+                st.filled != dec.filled || st.lost != dec.missing - dec.filled) {
                 say("%s, seed %d, buffers %u: %d misplaced, %llu missing %llu filled (stats %llu lost %llu filled %llu resyncs)",
                     what, seed, bufs[b], dec.bad, (unsigned long long) dec.missing, (unsigned long long) dec.filled,
                     (unsigned long long) st.lost, (unsigned long long) st.filled, (unsigned long long) st.resyncs);
@@ -2199,6 +2204,12 @@ static tres_t dec_check (const char *what, const dec_plan_t *pl, int fill, uint6
             }
         }
     return T_PASS;
+}
+
+static tres_t dec_check (const char *what, const dec_plan_t *pl, int fill, uint64_t want_missing,
+                         uint64_t want_filled, uint64_t want_resyncs)
+{
+    return dec_check_slack(what, pl, fill, want_missing, want_filled, want_resyncs, 0);
 }
 
 static tres_t t_dec_clean (void)
@@ -2225,12 +2236,14 @@ static tres_t t_dec_gaps (void)
 static tres_t t_dec_slips (void)
 {
     dec_plan_t junk = { .blocks = 600, .cut = -1, .njunk = 3, .junk_at = { 100, 101, 500 } };
+    dec_plan_t fake = { .blocks = 600, .cut = -1, .njunk = 3, .junk_at = { 100, 101, 500 }, .fake = 1 };
     dec_plan_t cut  = { .blocks = 600, .cut = 300 };
 
-    if (dec_check("half blocks of junk", &junk, 0, 0, 0, 3) != T_PASS) return T_FAIL;
-    if (dec_check("a block cut short", &cut, 0, DEC_STEP, 0, 1) != T_PASS) return T_FAIL;
-    if (dec_check("a block cut short, filled", &cut, 1, DEC_STEP, DEC_STEP, 1) != T_PASS) return T_FAIL;
-    say("junk skipped and a cut block dropped, one resync each, nothing else lost");
+    if (dec_check_slack("half blocks of junk", &junk, 0, 0, 0, 3, 3) != T_PASS) return T_FAIL;
+    if (dec_check_slack("junk with a false stamp", &fake, 0, 0, 0, 3, 3) != T_PASS) return T_FAIL;
+    if (dec_check_slack("a block cut short", &cut, 0, DEC_STEP, 0, 1, 1) != T_PASS) return T_FAIL;
+    if (dec_check_slack("a block cut short, filled", &cut, 1, DEC_STEP, DEC_STEP, 1, 1) != T_PASS) return T_FAIL;
+    say("junk, false stamps and a cut block: one resync each, at most one more block lost, every sample in place");
     return T_PASS;
 }
 
