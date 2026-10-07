@@ -318,10 +318,14 @@ MIRISDR_API int mirisdr_running_from_rom (mirisdr_dev_t *p);            /* extra
 MIRISDR_API int mirisdr_write_reg (mirisdr_dev_t *p, uint8_t reg, uint32_t val); /* extra */
 MIRISDR_API int mirisdr_read_reg (mirisdr_dev_t *p, uint8_t index, uint8_t *buf, int len); /* extra */
 
-/* These functions allow the host to read and write device memory. The remap argument
- * allows access to certain internal DSP and USB memories, assuming a compatible firmware
- * is loaded. Using remap is ignored on the standard firmware and can cause data corruption. */
-MIRISDR_API int mirisdr_read_mem (mirisdr_dev_t *p, uint16_t addr, uint8_t *buf, int len, int remap); /* extra */
+/* These functions allow the host to read and write device memory. The source (read) and
+ * remap (write) arguments allow access to certain internal DSP and USB memories, assuming a
+ * compatible firmware is loaded. Remap is ignored on the standard firmware and can cause
+ * data corruption. */
+#define MIRISDR_MEM_XDATA       0 /* xdata */
+#define MIRISDR_MEM_REMAP       1 /* xdata with the DSP and USB memories mapped in */
+#define MIRISDR_MEM_IRAM        2 /* internal RAM, 0x00-0xFF */
+MIRISDR_API int mirisdr_read_mem (mirisdr_dev_t *p, uint16_t addr, uint8_t *buf, int len, int source); /* extra */
 MIRISDR_API int mirisdr_write_mem (mirisdr_dev_t *p, uint16_t addr, const uint8_t *buf, int len, int remap); /* extra */
 
 #define MIRISDR_BOOT_ROM        0

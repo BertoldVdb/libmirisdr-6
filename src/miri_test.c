@@ -785,7 +785,7 @@ static tres_t t_header_stamp (void)
         uint8_t got[5];
         uint16_t addr = (uint16_t) (0xE000 + i * 0x400 + 8);
 
-        if (mirisdr_read_mem(dev, addr, got, sizeof got, 1) < 0) {
+        if (mirisdr_read_mem(dev, addr, got, sizeof got, MIRISDR_MEM_REMAP) < 0) {
             say("could not read buffer %d through the remap", i);
             return T_FAIL;
         }
@@ -1036,12 +1036,12 @@ static tres_t t_write_reg (void)
 
 static tres_t t_read_mem (void)
 {
-    uint8_t a[16], b[16];
+    uint8_t a[20], b[20], iram[256];
 
     pump_stop();
 
-    if (mirisdr_read_mem(dev, 0x0040, a, sizeof a, 0) < 0) { say("could not read 0x0040"); return T_FAIL; }
-    if (mirisdr_read_mem(dev, 0x0040, b, sizeof b, 0) < 0) { say("second read failed"); return T_FAIL; }
+    if (mirisdr_read_mem(dev, 0x0040, a, sizeof a, MIRISDR_MEM_XDATA) < 0) { say("could not read 0x0040"); return T_FAIL; }
+    if (mirisdr_read_mem(dev, 0x0040, b, sizeof b, MIRISDR_MEM_XDATA) < 0) { say("second read failed"); return T_FAIL; }
 
     if (memcmp(a, b, sizeof a)) { say("two reads of the same address disagreed"); return T_FAIL; }
 
@@ -1052,6 +1052,17 @@ static tres_t t_read_mem (void)
 
     say("%02X%02X%02X%02X at 0x0040%s", a[0], a[1], a[2], a[3],
         fw_ours ? " - the information block" : "");
+
+    if (!fw_ours) {
+        if (mirisdr_read_mem(dev, 0x00, iram, 1, MIRISDR_MEM_IRAM) == 0) { say("internal RAM read accepted on the ROM"); return T_FAIL; }
+        return T_PASS;
+    }
+
+    /* all of internal RAM; the list block (byte 19) says no list runs */
+    if (mirisdr_read_mem(dev, 0x00, iram, sizeof iram, MIRISDR_MEM_IRAM) < 0) { say("could not read internal RAM"); return T_FAIL; }
+    if (a[19] < 0x08 || iram[a[19]]) { say("list block at 0x%02X reads %d", a[19], iram[a[19]]); return T_FAIL; }
+    if (mirisdr_read_mem(dev, 0xF0, iram, 32, MIRISDR_MEM_IRAM) == 0) { say("read past 0xFF accepted"); return T_FAIL; }
+    say("internal RAM read, list block at 0x%02X idle", a[19]);
 
     return T_PASS;
 }
@@ -1066,12 +1077,12 @@ static tres_t t_write_mem (void)
     pump_stop();
 
     /* scratch above the image, below xdata */
-    if (mirisdr_read_mem(dev, 0x1900, save, sizeof save, 0) < 0) { say("could not read the scratch area"); return T_FAIL; }
+    if (mirisdr_read_mem(dev, 0x1900, save, sizeof save, MIRISDR_MEM_XDATA) < 0) { say("could not read the scratch area"); return T_FAIL; }
 
     for (i = 0; i < sizeof probe; i++) probe[i] = (uint8_t) (0xA5 ^ i);
 
     if (mirisdr_write_mem(dev, 0x1900, probe, sizeof probe, 0) < 0) { say("write failed"); return T_FAIL; }
-    if (mirisdr_read_mem(dev, 0x1900, back, sizeof back, 0) < 0) { say("read back failed"); return T_FAIL; }
+    if (mirisdr_read_mem(dev, 0x1900, back, sizeof back, MIRISDR_MEM_XDATA) < 0) { say("read back failed"); return T_FAIL; }
 
     mirisdr_write_mem(dev, 0x1900, save, sizeof save, 0);
 
@@ -1941,7 +1952,7 @@ static int chars_stamps (void)
     {
         uint8_t got[4];
 
-        if (mirisdr_read_mem(dev, (uint16_t) (0xE000 + i * 0x400 + 8), got, sizeof got, 1) < 0)
+        if (mirisdr_read_mem(dev, (uint16_t) (0xE000 + i * 0x400 + 8), got, sizeof got, MIRISDR_MEM_REMAP) < 0)
             return -1;
 
         if (!memcmp(got, want, sizeof want)) ok++;
@@ -2437,18 +2448,13 @@ int main (int argc, char **argv)
             return 1;
         }
 
-        if (mirisdr_running_from_rom(dev) != 1) {
-            mirisdr_reboot(dev, MIRISDR_BOOT_ROM);
-            mirisdr_close(dev);
-            dev = NULL;
-            sleep(2);
-        }
+        if (mirisdr_running_from_rom(dev) != 1) mirisdr_reboot(dev, MIRISDR_BOOT_ROM);
     }
 
     /* the decode group needs no device */
     if (opt_only && !strcmp(opt_only, "decode")) goto run;
 
-    if (device_open() < 0) {
+    if ((opt_rom ? device_reopen() : device_open()) < 0) {
         fprintf(stderr, "cannot open the device\n");
         return 1;
     }

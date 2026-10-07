@@ -89,7 +89,7 @@ static int mirisdr_pps_anchor (mirisdr_dev_t *p)
 
     for (tries = 0; tries < 100; tries++)
     {
-        if (!p->fw_anchor_at || mirisdr_read_block(p, p->fw_anchor_at, 0, 0, b, PPS_ANCHOR_LEN) < 0) return -1;
+        if (!p->fw_anchor_at || mirisdr_read_block(p, p->fw_anchor_at, MIRISDR_MEM_XDATA, b, PPS_ANCHOR_LEN) < 0) return -1;
 
         if (b[16]) break;
 
@@ -117,7 +117,7 @@ static int mirisdr_pps_anchor (mirisdr_dev_t *p)
 
     /* whatever is latched now was captured against the count this anchor has
        just reset, so it is not placeable until the next pulse */
-    if (!p->fw_pps_at || mirisdr_read_block(p, p->fw_pps_at, 1, 0, b, PPS_TIME_LEN) < 0) return -1;
+    if (!p->fw_pps_at || mirisdr_read_block(p, p->fw_pps_at, MIRISDR_MEM_IRAM, b, PPS_TIME_LEN) < 0) return -1;
 
     p->pps_edge0 = b[14];
     p->pps_stale = 1;
@@ -209,7 +209,7 @@ int mirisdr_get_pps (mirisdr_dev_t *p, mirisdr_pps_t *out)
     if (!p || !p->dh || !out || !p->fw_ours || !p->pps_anchor_valid) return -1;
 
     /* the block the firmware keeps, read as one snapshot */
-    if (!p->fw_pps_at || mirisdr_read_block(p, p->fw_pps_at, 1, 0, b, PPS_TIME_LEN) < 0) return -1;
+    if (!p->fw_pps_at || mirisdr_read_block(p, p->fw_pps_at, MIRISDR_MEM_IRAM, b, PPS_TIME_LEN) < 0) return -1;
 
     mirisdr_pps_unpack(b, &t);
 

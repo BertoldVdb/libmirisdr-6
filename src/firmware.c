@@ -43,7 +43,7 @@ void mirisdr_open_config_default (mirisdr_open_config_t *cfg)
 static int mirisdr_fw_block (mirisdr_dev_t *p, uint8_t *block)
 {
     if (!p) return -1;
-    if (mirisdr_read_mem(p, MIRISDR_FW_BLOCK, block, 16, 0) < 0) return -1;
+    if (mirisdr_read_mem(p, MIRISDR_FW_BLOCK, block, 16, MIRISDR_MEM_XDATA) < 0) return -1;
 
     if ((block[0] != 'B') || (block[1] != 'V')
         || (block[2] != 'D') || (block[3] != 'B')) return -1;
@@ -71,8 +71,8 @@ int mirisdr_running_from_rom (mirisdr_dev_t *p)
 
     for (at = 0; at < 0x1000; at+= sizeof(low))
     {
-        if (mirisdr_read_mem(p, at, low, sizeof(low), 0) < 0) return -1;
-        if (mirisdr_read_mem(p, (uint16_t) (0x2000 + at), mirror, sizeof(mirror), 0) < 0) return -1;
+        if (mirisdr_read_mem(p, at, low, sizeof(low), MIRISDR_MEM_XDATA) < 0) return -1;
+        if (mirisdr_read_mem(p, (uint16_t) (0x2000 + at), mirror, sizeof(mirror), MIRISDR_MEM_XDATA) < 0) return -1;
 
         if (memcmp(low, mirror, sizeof(low))) return 0;
     }
@@ -263,7 +263,7 @@ static int mirisdr_fw_running (mirisdr_dev_t *p, const uint8_t *image, uint32_t 
     uint8_t block[16];
 
     if (size < MIRISDR_FW_BLOCK + sizeof(block)) return 0;
-    if (mirisdr_read_mem(p, MIRISDR_FW_BLOCK, block, sizeof(block), 0) < 0) return 0;
+    if (mirisdr_read_mem(p, MIRISDR_FW_BLOCK, block, sizeof(block), MIRISDR_MEM_XDATA) < 0) return 0;
 
     return !memcmp(block, image + MIRISDR_FW_BLOCK, sizeof(block));
 }
@@ -447,7 +447,7 @@ static int mirisdr_fw_open (mirisdr_dev_t **dev, const mirisdr_open_config_t *cf
     if ((r == 0) && (*dev)->fw_ours) {
         uint8_t t[4];
 
-        if (mirisdr_read_mem(*dev, MIRISDR_FW_BLOCK + 16, t, sizeof t, 0) == 0) {
+        if (mirisdr_read_mem(*dev, MIRISDR_FW_BLOCK + 16, t, sizeof t, MIRISDR_MEM_XDATA) == 0) {
             (*dev)->fw_pps_at = t[0];
             (*dev)->fw_anchor_at = (uint16_t) (t[1] | t[2] << 8);
             (*dev)->fw_list_at = t[3];

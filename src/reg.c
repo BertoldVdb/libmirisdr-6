@@ -20,9 +20,11 @@
 
 /* Up to 64 bytes in one request with our firmware, copied with interrupts off so
    they are one snapshot: xdata, or internal RAM.  The ROM gives 4 at a time. */
-static int mirisdr_read_block (mirisdr_dev_t *p, uint16_t addr, int iram, int remap, uint8_t *buf, int len)
+static int mirisdr_read_block (mirisdr_dev_t *p, uint16_t addr, int source, uint8_t *buf, int len)
 {
-    return (libusb_control_transfer(p->dh, 0xC0, 0x42, (uint16_t) ((remap ? 1 : 0) | (iram ? 2 : 0)),
+    int iram = source == MIRISDR_MEM_IRAM;
+
+    return (libusb_control_transfer(p->dh, 0xC0, 0x42, (uint16_t) source,
                                     (uint16_t) (iram ? addr : addr - 0xC000), buf, (uint16_t) len,
                                     CTRL_TIMEOUT) == len) ? 0 : -1;
 }
@@ -38,7 +40,7 @@ static void mirisdr_batch_wait (mirisdr_dev_t *p)
     int i;
 
     for (i = 0; p->fw_list_at && i < 100; i++)
-        if (mirisdr_read_block(p, p->fw_list_at, 1, 0, &run, 1) < 0 || !run) break;
+        if (mirisdr_read_block(p, p->fw_list_at, MIRISDR_MEM_IRAM, &run, 1) < 0 || !run) break;
 
     p->batch_running = 0;
 }
@@ -114,7 +116,7 @@ int mirisdr_get_list_status (mirisdr_dev_t *p, mirisdr_list_status_t *st)
 
     if (!p || !p->dh || !p->fw_ours || !p->fw_list_at || !st) return -1;
 
-    if (mirisdr_read_block(p, p->fw_list_at, 1, 0, b, sizeof b) < 0) return -1;
+    if (mirisdr_read_block(p, p->fw_list_at, MIRISDR_MEM_IRAM, b, sizeof b) < 0) return -1;
 
     st->running     = b[0];
     st->waiting     = b[1];
