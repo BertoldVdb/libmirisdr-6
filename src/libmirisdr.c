@@ -127,6 +127,7 @@ int mirisdr_setup (mirisdr_dev_t **out_dev, mirisdr_dev_t *dev) {
     dev->dc_speedup = 0;
     dev->dc_track = 0x1f;
     dev->dc_period = 0x800;
+    dev->filter_cal = -1;
 
     dev->hw_flavour = MIRISDR_HW_DEFAULT;
     mirisdr_set_i2c_rate(dev, 50000);

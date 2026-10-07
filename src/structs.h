@@ -131,6 +131,9 @@ struct mirisdr_dev {
     uint32_t            tuner_regd;     /* last register 13 data, without the override bits */
     uint32_t            tuner_ovr13;    /* override bits added to the register 13 data */
     uint32_t            tuner_ovr14;    /* register 14 data, the override bits */
+    int                 filter_cal;     /* IF filter code under the real crystal's XTALSEL, -1 unknown */
+    uint8_t             tuner_gap;      /* tuned with another crystal's XTALSEL: hold filter_cal */
+    uint8_t             dc_n;           /* DC calibration divider N of the XTALSEL tuned, 0 before */
     int                 fw_ours;
     uint8_t             fw_pps_at;      /* status blocks, from the firmware block: internal RAM, */
     uint16_t            fw_anchor_at;   /* xdata, */

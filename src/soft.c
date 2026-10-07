@@ -61,11 +61,35 @@ hw_switch_freq_plan_t *hw_switch_freq_plan[2] = {
 
 static int mirisdr_set_soft_words(mirisdr_dev_t *p);
 
+static const hw_switch_freq_plan_t *mirisdr_plan_row (mirisdr_dev_t *p)
+{
+    const hw_switch_freq_plan_t *plan = hw_switch_freq_plan[(int) p->hw_flavour];
+    int i = 0;
+
+    while (p->freq >= 1000000 * plan[i].low_cut && plan[i].mode >= 0) i++;
+
+    return &plan[i - 1];
+}
+
+/* The gap rows name another crystal for their first IF, and the IF filter
+   calibrates against the named one.  Read the code the real setting gave once,
+   on the way in from a normal band (open tunes one), to hold it there. */
+static void mirisdr_filter_learn (mirisdr_dev_t *p)
+{
+    mirisdr_tuner_status_t st;
+
+    if (p->filter_cal >= 0 || p->external_tuner || !mirisdr_plan_row(p)->if1_low || !(p->tuner_valid & 1)) return;
+    if ((p->tuner_reg[0] & (7UL << 17)) != mirisdr_xtalsel(p) << 17) return;
+
+    if (mirisdr_get_tuner_status(p, &st) == 0) p->filter_cal = st.filter;
+}
+
 /* one list request for the whole tune */
 int mirisdr_set_soft(mirisdr_dev_t *p)
 {
     int r;
 
+    mirisdr_filter_learn(p);
     mirisdr_batch_begin(p);
     r = mirisdr_set_soft_words(p);
 
@@ -76,7 +100,7 @@ static int mirisdr_set_soft_words(mirisdr_dev_t *p)
 {
     uint32_t reg0 = 0, reg2 = 0, reg5 = 0, reg3 = 0, regd = 0;
     uint64_t n, thresh, frac, lo_div = 0, fvco = 0, rfvco = 0, offset = 0, afc = 0, a, b, c, flo;
-    int i;
+    uint32_t xsel;
 
     /*** registr0 - parametry pásma ***/
     /*** registr0 - parameters zone ***/
@@ -84,22 +108,10 @@ static int mirisdr_set_soft_words(mirisdr_dev_t *p)
     /* pásmo */
     /* zone */
 
-    i = 0;
-
-    while (p->freq >= 1000000 * hw_switch_freq_plan[(int) p->hw_flavour][i].low_cut)
-    {
-        if (hw_switch_freq_plan[(int) p->hw_flavour][i].mode < 0) {
-            break;
-        }
-
-        i++;
-    }
-
-    hw_switch_freq_plan_t switch_plan = hw_switch_freq_plan[(int) p->hw_flavour][i-1];
+    hw_switch_freq_plan_t switch_plan = *mirisdr_plan_row(p);
 
 #if MIRISDR_DEBUG >= 1
-    fprintf(stderr, "mirisdr_set_soft: i:%d flavour:%d flow:%u mode:%d up:%d port:%d lo:%d\n",
-            i-1,
+    fprintf(stderr, "mirisdr_set_soft: flavour:%d flow:%u mode:%d up:%d port:%d lo:%d\n",
             (int) p->hw_flavour,
             switch_plan.low_cut,
             switch_plan.mode,
@@ -239,32 +251,13 @@ static int mirisdr_set_soft_words(mirisdr_dev_t *p)
 
     /* xtal frekvence - nepodporujeme změnu */
     /* xtal frequency - we do not support change */
-    switch (p->xtal)
-    {
-    case MIRISDR_XTAL_19_2M:
-        reg0 |= 0x00 << 13;
-        break;
-    case MIRISDR_XTAL_22M:
-        reg0 |= 0x01 << 13;
-        break;
-    case MIRISDR_XTAL_24M:
-    case MIRISDR_XTAL_24_576M:
-        reg0 |= 0x02 << 13;
-        break;
-    case MIRISDR_XTAL_26M:
-        reg0 |= 0x03 << 13;
-        break;
-    case MIRISDR_XTAL_38_4M:
-        reg0 |= 0x04 << 13;
-        break;
-    }
+    /* the gap rows' first IF follows XTALSEL instead: 001 x6, 000 x7 */
+    xsel = switch_plan.if1_low ? (uint32_t) (7 - switch_plan.if1_low) : mirisdr_xtalsel(p);
+    reg0 |= xsel << 13;
+    p->dc_n = mirisdr_xtalsel_n[xsel];
 
-    /* the first IF follows XTALSEL: 001 x6, 000 x7 */
-    if (switch_plan.if1_low)
-    {
-        reg0 &= ~(0x07UL << 13);
-        reg0 |= (uint32_t) (7 - switch_plan.if1_low) << 13;
-    }
+    /* which recalibrates the IF filter for that crystal, see mirisdr_reg13 */
+    p->tuner_gap = switch_plan.if1_low != 0;
 
     /* 4 bity pro režimy snížené spotřeby */
     /* 4 bits for power saving modes */
@@ -352,12 +345,13 @@ static int mirisdr_set_soft_words(mirisdr_dev_t *p)
 
         /* only what changed; register 2 starts the calibration, so it follows any of 0, 3 and 5 */
         mirisdr_tuner_write(p, 14, p->tuner_ovr14, 0);
+        mirisdr_tuner_write(p, 6, mirisdr_dc_word(p), 0);
         synth |= mirisdr_tuner_write(p, 3, reg3, 0) != 0;
         synth |= mirisdr_tuner_write(p, 0, reg0, 0) != 0;
         synth |= mirisdr_tuner_write(p, 5, reg5, 0) != 0;
         mirisdr_tuner_write(p, 2, reg2, synth);
         p->tuner_regd = regd;
-        mirisdr_tuner_write(p, 13, regd | p->tuner_ovr13, 0);
+        mirisdr_tuner_write(p, 13, mirisdr_reg13(p), 0);
     }
 
 //    if (band_select[i] != 0)
@@ -374,7 +368,7 @@ static int mirisdr_set_soft_words(mirisdr_dev_t *p)
 //    }
 
 #if MIRISDR_DEBUG >= 1
-    fprintf( stderr,"mirisdr sel:%d %x ",i,switch_plan.band_select_word);
+    fprintf( stderr,"mirisdr sel:%x ",switch_plan.band_select_word);
     fprintf( stderr,"freq: %.3f MHz (offset: %.3f MHz), n: %lu, fraction: %lu/%lu\n",
             ((double) n + (double) frac / (double) thresh) * 96.0 / (double) lo_div,
             (double) offset / 1.0e6, (long unsigned)n,

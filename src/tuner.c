@@ -31,6 +31,23 @@
 
 #define MIRISDR_TUNER_READBACK  0x00001C    /* register 12, data bit 0 */
 
+static int mirisdr_tuner_readback (mirisdr_dev_t *p, uint8_t *b)
+{
+    int depth = p->batch_depth, r = -1;
+
+    /* inside a batch: send what is queued, then read outside it */
+    if (depth && mirisdr_batch_flush(p) < 0) return -1;
+    p->batch_depth = 0;
+
+    if (mirisdr_write_reg(p, 0x09, MIRISDR_TUNER_READBACK) >= 0 &&
+        mirisdr_write_reg(p, 0x09, p->tuner_reg[0]) >= 0 &&
+        mirisdr_read_reg(p, 4, b, 4) == 4) r = 0;
+
+    p->batch_depth = depth;
+
+    return r;
+}
+
 int mirisdr_get_tuner_status (mirisdr_dev_t *p, mirisdr_tuner_status_t *st)
 {
     uint8_t b[4];
@@ -44,9 +61,7 @@ int mirisdr_get_tuner_status (mirisdr_dev_t *p, mirisdr_tuner_status_t *st)
     /* clock with the register 0 word the tuner already has, so nothing before the first tune */
     if (!(p->tuner_valid & 1)) goto failed;
 
-    if (mirisdr_write_reg(p, 0x09, MIRISDR_TUNER_READBACK) < 0) goto failed;
-    if (mirisdr_write_reg(p, 0x09, p->tuner_reg[0]) < 0) goto failed;
-    if (mirisdr_read_reg(p, 4, b, 4) != 4) goto failed;
+    if (mirisdr_tuner_readback(p, b) < 0) goto failed;
 
     v = b[0] | b[1] << 8 | (uint32_t) b[2] << 16 | (uint32_t) b[3] << 24;
 
@@ -91,6 +106,16 @@ failed:
  *                 10:7   L-band LNA code
  */
 
+static uint32_t mirisdr_reg13 (mirisdr_dev_t *p)
+{
+    uint32_t d = p->tuner_regd;
+
+    if (p->tuner_ovr13 & 1) d &= ~0x3Fu;
+    else if (!(d & 1) && p->tuner_gap && p->filter_cal >= 0) d |= 1 | (uint32_t) p->filter_cal << 1;
+
+    return d | p->tuner_ovr13;
+}
+
 int mirisdr_set_tuner_override (mirisdr_dev_t *p, const mirisdr_tuner_override_t *ov)
 {
     uint32_t r13 = 0, r14 = 0;
@@ -107,7 +132,6 @@ int mirisdr_set_tuner_override (mirisdr_dev_t *p, const mirisdr_tuner_override_t
         if (ov->hold_upconv) r14 |= 1 << 6 | (uint32_t) ov->upconv << 7;
         if (ov->hold_unknown) r14 |= 1 << 11 | (uint32_t) ov->unknown << 12;
         if (ov->hold_lna)    r13 |= 1 << 6 | (uint32_t) ov->lna_cal << 7;
-        /* ORed with the BW_MAX bit, which is the same hold: a held code wins */
         if (ov->hold_filter) r13 |= 1 | (uint32_t) ov->filter << 1;
     }
 
@@ -118,7 +142,7 @@ int mirisdr_set_tuner_override (mirisdr_dev_t *p, const mirisdr_tuner_override_t
     if (!(p->tuner_valid & 1)) return 0;
 
     if (mirisdr_tuner_write(p, 14, p->tuner_ovr14, 0) < 0) goto failed;
-    if (mirisdr_tuner_write(p, 13, p->tuner_regd | p->tuner_ovr13, 0) < 0) goto failed;
+    if (mirisdr_tuner_write(p, 13, mirisdr_reg13(p), 0) < 0) goto failed;
 
     return 0;
 

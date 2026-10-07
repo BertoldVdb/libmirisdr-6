@@ -30,6 +30,36 @@ int mirisdr_set_gain(mirisdr_dev_t *p)
     return r + mirisdr_batch_end(p);
 }
 
+/* XTALSEL naming the board's crystal */
+static uint32_t mirisdr_xtalsel (mirisdr_dev_t *p)
+{
+    switch (p->xtal)
+    {
+    case MIRISDR_XTAL_19_2M:  return 0;
+    case MIRISDR_XTAL_22M:    return 1;
+    case MIRISDR_XTAL_26M:    return 3;
+    case MIRISDR_XTAL_38_4M:  return 4;
+    default:                  return 2;   /* 24 and 24.576 MHz */
+    }
+}
+
+/* DC calibration divider N per XTALSEL (datasheet table 21) */
+static const uint8_t mirisdr_xtalsel_n[8] = { 48, 55, 72, 65, 48, 48, 48, 48 };
+
+/* DC tracking counts in N / fref: when a band names another crystal, scale the
+   track and refresh times so they stay what they are under the real one */
+static uint32_t mirisdr_dc_word (mirisdr_dev_t *p)
+{
+    uint32_t want = mirisdr_xtalsel_n[mirisdr_xtalsel(p)], n = p->dc_n ? p->dc_n : want;
+    uint32_t track = ((p->dc_track & 0x3f) * want + n / 2) / n;
+    uint32_t period = ((p->dc_period & 0xfff) * want + n / 2) / n;
+
+    if (track > 63) track = 63;
+    if (period > 4095) period = 4095;
+
+    return track | period << 6;
+}
+
 static int mirisdr_set_gain_words(mirisdr_dev_t *p)
 {
     uint32_t reg1 = 0, reg6 = 0;
@@ -107,8 +137,7 @@ static int mirisdr_set_gain_words(mirisdr_dev_t *p)
     mirisdr_tuner_write(p, 1, reg1, 0);
 
     /* DC Offset Calibration setup */
-    reg6 |= (p->dc_track & 0x3f);
-    reg6 |= (p->dc_period & 0xfff) << 6;
+    reg6 = mirisdr_dc_word(p);
     mirisdr_tuner_write(p, 6, reg6, 0);
 //// set to 0xf300 to select AM input added Dec 5 2014 SM5BSZ
 //    if (p->freq < 50000000)
