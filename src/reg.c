@@ -19,12 +19,30 @@
 #define CMD_REG_LIST_STATUS     0x5B
 #define MIRISDR_LIST_MAX        63      /* a bank is one page */
 
+/* The firmware refuses register writes while a list runs. Do short wait for the list to be done */
+static void mirisdr_batch_wait (mirisdr_dev_t *p)
+{
+    uint8_t b[4];
+    int i;
+
+    for (i = 0; i < 100; i++)
+    {
+        if (libusb_control_transfer(p->dh, 0xC2, CMD_REG_LIST_STATUS, 0, 0, b, 4, CTRL_TIMEOUT) != 4) break;
+        if (!(b[0] & 1)) break;
+    }
+
+    p->batch_running = 0;
+}
+
 static int mirisdr_batch_flush (mirisdr_dev_t *p)
 {
     int n = p->batch_n;
 
     if (!n) return 0;
     p->batch_n = 0;
+
+    /* a list replaces a running one: let the last tune's finish first */
+    if (p->batch_running) mirisdr_batch_wait(p);
 
     if (libusb_control_transfer(p->dh, 0x42, CMD_REG_LIST, 0, 0, p->batch, (uint16_t) (n * 4),
                                 CTRL_TIMEOUT) == n * 4)
@@ -69,6 +87,8 @@ int mirisdr_load_list (mirisdr_dev_t *p, int bank, int flags, const mirisdr_list
         buf[4 * i + 3] = (uint8_t) (e[i].val >> 16);
     }
 
+    if (p->batch_running) mirisdr_batch_wait(p);
+
     /* the list writes behind the caches' back */
     p->tuner_valid = 0;
     p->reg8_valid = 0;
@@ -77,22 +97,6 @@ int mirisdr_load_list (mirisdr_dev_t *p, int bank, int flags, const mirisdr_list
                                     (uint16_t) (bank | ((flags & MIRISDR_LIST_QUEUE) ? 2 : 0)),
                                     (uint16_t) ((flags >> 8) & 0xff), n ? buf : NULL, (uint16_t) (4 * n),
                                     CTRL_TIMEOUT) == 4 * n) ? 0 : -1;
-}
-
-/* The firmware refuses register writes while a list runs; a tune's list is done in
-   microseconds, so wait for it rather than fail */
-static void mirisdr_batch_wait (mirisdr_dev_t *p)
-{
-    uint8_t b[4];
-    int i;
-
-    for (i = 0; i < 100; i++)
-    {
-        if (libusb_control_transfer(p->dh, 0xC2, CMD_REG_LIST_STATUS, 0, 0, b, 4, CTRL_TIMEOUT) != 4) break;
-        if (!(b[0] & 1)) break;
-    }
-
-    p->batch_running = 0;
 }
 
 int mirisdr_get_list_status (mirisdr_dev_t *p, mirisdr_list_status_t *st)
