@@ -28,37 +28,7 @@
 #define MIRISDR_EE_BOOT_IMAGE   0xD2
 
 #define MIRISDR_EE_WIP          0x01
-#define MIRISDR_EE_READY        0x30
-
-#define MIRISDR_EE_POLL         200
 #define MIRISDR_EE_WRITE_MS     500
-
-static int mirisdr_spi (mirisdr_dev_t *p, int n, uint8_t t1, uint8_t t2, uint8_t t3,
-                        uint8_t t4, uint8_t *rx)
-{
-    uint8_t buf[4];
-    int i;
-
-    if (mirisdr_write_reg(p, 0x0B, (uint32_t) (0x04 | (n - 1))) < 0) return -1;
-    if (mirisdr_write_reg(p, 0x0C, (uint32_t) t4 | ((uint32_t) t3 << 8)) < 0) return -1;
-    if (mirisdr_write_reg(p, 0x0D, (uint32_t) t2 | ((uint32_t) t1 << 8)) < 0) return -1;
-
-    for (i = 0; i < MIRISDR_EE_POLL; i++)
-    {
-        if (mirisdr_read_reg(p, 5, buf, sizeof(buf)) != (int) sizeof(buf)) return -1;
-        if ((buf[0] & MIRISDR_EE_READY) == MIRISDR_EE_READY) break;
-    }
-
-    if (i == MIRISDR_EE_POLL) return -1;
-
-    if (!rx) return 0;
-
-    if (mirisdr_read_reg(p, 7, buf, sizeof(buf)) != (int) sizeof(buf)) return -1;
-
-    *rx = buf[0];
-
-    return 0;
-}
 
 static int mirisdr_ee_get (mirisdr_dev_t *p, uint16_t addr, uint8_t *v)
 {
@@ -85,7 +55,7 @@ static int mirisdr_ee_put (mirisdr_dev_t *p, uint16_t addr, uint8_t v)
 
     for (i = 0; i < MIRISDR_EE_WRITE_MS; i++)
     {
-        uint8_t sr;
+        uint8_t sr = 0;
 
         if (mirisdr_spi(p, 2, MIRISDR_EE_RDSR, 0x00, 0, 0, &sr) < 0) return -1;
         if (!(sr & MIRISDR_EE_WIP)) return 0;

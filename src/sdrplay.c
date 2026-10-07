@@ -54,30 +54,8 @@
 
 static int mirisdr_sdrplay_xfer (mirisdr_dev_t *p, uint32_t r8, uint32_t cs, uint8_t reg, uint8_t val)
 {
-    uint8_t b[4];
-    int i;
-
     if (mirisdr_write_reg(p, 0x08, r8 & ~cs) < 0) return -1;
-    if (mirisdr_write_reg(p, 0x0B, 0x04 | 2) < 0) return -1;
-    if (mirisdr_write_reg(p, 0x0C, (uint32_t) val << 8) < 0) return -1;
-    if (mirisdr_write_reg(p, 0x0D, (uint32_t) EXP_WRITE << 8 | reg) < 0) return -1;
-
-    /* in a list the firmware waits for the master, otherwise poll it */
-    if (p->batch_depth && p->fw_ours)
-    {
-        if (mirisdr_write_reg(p, MIRISDR_LIST_WAIT_SPI, 0) < 0) return -1;
-    }
-    else
-    {
-        for (i = 0; i < 200; i++)
-        {
-            if (mirisdr_read_reg(p, 5, b, sizeof(b)) != (int) sizeof(b)) return -1;
-            if ((b[0] & 0x30) == 0x30) break;
-        }
-
-        if (i == 200) return -1;
-    }
-
+    if (mirisdr_spi(p, 3, EXP_WRITE, reg, val, 0, NULL) < 0) return -1;
     if (mirisdr_write_reg(p, 0x0B, 0) < 0) return -1;
 
     return mirisdr_write_reg(p, 0x08, r8);

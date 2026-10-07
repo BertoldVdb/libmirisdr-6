@@ -18,6 +18,7 @@
 static int mirisdr_ee_ignore (mirisdr_dev_t *p);
 
 #define MIRISDR_MEM_READ_UNIT   4
+#define MIRISDR_MEM_READ_BLOCK  64
 #define MIRISDR_MEM_WRITE_CHUNK 64
 
 int mirisdr_read_mem (mirisdr_dev_t *p, uint16_t addr, uint8_t *buf, int len, int source)
@@ -36,15 +37,13 @@ int mirisdr_read_mem (mirisdr_dev_t *p, uint16_t addr, uint8_t *buf, int len, in
         uint16_t at = (uint16_t) (addr + done);
 
         if (p->fw_ours) {
-            if (n > 64) n = 64;
-            if (mirisdr_read_block(p, at, source, buf + done, n) < 0) goto failed;
+            if (n > MIRISDR_MEM_READ_BLOCK) n = MIRISDR_MEM_READ_BLOCK;
+            if (mirisdr_rreg(p, source, at, buf + done, n) != n) goto failed;
             done+= n;
             continue;
         }
 
-        if (libusb_control_transfer(p->dh, 0xC0, CMD_RREG, source,
-                                    (uint16_t) (at - 0xC000), four, sizeof(four),
-                                    CTRL_TIMEOUT) != (int) sizeof(four)) goto failed;
+        if (mirisdr_rreg(p, source, at, four, sizeof(four)) != (int) sizeof(four)) goto failed;
 
         if (n > MIRISDR_MEM_READ_UNIT) n = MIRISDR_MEM_READ_UNIT;
         memcpy(buf + done, four, n);

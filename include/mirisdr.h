@@ -336,7 +336,7 @@ MIRISDR_API int mirisdr_read_reg (mirisdr_dev_t *p, uint8_t index, uint8_t *buf,
 /* These functions allow the host to read and write device memory. The source (read) and
  * remap (write) arguments allow access to certain internal DSP and USB memories, assuming a
  * compatible firmware is loaded. Remap is ignored on the standard firmware and can cause
- * data corruption. */
+ * data corruption. With our firmware a read of up to 64 bytes is one snapshot. */
 #define MIRISDR_MEM_XDATA       0 /* xdata */
 #define MIRISDR_MEM_REMAP       1 /* xdata with the DSP and USB memories mapped in */
 #define MIRISDR_MEM_IRAM        2 /* internal RAM, 0x00-0xFF */

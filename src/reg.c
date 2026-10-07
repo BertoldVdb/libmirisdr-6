@@ -15,18 +15,19 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#define CMD_RREG                0x42
 #define CMD_REG_LIST            0x5A
 #define MIRISDR_LIST_MAX        63      /* a bank is one page */
 
-/* Up to 64 bytes in one request with our firmware, copied with interrupts off so
-   they are one snapshot: xdata, or internal RAM.  The ROM gives 4 at a time. */
-static int mirisdr_read_block (mirisdr_dev_t *p, uint16_t addr, int source, uint8_t *buf, int len)
+/* Every read: xdata counted from 0xC000, or internal RAM. The ROM gives 4 bytes,
+   our firmware up to 64 copied with interrupts off. Returns the bytes read. */
+static int mirisdr_rreg (mirisdr_dev_t *p, int source, uint16_t addr, uint8_t *buf, int len)
 {
     int iram = source == MIRISDR_MEM_IRAM;
 
-    return (libusb_control_transfer(p->dh, 0xC0, 0x42, (uint16_t) source,
-                                    (uint16_t) (iram ? addr : addr - 0xC000), buf, (uint16_t) len,
-                                    CTRL_TIMEOUT) == len) ? 0 : -1;
+    return libusb_control_transfer(p->dh, 0xC0, CMD_RREG, (uint16_t) source,
+                                   (uint16_t) (iram ? addr : addr - 0xC000), buf, (uint16_t) len,
+                                   CTRL_TIMEOUT);
 }
 
 /* The firmware's list block: run, waiting, PPS paused, SPI timeout, queued, bank,
@@ -40,7 +41,7 @@ static void mirisdr_batch_wait (mirisdr_dev_t *p)
     int i;
 
     for (i = 0; p->fw_list_at && i < 100; i++)
-        if (mirisdr_read_block(p, p->fw_list_at, MIRISDR_MEM_IRAM, &run, 1) < 0 || !run) break;
+        if (mirisdr_read_mem(p, p->fw_list_at, &run, 1, MIRISDR_MEM_IRAM) < 0 || !run) break;
 
     p->batch_running = 0;
 }
@@ -116,7 +117,7 @@ int mirisdr_get_list_status (mirisdr_dev_t *p, mirisdr_list_status_t *st)
 
     if (!p || !p->dh || !p->fw_ours || !p->fw_list_at || !st) return -1;
 
-    if (mirisdr_read_block(p, p->fw_list_at, MIRISDR_MEM_IRAM, b, sizeof b) < 0) return -1;
+    if (mirisdr_read_mem(p, p->fw_list_at, b, sizeof b, MIRISDR_MEM_IRAM) < 0) return -1;
 
     st->running     = b[0];
     st->waiting     = b[1];
@@ -214,7 +215,6 @@ static int mirisdr_tuner_write (mirisdr_dev_t *p, uint8_t reg, uint32_t data, in
 
 #define CMD_RESET              0x40
 #define CMD_WREG               0x41
-#define CMD_RREG               0x42
 #define CMD_START_STREAMING    0x43
 #define CMD_DOWNLOAD           0x44
 #define CMD_STOP_STREAMING     0x45
@@ -245,8 +245,63 @@ int mirisdr_read_reg (mirisdr_dev_t *p, uint8_t index, uint8_t *buf, int len) {
     if (!p) goto failed;
     if (!p->dh) goto failed;
 
-    return libusb_control_transfer(p->dh, 0xC0, CMD_RREG, 0, index * 4, buf, len, CTRL_TIMEOUT);
+    return mirisdr_rreg(p, MIRISDR_MEM_XDATA, (uint16_t) (0xC000 + index * 4), buf, len);
 
 failed:
     return -1;
+}
+
+#define MIRISDR_SPI_READY       0x30    /* index 5: the master is done */
+#define MIRISDR_SPI_POLL        200
+
+/* One transfer on the SPI master, 1 to 4 bytes from t1 on, rx the last byte clocked
+   in. Chip select is the caller's. With our firmware a write goes out as a list with
+   its wait, joining the caller's batch. A read polls instead: waiting for a list to end
+   takes as many requests, and the list request itself is slower. */
+static int mirisdr_spi (mirisdr_dev_t *p, int n, uint8_t t1, uint8_t t2, uint8_t t3,
+                        uint8_t t4, uint8_t *rx)
+{
+    uint8_t buf[4];
+    int list = !rx && p->fw_ours && p->fw_list_at, depth = p->batch_depth, i, r = -1;
+
+    if (list) mirisdr_batch_begin(p);
+
+    /* a read sends what the caller has queued and leaves the batch */
+    if (rx && depth)
+    {
+        if (mirisdr_batch_flush(p) < 0) return -1;
+        p->batch_depth = 0;
+    }
+
+    if (mirisdr_write_reg(p, 0x0B, (uint32_t) (0x04 | (n - 1))) < 0) goto out;
+    if (mirisdr_write_reg(p, 0x0C, (uint32_t) t4 | ((uint32_t) t3 << 8)) < 0) goto out;
+    if (mirisdr_write_reg(p, 0x0D, (uint32_t) t2 | ((uint32_t) t1 << 8)) < 0) goto out;
+
+    if (list)
+    {
+        r = (mirisdr_write_reg(p, MIRISDR_LIST_WAIT_SPI, 0) < 0) ? -1 : 0;
+        goto out;
+    }
+
+    for (i = 0; i < MIRISDR_SPI_POLL; i++)
+    {
+        if (mirisdr_read_reg(p, 5, buf, sizeof(buf)) != (int) sizeof(buf)) goto out;
+        if ((buf[0] & MIRISDR_SPI_READY) == MIRISDR_SPI_READY) break;
+    }
+
+    if (i == MIRISDR_SPI_POLL) goto out;
+
+    if (rx)
+    {
+        if (mirisdr_read_reg(p, 7, buf, sizeof(buf)) != (int) sizeof(buf)) goto out;
+        *rx = buf[0];
+    }
+
+    r = 0;
+
+out:
+    p->batch_depth = depth + list;
+    if (list) r |= mirisdr_batch_end(p);
+
+    return r;
 }
