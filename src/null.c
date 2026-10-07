@@ -62,7 +62,7 @@ int mirisdr_feed_bulk (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx, 
     }
     p->cb_ctx = ctx;
 
-    if (!(samples = samples_realloc(p, (n / 1024 + 1) * MIRISDR_BLOCK_OUT_MAX))) return -1;
+    if (!(samples = samples_realloc(p, (n / 1024 + 2) * MIRISDR_BLOCK_OUT_MAX))) return -1;
 
     p->stats_head = 1;
     p->conv_samples = p->stats.samples;

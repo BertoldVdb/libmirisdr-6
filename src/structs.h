@@ -178,9 +178,10 @@ struct mirisdr_dev {
     mirisdr_stream_stats_t stats;
     int                 stats_head;    /* next block starts a delivered buffer */
     int                 sync_run;      /* consecutive bad blocks, drives resync */
-    uint8_t             bulk_carry[1024];   /* a block split between two transfers */
-    int                 bulk_carry_n;
+    uint8_t             bulk_carry[2 * 1024 + 48];  /* a leftover and the next transfer's head */
+    int                 bulk_carry_n;  /* leftover, under 1036 bytes */
     int                 bulk_lost;     /* off the grid, counted as one resync */
+    int                 bulk_wait;     /* transfers still queued with the old phase */
     /* gaps, from the conversion that finds them to the callback that delivers them */
     int                 gap_fill;
     int                 gap_track;     /* read_async: keep the queue and insert fills */

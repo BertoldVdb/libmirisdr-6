@@ -2155,7 +2155,9 @@ static void dec_cb (unsigned char *buf, uint32_t len, void *ctx)
     dec.delivered += n;
 }
 
-/* Feed a plan in random transfer sizes, 'buf' 0 for buffers as converted */
+/* Feed a plan in random transfer sizes, or 'dec_fixed' ones, 'buf' 0 for buffers as converted */
+static uint32_t dec_fixed;
+
 static int dec_run (const dec_plan_t *pl, int fill, uint32_t buf, mirisdr_stream_stats_t *st)
 {
     mirisdr_dev_t *d;
@@ -2167,7 +2169,7 @@ static int dec_run (const dec_plan_t *pl, int fill, uint32_t buf, mirisdr_stream
     mirisdr_set_gap_fill(d, fill);
 
     while (at < len) {
-        t = 1 + (uint32_t) rand() % (16 * 1024);
+        t = dec_fixed ? dec_fixed : 1 + (uint32_t) rand() % (16 * 1024);
         if (t > len - at) t = len - at;
         mirisdr_feed_bulk(d, dec_cb, d, buf, b + at, t);
         at += t;
@@ -2217,7 +2219,10 @@ static tres_t t_dec_clean (void)
     dec_plan_t pl = { .blocks = 600, .cut = -1 };
 
     if (dec_check("clean", &pl, 0, 0, 0, 0) != T_PASS) return T_FAIL;
-    say("600 blocks, 50 transfer splittings x 2 buffer sizes, every sample in place");
+    dec_fixed = 16 * 1024;              /* whole transfers on the grid, as live */
+    if (dec_check("clean, 16 kB transfers", &pl, 0, 0, 0, 0) != T_PASS) { dec_fixed = 0; return T_FAIL; }
+    dec_fixed = 0;
+    say("600 blocks, 50 random splittings and 16 kB transfers, x 2 buffer sizes, every sample in place");
     return T_PASS;
 }
 
@@ -2229,21 +2234,34 @@ static tres_t t_dec_gaps (void)
     if (dec_check("gaps", &pl, 0, 23 * DEC_STEP, 0, 0) != T_PASS) return T_FAIL;
     /* filled up to 16 blocks a gap: 1 + 2 + 16 */
     if (dec_check("gaps filled", &pl, 1, 23 * DEC_STEP, 19 * DEC_STEP, 0) != T_PASS) return T_FAIL;
+    dec_fixed = 16 * 1024;
+    if (dec_check("gaps filled, 16 kB transfers", &pl, 1, 23 * DEC_STEP, 19 * DEC_STEP, 0) != T_PASS) { dec_fixed = 0; return T_FAIL; }
+    dec_fixed = 0;
     say("missing blocks placed to the sample, with and without gap fill (20 blocks fill 16)");
     return T_PASS;
 }
 
 static tres_t t_dec_slips (void)
 {
-    dec_plan_t junk = { .blocks = 600, .cut = -1, .njunk = 3, .junk_at = { 100, 101, 500 } };
-    dec_plan_t fake = { .blocks = 600, .cut = -1, .njunk = 3, .junk_at = { 100, 101, 500 }, .fake = 1 };
+    dec_plan_t junk = { .blocks = 600, .cut = -1, .njunk = 3, .junk_at = { 100, 300, 500 } };
+    dec_plan_t fake = { .blocks = 600, .cut = -1, .njunk = 3, .junk_at = { 100, 300, 500 }, .fake = 1 };
+    dec_plan_t pair = { .blocks = 600, .cut = -1, .njunk = 2, .junk_at = { 100, 101 } };
     dec_plan_t cut  = { .blocks = 600, .cut = 300 };
 
-    if (dec_check_slack("half blocks of junk", &junk, 0, 0, 0, 3, 3) != T_PASS) return T_FAIL;
-    if (dec_check_slack("junk with a false stamp", &fake, 0, 0, 0, 3, 3) != T_PASS) return T_FAIL;
-    if (dec_check_slack("a block cut short", &cut, 0, DEC_STEP, 0, 1, 1) != T_PASS) return T_FAIL;
-    if (dec_check_slack("a block cut short, filled", &cut, 1, DEC_STEP, DEC_STEP, 1, 1) != T_PASS) return T_FAIL;
-    say("junk, false stamps and a cut block: one resync each, at most one more block lost, every sample in place");
+    /* a slip costs the block before it: its successor's stamp is junk */
+    if (dec_check("half blocks of junk", &junk, 0, 3 * DEC_STEP, 0, 3) != T_PASS) return T_FAIL;
+    /* a false stamp where the next header's would be lets the block before through, whole */
+    if (dec_check("junk with a false stamp", &fake, 0, 0, 0, 3) != T_PASS) return T_FAIL;
+    if (dec_check("half blocks of junk, filled", &junk, 1, 3 * DEC_STEP, 3 * DEC_STEP, 3) != T_PASS) return T_FAIL;
+    /* blocks 100 and 101 both have junk behind them; off the grid until 102, one resync */
+    if (dec_check("two slips a block apart", &pair, 0, 2 * DEC_STEP, 0, 1) != T_PASS) return T_FAIL;
+    if (dec_check("a block cut short", &cut, 0, DEC_STEP, 0, 1) != T_PASS) return T_FAIL;
+    if (dec_check("a block cut short, filled", &cut, 1, DEC_STEP, DEC_STEP, 1) != T_PASS) return T_FAIL;
+    dec_fixed = 16 * 1024;
+    if (dec_check("half blocks of junk, 16 kB transfers", &junk, 0, 3 * DEC_STEP, 0, 3) != T_PASS) { dec_fixed = 0; return T_FAIL; }
+    if (dec_check("a block cut short, 16 kB transfers", &cut, 0, DEC_STEP, 0, 1) != T_PASS) { dec_fixed = 0; return T_FAIL; }
+    dec_fixed = 0;
+    say("junk, false stamps and a cut block: the block before each slip, one resync each, every sample in place");
     return T_PASS;
 }
 

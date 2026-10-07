@@ -25,7 +25,7 @@ int mirisdr_read_sync (mirisdr_dev_t *p, void *buf, int len, int *n_read) {
     if (n_read) *n_read = 0;
 
     if (!p->sync_in && !(p->sync_in = malloc(DEFAULT_BULK_BUFFER))) goto failed;
-    if (!p->sync_out && !(p->sync_out = malloc((DEFAULT_BULK_BUFFER / 1024 + 1) * MIRISDR_BLOCK_OUT_MAX))) goto failed;
+    if (!p->sync_out && !(p->sync_out = malloc((DEFAULT_BULK_BUFFER / 1024 + 2) * MIRISDR_BLOCK_OUT_MAX))) goto failed;
 
     if (!p->sync_ready) {
         if (libusb_set_interface_alt_setting(p->dh, 0, p->alt_setting) < 0) goto failed;
@@ -36,6 +36,7 @@ int mirisdr_read_sync (mirisdr_dev_t *p, void *buf, int len, int *n_read) {
         p->addr_valid = 0;
         p->bulk_carry_n = 0;
         p->bulk_lost = 0;
+        p->bulk_wait = 0;
         p->gap_track = 0;
         p->ev_valid = 0;
         p->sync_len = p->sync_pos = 0;
@@ -53,9 +54,10 @@ int mirisdr_read_sync (mirisdr_dev_t *p, void *buf, int len, int *n_read) {
             p->sync_xlen = DEFAULT_BULK_BUFFER;
 
             p->stats_head = 1;
-            if (p->fw_ours)
+            if (p->fw_ours) {
                 p->sync_len = mirisdr_parse_bulk(p, p->sync_in, n, p->sync_out);
-            else
+                p->sync_xlen = mirisdr_bulk_next_len(p);
+            } else
                 p->sync_len = mirisdr_convert_bulk(p, p->sync_in, p->sync_out, n);
             p->sync_pos = 0;
 
