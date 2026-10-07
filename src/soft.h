@@ -66,4 +66,5 @@ typedef struct
     int lo_div;
     uint32_t band_select_word;
     int if1_low;        /* AM low side: first IF this many x 24 MHz (XTALSEL 7 - n), 0 = high side 120 MHz */
+    uint16_t expander;  /* RSP1B: expander IODIR word, 0 bits pulled low (rsp1b.c); 0 = none */
 } hw_switch_freq_plan_t;

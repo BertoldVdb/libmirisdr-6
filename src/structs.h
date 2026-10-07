@@ -22,6 +22,7 @@ typedef struct mirisdr_device {
     const char          *name;
     const char          *manufacturer;
     const char          *product;
+    int                 flavour;        /* mirisdr_hw_flavour_t picked by MIRISDR_HW_AUTO */
 } mirisdr_device_t;
 
 struct mirisdr_dev {
@@ -134,6 +135,9 @@ struct mirisdr_dev {
     int                 filter_cal;     /* IF filter code under the real crystal's XTALSEL, -1 unknown */
     uint8_t             tuner_gap;      /* tuned with another crystal's XTALSEL: hold filter_cal */
     uint8_t             dc_n;           /* DC calibration divider N of the XTALSEL tuned, 0 before */
+    uint16_t            exp_iodir;      /* RSP1B expander direction word sent, 0 bits pulled low */
+    int                 exp_valid;      /* the expander holds exp_iodir */
+    int                 notch;          /* MIRISDR_NOTCH_* asked for */
     int                 fw_ours;
     uint8_t             fw_pps_at;      /* status blocks, from the firmware block: internal RAM, */
     uint16_t            fw_anchor_at;   /* xdata, */

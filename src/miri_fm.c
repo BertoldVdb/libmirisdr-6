@@ -197,7 +197,7 @@ void usage(void)
 		"\t    raw mode outputs 2x16 bit IQ pairs\n"
 		"\t[-s sample_rate (default: 24k)]\n"
 		"\t[-d device_index (default: 0)]\n"
-        "\t[-T device_type device variant (default: 0)]\n"
+        "\t[-T device_type device variant: 0 default, 1 SDRplay, 2 RSP1B (default: by VID:PID)]\n"
         "\t    0:       Default\n"
         "\t    1:       SDRPlay\n"
 		"\t[-g tuner_gain (default: automatic)]\n"
@@ -1160,7 +1160,7 @@ int main(int argc, char **argv)
 	demod_init(&demod);
 	output_init(&output);
 	controller_init(&controller);
-    mirisdr_hw_flavour_t hw_flavour = MIRISDR_HW_DEFAULT;
+    mirisdr_hw_flavour_t hw_flavour = MIRISDR_HW_AUTO;
     int intval;
 
 	while ((opt = getopt(argc, argv, "b:d:T:e:f:g:i:l:m:o:p:r:s:t:w:E:F:A:M:h")) != -1) {
@@ -1171,7 +1171,7 @@ int main(int argc, char **argv)
 			break;
         case 'T':
             intval = atoi(optarg);
-            if ((intval >=0) && (intval <= 1))
+            if ((intval >=0) && (intval <= MIRISDR_HW_RSP1B))
             {
                 hw_flavour = (mirisdr_hw_flavour_t) intval;
             }
@@ -1322,13 +1322,19 @@ int main(int argc, char **argv)
 		exit(1);
 	}
 
-	r = mirisdr_open(&dongle.dev, (uint32_t)dongle.dev_index);
+	{
+		mirisdr_open_config_t cfg;
+
+		mirisdr_open_config_default(&cfg);
+		cfg.index = (uint32_t)dongle.dev_index;
+		cfg.hw_flavour = hw_flavour;
+		r = mirisdr_open_ex(&dongle.dev, &cfg);
+	}
 	if (r < 0) {
 		fprintf(stderr, "Failed to open Mirics device #%d.\n", dongle.dev_index);
 		exit(1);
 	}
 
-	mirisdr_set_hw_flavour(dongle.dev, hw_flavour);
 
 #if !defined (_WIN32) || defined(__MINGW32__)
 	sigact.sa_handler = sighandler;

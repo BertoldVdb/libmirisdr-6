@@ -129,7 +129,8 @@ int mirisdr_setup (mirisdr_dev_t **out_dev, mirisdr_dev_t *dev) {
     dev->dc_period = 0x800;
     dev->filter_cal = -1;
 
-    dev->hw_flavour = MIRISDR_HW_DEFAULT;
+    if (dev->hw_flavour == MIRISDR_HW_AUTO) dev->hw_flavour = mirisdr_flavour_of(dev->dh);
+    dev->exp_valid = 0;
     mirisdr_set_i2c_rate(dev, 50000);
     dev->ee_size = -1;              /* not probed yet, see eeprom.c */
 
@@ -164,7 +165,7 @@ failed:
     return -1;
 }
 
-static int mirisdr_open_raw (mirisdr_dev_t **p, uint32_t index, int external_tuner, uint8_t gpio_in) {
+static int mirisdr_open_raw (mirisdr_dev_t **p, uint32_t index, int external_tuner, uint8_t gpio_in, int flavour) {
     mirisdr_dev_t *dev = NULL;
     libusb_device **list, *device = NULL;
     struct libusb_device_descriptor dd;
@@ -216,6 +217,7 @@ static int mirisdr_open_raw (mirisdr_dev_t **p, uint32_t index, int external_tun
     libusb_free_device_list(list, 1);
 
     dev->external_tuner = external_tuner;
+    dev->hw_flavour = flavour;
     mirisdr_gpio_hold_input(dev, gpio_in);
 
     return mirisdr_setup(p, dev);
@@ -232,7 +234,7 @@ failed:
     return -1;
 }
 
-static int mirisdr_open_fd_raw (mirisdr_dev_t **p, int fd, int external_tuner, uint8_t gpio_in) {
+static int mirisdr_open_fd_raw (mirisdr_dev_t **p, int fd, int external_tuner, uint8_t gpio_in, int flavour) {
     mirisdr_dev_t *dev = NULL;
     libusb_device **list, *device = NULL;
     struct libusb_device_descriptor dd;
@@ -264,6 +266,7 @@ static int mirisdr_open_fd_raw (mirisdr_dev_t **p, int fd, int external_tuner, u
     }
 
     dev->external_tuner = external_tuner;
+    dev->hw_flavour = flavour;
     mirisdr_gpio_hold_input(dev, gpio_in);
 
     return mirisdr_setup(p, dev);
@@ -473,10 +476,17 @@ int mirisdr_get_usb_position (mirisdr_dev_t *p, uint8_t *busnum, uint8_t *devnum
     return 0;
 }
 
+int mirisdr_get_hw_flavour (mirisdr_dev_t *p) {
+    return p ? (int) p->hw_flavour : -1;
+}
+
 int mirisdr_set_hw_flavour (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_flavour) {
     if (!p) goto failed;
 
+    if (hw_flavour < MIRISDR_HW_DEFAULT || hw_flavour > MIRISDR_HW_RSP1B) goto failed;
+
     p->hw_flavour = hw_flavour;
+    p->exp_valid = 0;
     return 0;
 
 failed:

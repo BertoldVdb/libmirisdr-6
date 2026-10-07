@@ -16,14 +16,15 @@
  */
 
 static mirisdr_device_t mirisdr_devices[] = {
-    { 0x1df7, 0x2500, "Mirics MSi2500 default (e.g. VTX3D card)", "Mirics", "MSi2500"},
-    { 0x1df7, 0x3000, "SDRplay RSP1A", "SDRPlay", "RSP1A"},
-    { 0x1df7, 0x3010, "SDRplay RSP1A", "SDRPlay", "RSP2"},
-    { 0x16d0, 0x158c, "BertoldVdb MSi2500 Acquisition Board", "BertoldVdb", "MSI2500-PPS"},
-    { 0x2040, 0xd300, "Hauppauge WinTV 133559 LF", "Hauppauge", "WinTV 133559 LF"},
-    { 0x07ca, 0x8591, "AverMedia A859 Pure DVBT", "AverTV", "A859 Pure DVBT"},
-    { 0x04bb, 0x0537, "IO-DATA GV-TV100 stick", "IO-DATA", "GV-TV100"},
-    { 0x0511, 0x0037, "Logitec LDT-1S310U/J", "Logitec", "LDT-1S310U/J"}
+    { 0x1df7, 0x2500, "Mirics MSi2500 default (e.g. VTX3D card)", "Mirics", "MSi2500", MIRISDR_HW_DEFAULT},
+    { 0x1df7, 0x3000, "SDRplay RSP1A", "SDRPlay", "RSP1A", MIRISDR_HW_DEFAULT},
+    { 0x1df7, 0x3010, "SDRplay RSP1A", "SDRPlay", "RSP2", MIRISDR_HW_DEFAULT},
+    { 0x1df7, 0x3050, "SDRplay RSP1B", "SDRPlay", "RSP1B", MIRISDR_HW_RSP1B},
+    { 0x16d0, 0x158c, "BertoldVdb MSi2500 Acquisition Board", "BertoldVdb", "MSI2500-PPS", MIRISDR_HW_DEFAULT},
+    { 0x2040, 0xd300, "Hauppauge WinTV 133559 LF", "Hauppauge", "WinTV 133559 LF", MIRISDR_HW_DEFAULT},
+    { 0x07ca, 0x8591, "AverMedia A859 Pure DVBT", "AverTV", "A859 Pure DVBT", MIRISDR_HW_DEFAULT},
+    { 0x04bb, 0x0537, "IO-DATA GV-TV100 stick", "IO-DATA", "GV-TV100", MIRISDR_HW_DEFAULT},
+    { 0x0511, 0x0037, "Logitec LDT-1S310U/J", "Logitec", "LDT-1S310U/J", MIRISDR_HW_DEFAULT}
 };
 
 static mirisdr_device_t *mirisdr_device_get (uint16_t vid, uint16_t pid) {
@@ -34,6 +35,18 @@ static mirisdr_device_t *mirisdr_device_get (uint16_t vid, uint16_t pid) {
     }
 
     return NULL;
+}
+
+/* the board behind an open handle, by its VID:PID */
+static int mirisdr_flavour_of (libusb_device_handle *dh)
+{
+    struct libusb_device_descriptor dd;
+    mirisdr_device_t *d;
+
+    if (libusb_get_device_descriptor(libusb_get_device(dh), &dd) < 0) return MIRISDR_HW_DEFAULT;
+    d = mirisdr_device_get(dd.idVendor, dd.idProduct);
+
+    return d ? d->flavour : MIRISDR_HW_DEFAULT;
 }
 
 /* počet dostupných zařízení */

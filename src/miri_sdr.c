@@ -93,7 +93,7 @@ void usage(void)
 		"\t    on:     always bypass, 2.6 - 30 Msps\n"
 		"\t    off:    never bypass, 1.3 - 15 Msps\n"
 		"\t[-d device_index (default: 0)]\n"
-	    "\t[-T device_type device variant (default: 0)]\n"
+	    "\t[-T device_type device variant: 0 default, 1 SDRplay, 2 RSP1B (default: by VID:PID)]\n"
         "\t    0:       Default\n"
         "\t    1:       SDRPlay\n"
 		"\t[-g gain (0-102, default: 0 for auto)]\n"
@@ -187,7 +187,7 @@ int main(int argc, char **argv)
 	uint32_t out_block_size = DEFAULT_BUF_LENGTH;
     uint32_t device_count;
 	char vendor[256] = { 0 }, product[256] = { 0 }, serial[256] = { 0 };
-	mirisdr_hw_flavour_t hw_flavour = MIRISDR_HW_DEFAULT;
+	mirisdr_hw_flavour_t hw_flavour = MIRISDR_HW_AUTO;
 	int intval;
 
 #if !defined (_WIN32) || defined(__MINGW32__)
@@ -205,7 +205,7 @@ int main(int argc, char **argv)
 			break;
         case 'T':
             intval = atoi(optarg);
-            if ((intval >=0) && (intval <= 1))
+            if ((intval >=0) && (intval <= MIRISDR_HW_RSP1B))
             {
                 hw_flavour = (mirisdr_hw_flavour_t) intval;
             }
@@ -332,13 +332,19 @@ int main(int argc, char **argv)
 	fprintf(stderr, "Using device %d: %s\n",
 		dev_index, mirisdr_get_device_name(dev_index));
 
-	r = mirisdr_open(&dev, dev_index);
+	{
+		mirisdr_open_config_t cfg;
+
+		mirisdr_open_config_default(&cfg);
+		cfg.index = dev_index;
+		cfg.hw_flavour = hw_flavour;
+		r = mirisdr_open_ex(&dev, &cfg);
+	}
 	if (r < 0) {
 		fprintf(stderr, "Failed to open mirisdr device #%d.\n", dev_index);
 		exit(1);
 	}
 
-	mirisdr_set_hw_flavour(dev, hw_flavour);
 
 #if !defined (_WIN32) || defined(__MINGW32__)
 	sigact.sa_handler = sighandler;

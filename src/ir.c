@@ -77,6 +77,9 @@ int mirisdr_set_ir (mirisdr_dev_t *p, uint32_t tick_ns, mirisdr_ir_cb_t cb, void
 
     if (!p) return -1;
 
+    /* GPIO_3 is the RSP1B's expander chip select: released, it would float */
+    if (p->hw_flavour == MIRISDR_HW_RSP1B) return -1;
+
     p->ir_cb = cb;
     p->ir_ctx = ctx;
     p->ir_have = 0;

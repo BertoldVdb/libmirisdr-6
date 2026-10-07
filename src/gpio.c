@@ -35,7 +35,7 @@
 
 void update_reg_8 (mirisdr_dev_t *p)
 {
-    uint32_t val = p->reg8 | (p->bias ? (1 << (BIAS_GPIO + 8)) : 0);
+    uint32_t val = p->reg8 | ((p->bias && (p->hw_flavour != MIRISDR_HW_RSP1B)) ? (1 << (BIAS_GPIO + 8)) : 0);
     unsigned int pin;
 
     for (pin = 0; pin < MIRISDR_GPIO_COUNT; pin++)

@@ -194,7 +194,7 @@ int mirisdr_write_reg (mirisdr_dev_t *p, uint8_t reg, uint32_t val) {
     }
 
     /* the SPI master shares the tuner's lines on boards without a gate */
-    if ((reg >= 0x0B) && (reg <= 0x0D)) p->tuner_valid = 0;
+    if ((reg >= 0x0B) && (reg <= 0x0D) && (p->hw_flavour != MIRISDR_HW_RSP1B)) p->tuner_valid = 0;
 
     return r;
 

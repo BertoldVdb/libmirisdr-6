@@ -16,6 +16,7 @@
  */
 
 #include "soft.h"
+#include "sdrplay.c"
 
 //float band_limits[] = {
 //        0.,     12.,    30.,    50.,    108.,   250.,   390.,   960.,   2400,   -1.
@@ -28,35 +29,59 @@
 //GPIO2 - Broadcast FM notch
 
 hw_switch_freq_plan_t hw_switch_freq_plan_default[] = {
-        {0,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf780, 0},
-        {12,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xff80, 0},
-        {30,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf280, 0},
-        {50,   MIRISDR_MODE_VHF, 0, 0, 32, 0xf380, 0},
-        {108,  MIRISDR_MODE_B3,  0, 0, 16, 0xfa80, 0},
-        {250,  MIRISDR_MODE_B3,  0, 0, 16, 0xf680, 0},
-        {259,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf680, 6},
-        {280,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf680, 7},
-        {420,  MIRISDR_MODE_B45, 0, 0, 4,  0xf380, 0},
-        {960,  MIRISDR_MODE_BL,  0, 0, 2,  0xfa80, 0},
-        {2400, -1, 0, 0, 0, 0x0000, 0},
+        {0,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf780, 0, 0},
+        {12,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xff80, 0, 0},
+        {30,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf280, 0, 0},
+        {50,   MIRISDR_MODE_VHF, 0, 0, 32, 0xf380, 0, 0},
+        {108,  MIRISDR_MODE_B3,  0, 0, 16, 0xfa80, 0, 0},
+        {250,  MIRISDR_MODE_B3,  0, 0, 16, 0xf680, 0, 0},
+        {259,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf680, 6, 0},
+        {280,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf680, 7, 0},
+        {420,  MIRISDR_MODE_B45, 0, 0, 4,  0xf380, 0, 0},
+        {960,  MIRISDR_MODE_BL,  0, 0, 2,  0xfa80, 0, 0},
+        {2400, -1, 0, 0, 0, 0x0000, 0, 0},
 };
 
 hw_switch_freq_plan_t hw_switch_freq_plan_sdrplay[] = {
-        {0,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf580, 0},
-        {12,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf580, 0},
-        {30,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf580, 0},
-        {50,   MIRISDR_MODE_VHF, 0, 0, 32, 0xf180, 0},
-        {112,  MIRISDR_MODE_B3,  0, 0, 16, 0xf580, 0},
-        {250,  MIRISDR_MODE_B3,  0, 0, 16, 0xf480, 0},
-        {261,  6              ,  0, 0, 8,  0xf480, 0},
-        {404,  MIRISDR_MODE_B45, 0, 0, 4,  0xf580, 0},
-        {1000, MIRISDR_MODE_BL,  0, 0, 2,  0xf580, 0},
-        {2400, -1, 0, 0, 0, 0x0000, 0},
+        {0,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf580, 0, 0},
+        {12,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf580, 0, 0},
+        {30,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf580, 0, 0},
+        {50,   MIRISDR_MODE_VHF, 0, 0, 32, 0xf180, 0, 0},
+        {112,  MIRISDR_MODE_B3,  0, 0, 16, 0xf580, 0, 0},
+        {250,  MIRISDR_MODE_B3,  0, 0, 16, 0xf480, 0, 0},
+        {261,  6              ,  0, 0, 8,  0xf480, 0, 0},
+        {404,  MIRISDR_MODE_B45, 0, 0, 4,  0xf580, 0, 0},
+        {1000, MIRISDR_MODE_BL,  0, 0, 2,  0xf580, 0, 0},
+        {2400, -1, 0, 0, 0, 0x0000, 0, 0},
 };
 
-hw_switch_freq_plan_t *hw_switch_freq_plan[2] = {
+/* RSP1B: the default plan's tuner modes, register 8 holding GPIO_1 and GPIO_3 high with
+   GPIO_0 (MISO) an input, and the front end on the expander.  HF is provisional: the
+   bank is right, its four filters are not mapped, B0 low received 7 and 14 MHz best. */
+#define RSP1B_DIRECT    0xFFDF  /* A5 low */
+#define RSP1B_HF        0x3EDF  /* B7 B6 low, B0 low, A5 low */
+#define RSP1B_250_300   0x3F5F  /* B7 B6 A7 low, A5 low */
+#define RSP1B_300_380   0x3C5F  /* and B1 B0 low */
+#define RSP1B_380_420   0x3E5F  /* and B0 low */
+
+hw_switch_freq_plan_t hw_switch_freq_plan_rsp1b[] = {
+        {0,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_HF},
+        {50,   MIRISDR_MODE_VHF, 0, 0, 32, 0xea80, 0, RSP1B_DIRECT},
+        {108,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1B_DIRECT},
+        {250,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1B_250_300},
+        {259,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 6, RSP1B_250_300},
+        {280,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1B_250_300},
+        {300,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1B_300_380},
+        {380,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1B_380_420},
+        {420,  MIRISDR_MODE_B45, 0, 0, 4,  0xea80, 0, RSP1B_DIRECT},
+        {960,  MIRISDR_MODE_BL,  0, 0, 2,  0xea80, 0, RSP1B_DIRECT},
+        {2400, -1, 0, 0, 0, 0x0000, 0, 0},
+};
+
+hw_switch_freq_plan_t *hw_switch_freq_plan[3] = {
         hw_switch_freq_plan_default,
-        hw_switch_freq_plan_sdrplay
+        hw_switch_freq_plan_sdrplay,
+        hw_switch_freq_plan_rsp1b
 };
 
 static int mirisdr_set_soft_words(mirisdr_dev_t *p);
@@ -334,6 +359,8 @@ static int mirisdr_set_soft_words(mirisdr_dev_t *p)
 //    }
 
     //mirisdr_write_reg(p, 0x08, switch_plan.band_select_word);
+    if (p->hw_flavour == MIRISDR_HW_RSP1B) mirisdr_rsp1b_frontend(p, switch_plan.expander);
+
     p->reg8=switch_plan.band_select_word;
     update_reg_8(p);
 
@@ -708,8 +735,26 @@ mirisdr_band_t mirisdr_get_band (mirisdr_dev_t *p)
 int mirisdr_set_bias (mirisdr_dev_t *p, int bias)
 {
 	p->bias=bias;
+
+	/* the RSP1B's is on its expander, which the band plan writes */
+	if (p->hw_flavour == MIRISDR_HW_RSP1B) return mirisdr_set_soft(p);
+
 	update_reg_8(p);
 	return 0;
+}
+
+int mirisdr_set_notch (mirisdr_dev_t *p, int notches)
+{
+	if (!p || (p->hw_flavour != MIRISDR_HW_RSP1B)) return -1;
+	if (notches & ~(MIRISDR_NOTCH_FM | MIRISDR_NOTCH_DAB)) return -1;
+
+	p->notch = notches;
+	return mirisdr_set_soft(p);
+}
+
+int mirisdr_get_notch (mirisdr_dev_t *p)
+{
+	return p ? p->notch : -1;
 }
 
 int mirisdr_get_bias (mirisdr_dev_t *p)

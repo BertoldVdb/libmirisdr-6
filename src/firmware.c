@@ -15,8 +15,8 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-static int mirisdr_open_raw (mirisdr_dev_t **p, uint32_t index, int external_tuner, uint8_t gpio_in);
-static int mirisdr_open_fd_raw (mirisdr_dev_t **p, int fd, int external_tuner, uint8_t gpio_in);
+static int mirisdr_open_raw (mirisdr_dev_t **p, uint32_t index, int external_tuner, uint8_t gpio_in, int flavour);
+static int mirisdr_open_fd_raw (mirisdr_dev_t **p, int fd, int external_tuner, uint8_t gpio_in, int flavour);
 
 const uint8_t *mirisdr_default_firmware (uint32_t *size)
 {
@@ -34,6 +34,7 @@ void mirisdr_open_config_default (mirisdr_open_config_t *cfg)
     cfg->fd = -1;
     cfg->firmware_ids = MIRISDR_FW_IDS_DEVICE;
     cfg->firmware = mirisdr_default_firmware(&cfg->firmware_size);
+    cfg->hw_flavour = MIRISDR_HW_AUTO;
 }
 
 #define MIRISDR_FW_GONE_MS      2000
@@ -435,8 +436,8 @@ static int mirisdr_fw_ids_ok (mirisdr_dev_t *p, int have, uint16_t vid, uint16_t
 static int mirisdr_fw_open (mirisdr_dev_t **dev, const mirisdr_open_config_t *cfg, uint32_t at)
 {
     uint8_t block[16];
-    int r = (cfg->fd >= 0) ? mirisdr_open_fd_raw(dev, cfg->fd, cfg->external_tuner, cfg->gpio_input_mask)
-                           : mirisdr_open_raw(dev, at, cfg->external_tuner, cfg->gpio_input_mask);
+    int r = (cfg->fd >= 0) ? mirisdr_open_fd_raw(dev, cfg->fd, cfg->external_tuner, cfg->gpio_input_mask, cfg->hw_flavour)
+                           : mirisdr_open_raw(dev, at, cfg->external_tuner, cfg->gpio_input_mask, cfg->hw_flavour);
 
     /* the ROM answers the memory requests too, so anything that needs our own
        firmware asks this rather than assuming */

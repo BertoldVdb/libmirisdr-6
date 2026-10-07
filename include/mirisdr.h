@@ -35,8 +35,10 @@ extern "C" {
 
 typedef enum
 {
+    MIRISDR_HW_AUTO = -1,       /* open config only: by VID:PID, else MIRISDR_HW_DEFAULT */
     MIRISDR_HW_DEFAULT,
     MIRISDR_HW_SDRPLAY,
+    MIRISDR_HW_RSP1B,           /* SDRplay RSP1B */
 } mirisdr_hw_flavour_t;
 
 typedef enum
@@ -75,6 +77,8 @@ MIRISDR_API int mirisdr_get_serial (mirisdr_dev_t *p, char *out, int len); /* ex
    Returns 0, or -1 (no device, or len too small for the path) */
 MIRISDR_API int mirisdr_get_usb_position (mirisdr_dev_t *p, uint8_t *busnum, uint8_t *devnum, char *port, int len); /* extra */
 MIRISDR_API int mirisdr_set_hw_flavour (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_flavour);
+/* Get detected/selected flavour */
+MIRISDR_API int mirisdr_get_hw_flavour (mirisdr_dev_t *p);
 
 /* sync */
 MIRISDR_API int mirisdr_read_sync (mirisdr_dev_t *p, void *buf, int len, int *n_read);
@@ -237,6 +241,14 @@ MIRISDR_API int mirisdr_get_baseband_gain (mirisdr_dev_t *p);           /* extra
 MIRISDR_API int mirisdr_set_bias (mirisdr_dev_t *p, int bias);          /* extra */
 MIRISDR_API int mirisdr_get_bias (mirisdr_dev_t *p);                    /* extra */
 
+/* Switchable notch filters, RSP1B only (-1 elsewhere),
+ * enabling these filters can improve or reduce signal quality depending on your
+ * specific scenario, so probably just have to try. MW notch will be added later. */
+#define MIRISDR_NOTCH_FM        0x01    /* 85-100 MHz */
+#define MIRISDR_NOTCH_DAB       0x02    /* 165-230 MHz */
+MIRISDR_API int mirisdr_set_notch (mirisdr_dev_t *p, int notches);      /* extra */
+MIRISDR_API int mirisdr_get_notch (mirisdr_dev_t *p);                   /* extra */
+
 /* GPIO control */
 #define MIRISDR_GPIO_COUNT      4
 
@@ -292,6 +304,9 @@ typedef struct mirisdr_open_config
                                     * will not try to control it when set */
 	uint8_t        gpio_input_mask; /* pins to hold as inputs from before the first
                                      * register 8 write, one bit per pin. */
+	int            hw_flavour;      /* the board, a mirisdr_hw_flavour_t. Settings this wrong
+                                     * could in theory cause damage (eg bias-T on).
+	                                 * MIRISDR_HW_AUTO by default */
 } mirisdr_open_config_t;
 
 /* Please fill in the open_config struct using mirisdr_open_config_default(&cfg) and only
