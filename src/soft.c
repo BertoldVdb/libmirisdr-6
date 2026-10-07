@@ -28,29 +28,30 @@
 //GPIO2 - Broadcast FM notch
 
 hw_switch_freq_plan_t hw_switch_freq_plan_default[] = {
-        {0,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf780},
-        {12,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xff80},
-        {30,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf280},
-        {50,   MIRISDR_MODE_VHF, 0, 0, 32, 0xf380},
-        {108,  MIRISDR_MODE_B3,  0, 0, 16, 0xfa80},
-        {250,  MIRISDR_MODE_B3,  0, 0, 16, 0xf680},
-        {259,  6              ,  0, 0, 8,  0xf680},
-        {330,  MIRISDR_MODE_B45, 0, 0, 4,  0xf380},
-        {960,  MIRISDR_MODE_BL,  0, 0, 2,  0xfa80},
-        {2400, -1, 0, 0, 0, 0x0000},
+        {0,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf780, 0},
+        {12,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xff80, 0},
+        {30,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf280, 0},
+        {50,   MIRISDR_MODE_VHF, 0, 0, 32, 0xf380, 0},
+        {108,  MIRISDR_MODE_B3,  0, 0, 16, 0xfa80, 0},
+        {250,  MIRISDR_MODE_B3,  0, 0, 16, 0xf680, 0},
+        {259,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf680, 6},
+        {280,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf680, 7},
+        {420,  MIRISDR_MODE_B45, 0, 0, 4,  0xf380, 0},
+        {960,  MIRISDR_MODE_BL,  0, 0, 2,  0xfa80, 0},
+        {2400, -1, 0, 0, 0, 0x0000, 0},
 };
 
 hw_switch_freq_plan_t hw_switch_freq_plan_sdrplay[] = {
-        {0,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf580},
-        {12,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf580},
-        {30,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf580},
-        {50,   MIRISDR_MODE_VHF, 0, 0, 32, 0xf180},
-        {112,  MIRISDR_MODE_B3,  0, 0, 16, 0xf580},
-        {250,  MIRISDR_MODE_B3,  0, 0, 16, 0xf480},
-        {261,  6              ,  0, 0, 8,  0xf480},
-        {404,  MIRISDR_MODE_B45, 0, 0, 4,  0xf580},
-        {1000, MIRISDR_MODE_BL,  0, 0, 2,  0xf580},
-        {2400, -1, 0, 0, 0, 0x0000},
+        {0,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf580, 0},
+        {12,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf580, 0},
+        {30,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf580, 0},
+        {50,   MIRISDR_MODE_VHF, 0, 0, 32, 0xf180, 0},
+        {112,  MIRISDR_MODE_B3,  0, 0, 16, 0xf580, 0},
+        {250,  MIRISDR_MODE_B3,  0, 0, 16, 0xf480, 0},
+        {261,  6              ,  0, 0, 8,  0xf480, 0},
+        {404,  MIRISDR_MODE_B45, 0, 0, 4,  0xf580, 0},
+        {1000, MIRISDR_MODE_BL,  0, 0, 2,  0xf580, 0},
+        {2400, -1, 0, 0, 0, 0x0000, 0},
 };
 
 hw_switch_freq_plan_t *hw_switch_freq_plan[2] = {
@@ -74,7 +75,7 @@ int mirisdr_set_soft(mirisdr_dev_t *p)
 static int mirisdr_set_soft_words(mirisdr_dev_t *p)
 {
     uint32_t reg0 = 0, reg2 = 0, reg5 = 0, reg3 = 0, regd = 0;
-    uint64_t n, thresh, frac, lo_div = 0, fvco = 0, rfvco = 0, offset = 0, afc = 0, a, b, c;
+    uint64_t n, thresh, frac, lo_div = 0, fvco = 0, rfvco = 0, offset = 0, afc = 0, a, b, c, flo;
     int i;
 
     /*** registr0 - parametry pásma ***/
@@ -113,7 +114,8 @@ static int mirisdr_set_soft_words(mirisdr_dev_t *p)
         reg0 |= switch_plan.upconvert_mixer_on << 5;
         reg0 |= switch_plan.am_port << 7;
 
-        if (switch_plan.upconvert_mixer_on)
+        /* 259-420 MHz goes low side instead (below), high side puts the VCO far out of range */
+        if (switch_plan.upconvert_mixer_on && !switch_plan.if1_low)
         {
             offset += 120000000UL;
         }
@@ -257,6 +259,13 @@ static int mirisdr_set_soft_words(mirisdr_dev_t *p)
         break;
     }
 
+    /* the first IF follows XTALSEL: 001 x6, 000 x7 */
+    if (switch_plan.if1_low)
+    {
+        reg0 &= ~(0x07UL << 13);
+        reg0 |= (uint32_t) (7 - switch_plan.if1_low) << 13;
+    }
+
     /* 4 bity pro režimy snížené spotřeby */
     /* 4 bits for power saving modes */
     reg0 |= MIRISDR_IF_LPMODE_NORMAL << 16;
@@ -264,7 +273,8 @@ static int mirisdr_set_soft_words(mirisdr_dev_t *p)
 
     /* vco frekvence, je lepší použít 64bitový rozsah */
     /* VCO frequency is better to use a 64-bit range */
-    fvco = (p->freq + offset) * lo_div;
+    flo = p->freq + offset - (uint64_t) switch_plan.if1_low * 24000000UL;
+    fvco = flo * lo_div;
 
     /* posun po hlavní frekvenci */
     /* shift the main frequency */
@@ -299,10 +309,10 @@ static int mirisdr_set_soft_words(mirisdr_dev_t *p)
     frac = (frac + (a / 2)) / a;
 
     rfvco=(96000000UL * (n * thresh * 4096UL + (frac * 4096UL))) / (thresh * 4096UL * lo_div);
-    if(p->freq + offset < rfvco)
+    if(flo < rfvco)
         frac --;
     rfvco=(96000000UL * (n * thresh * 4096UL + (frac * 4096UL + afc))) / (thresh * 4096UL * lo_div);
-    afc = ((p->freq + offset - rfvco) * thresh * 4096UL * lo_div) /96000000UL;
+    afc = ((flo - rfvco) * thresh * 4096UL * lo_div) /96000000UL;
 
     reg3 |= (afc & 4095);
     reg5 |= (0xFFF & thresh);

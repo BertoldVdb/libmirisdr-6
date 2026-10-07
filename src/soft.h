@@ -65,4 +65,5 @@ typedef struct
     int am_port;
     int lo_div;
     uint32_t band_select_word;
+    int if1_low;        /* AM low side: first IF this many x 24 MHz (XTALSEL 7 - n), 0 = high side 120 MHz */
 } hw_switch_freq_plan_t;
