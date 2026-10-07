@@ -2265,6 +2265,43 @@ static tres_t t_dec_slips (void)
     return T_PASS;
 }
 
+
+/* Holding unknown, the finer VCO control, high lowers the frequency: with the VCO
+   free the band search makes up for it with a lower fine code */
+static tres_t t_tuner_unknown (void)
+{
+    mirisdr_tuner_status_t a, b, c;
+    mirisdr_tuner_override_t ov;
+
+    if (mirisdr_set_center_freq(dev, 159000000) < 0) { say("could not tune"); return T_FAIL; }
+    usleep(5000);
+    if (mirisdr_get_tuner_status(dev, &a) < 0) { say("no readback"); return T_SKIP; }
+
+    memset(&ov, 0, sizeof ov);
+    ov.hold_unknown = 1;
+    ov.unknown = 31;
+    if (mirisdr_set_tuner_override(dev, &ov) < 0) { say("override refused"); return T_FAIL; }
+    mirisdr_set_center_freq(dev, 159100000);
+    mirisdr_set_center_freq(dev, 159000000);
+    usleep(5000);
+    mirisdr_get_tuner_status(dev, &b);
+
+    mirisdr_set_tuner_override(dev, NULL);
+    mirisdr_set_center_freq(dev, 159100000);
+    mirisdr_set_center_freq(dev, 159000000);
+    usleep(5000);
+    mirisdr_get_tuner_status(dev, &c);
+
+    note("calibrated fine %u unknown %u, unknown held at 31 fine %u, cleared fine %u unknown %u",
+         a.fine, a.unknown, b.fine, c.fine, c.unknown);
+
+    if (b.fine >= a.fine) { say("held high, the band search did not move down (fine %u, was %u)", b.fine, a.fine); return T_FAIL; }
+    if (c.fine + 1 < a.fine || c.fine > a.fine + 1) { say("cleared, fine %u, was %u", c.fine, a.fine); return T_FAIL; }
+
+    say("held at 31 the band search went from fine %u to %u, and back when cleared", a.fine, b.fine);
+    return T_PASS;
+}
+
 static const struct {
     const char *group;
     const char *name;
@@ -2316,6 +2353,7 @@ static const struct {
     { "tuner",    "tuning across bands",        t_tuning              },
     { "tuner",    "tuner status readback",      t_tuner_status        },
     { "tuner",    "tuner overrides",            t_tuner_override      },
+    { "tuner",    "unknown override",           t_tuner_unknown       },
     { "tuner",    "stream events",              t_stream_events       },
     { "tuner",    "gain steps",                 t_gain                },
     { "tuner",    "filter bandwidths",          t_bandwidth           },

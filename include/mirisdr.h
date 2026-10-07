@@ -438,7 +438,8 @@ typedef struct mirisdr_tuner_status
 	uint32_t raw;
 	int8_t   coarse;     /* VCO range 0-2 from the one-hot bits, -1 when none is set */
 	uint8_t  fine;       /* VCO capacitor band within the range, 5 bits */
-	uint8_t  unknown;    /* set by a second search after the band, 5 bits; falls with frequency */
+	uint8_t  unknown;    /* a finer VCO frequency control the second search sets after the band,
+	                        5 bits, higher is a lower frequency */
 	uint8_t  upconv;     /* up-converter LO calibration, 4 bits */
 	uint8_t  lna_cal;    /* L-band LNA calibration, 4 bits */
 	uint8_t  filter;     /* IF filter calibration code, 5 bits: timed against the crystal
@@ -459,6 +460,9 @@ typedef struct mirisdr_tuner_override
 	uint8_t  upconv;      /* up-converter LO code, 0-15 */
 	uint8_t  hold_lna;
 	uint8_t  lna_cal;     /* L-band LNA code, 0-15 */
+	uint8_t  hold_unknown; /* the status reads the search register instead */
+	uint8_t  unknown;     /* 0-31, higher is a lower frequency; with the VCO held, above
+	                         about 20 the loop nears the end of its range and ~29 loses lock */
 	uint8_t  hold_filter; /* the status still reads the calibrated code */
 	uint8_t  filter;      /* IF filter code, 0-31, 0 the widest; with the
 	                         bandwidth MIRISDR_BW_MAX is this held at 0 */
