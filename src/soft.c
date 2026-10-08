@@ -58,7 +58,8 @@ hw_switch_freq_plan_t hw_switch_freq_plan_sdrplay[] = {
 /* RSP1B: the default plan's tuner modes, register 8 holding GPIO_1 and GPIO_3 high with
    GPIO_0 (MISO) an input, and the front end on the expander. A5 low costs 35-40 dB below
    3 MHz and gains 13-16 dB at 40 MHz, so HF keeps it released up to 30 MHz. */
-#define RSP1B_DIRECT    0xFFDF  /* A5 low */
+#define RSP1B_VHF_B45   0xBFDF  /* B6 A5 low: the VHF and B45 inputs' path */
+#define RSP1B_B3_L      0x7FDF  /* B7 A5 low: the B3 and L inputs' path */
 #define RSP1B_LPF2      0x3FFF  /* B7 B6 low: the 2 MHz low pass */
 #define RSP1B_2_12      0x3CFF  /* and B1 B0 low */
 #define RSP1B_12_30     0x3EFF  /* and B0 low */
@@ -72,15 +73,15 @@ hw_switch_freq_plan_t hw_switch_freq_plan_rsp1b[] = {
         {2,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_2_12},
         {12,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_12_30},
         {30,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_30_60},
-        {55,   MIRISDR_MODE_VHF, 0, 0, 32, 0xea80, 0, RSP1B_DIRECT},
-        {108,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1B_DIRECT},
-        {250,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1B_DIRECT},
+        {55,   MIRISDR_MODE_VHF, 0, 0, 32, 0xea80, 0, RSP1B_VHF_B45},
+        {108,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1B_B3_L},
+        {250,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1B_B3_L},
         {259,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 6, RSP1B_250_300},
         {280,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1B_250_300},
         {300,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1B_300_380},
         {380,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1B_380_420},
-        {420,  MIRISDR_MODE_B45, 0, 0, 4,  0xea80, 0, RSP1B_DIRECT},
-        {960,  MIRISDR_MODE_BL,  0, 0, 2,  0xea80, 0, RSP1B_DIRECT},
+        {420,  MIRISDR_MODE_B45, 0, 0, 4,  0xea80, 0, RSP1B_VHF_B45},
+        {960,  MIRISDR_MODE_BL,  0, 0, 2,  0xea80, 0, RSP1B_B3_L},
         {2400, -1, 0, 0, 0, 0x0000, 0, 0},
 };
 

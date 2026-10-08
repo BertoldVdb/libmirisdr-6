@@ -26,8 +26,9 @@
  * OLAT left at 0. IODIR bits, 0 = pulled low (measured 2026-10-07 with a signal generator
  * and an FM antenna, the notches and HF 2026-10-08 with tone sweeps):
  *
- *   B7 B6 A7   path: 000 direct (the VHF, B3, B45 and L inputs), 100 a flat 28 dB down
- *              at 60-105 MHz, 110 the HF bank, 111 the 250-420 MHz bank
+ *   B7 B6 A7   path: 010 (B6 low) the VHF and B45 inputs, 100 (B7 low) the B3 and L
+ *              inputs, each blocking the other's bands by 16-45 dB; 000 passes both
+ *              2-13 dB down. 110 the HF bank, 111 the 250-420 MHz bank
  *   B1 B0      filter in the bank. HF: 2 MHz low pass both released, 2-12 both low,
  *              12-30 B0 low. 250-420 bank: 250-300 both released, 300-380 both low,
  *              380-420 B0 low, 30-60 B1 low
