@@ -182,6 +182,9 @@ typedef struct mirisdr_buffer_info
 	uint64_t gap_samples;   /* samples missing inside it, all gaps added up */
 	uint32_t gaps_len;
 	mirisdr_gap_t gaps[MIRISDR_GAPS_MAX];
+	int      adc;           /* MIRISDR_IQ_BOTH for complex (I/Q pairs),
+	                           MIRISDR_IQ_ONLY_I or _ONLY_Q for real */
+	uint32_t rate;          /* samples per second */
 } mirisdr_buffer_info_t;
 
 /* Call from inside the read_async callback only */
@@ -196,9 +199,19 @@ MIRISDR_API int mirisdr_set_gap_fill (mirisdr_dev_t *p, int on); /* extra */
  * mirisdr_stream_config_default()), change what is needed and apply. The strings take
  * the values of the single setters above, NULL for their default. An invalid or
  * conflicting combination is refused as a whole, rather than adjusted. While streaming
- * the stream restarts with a short gap, as with the single setters, but a switch
- * between a real and a complex format is refused. mirisdr_stream_check() says what a
- * config would give without applying it.
+ * the stream restarts with a short gap, as with the single setters. The buffer being
+ * filled is dropped, so no buffer mixes two formats, and mirisdr_get_buffer_info()
+ * says whether each one is real or complex. mirisdr_stream_check() says what a config
+ * would give without applying it.
+ *
+ * With follow_tune the stream is real or complex as the tune needs it: format while
+ * the tune runs both tuner outputs, format_single on the converter of the one it
+ * runs (see mirisdr_tune()). A tune then switches the stream itself, in one restart.
+ *
+ * Bulk transfers max bandwidth is very host dependent, so only the receiver's own limit
+ * (~56 MB/s) is enforced for a fixed format. The automatic choice has to assume a
+ * figure: usb_capacity, 24.6 MB/s by default in bulk, or an isochronous mode's
+ * reservation.
  */
 typedef struct mirisdr_stream_config
 {
@@ -208,6 +221,10 @@ typedef struct mirisdr_stream_config
 	const char *decimation_bypass;  /* as mirisdr_set_decimation_bypass(), NULL for "AUTO" */
 	int         swap_iq;            /* as mirisdr_set_swap_iq(): a real format captures Q when set */
 	int         gap_fill;           /* as mirisdr_set_gap_fill() */
+	int         follow_tune;        /* real or complex as the tune needs it, see above */
+	const char *format_single;      /* with follow_tune: the real format for one tuner output,
+	                                   NULL for "AUTO_REAL" */
+	uint32_t    usb_capacity;       /* B/s the automatic choice may plan on, 0 for the default */
 } mirisdr_stream_config_t;
 
 typedef struct mirisdr_stream_result
@@ -217,7 +234,7 @@ typedef struct mirisdr_stream_result
 	int         adc;                /* what is digitised: MIRISDR_IQ_BOTH, _ONLY_I or _ONLY_Q */
 	int         decimation_bypassed;
 	uint32_t    usb_bytes;          /* per second */
-	uint32_t    usb_capacity;       /* what the transfer mode carries per second */
+	uint32_t    usb_capacity;       /* B/s the automatic choice planned on */
 } mirisdr_stream_result_t;
 
 MIRISDR_API void mirisdr_stream_config_default (mirisdr_stream_config_t *cfg); /* extra */
@@ -264,7 +281,8 @@ MIRISDR_API mirisdr_band_t mirisdr_get_band (mirisdr_dev_t *p);         /* extra
  * so that is what is received. The I and Q outputs then each carry it as a real signal
  * at if_freq, so either can be switched off (iq) and captured with a real sample
  * format on the matching converter (see mirisdr_set_swap_iq()). A tune that switches
- * off the output the stream captures is refused.
+ * off the output the stream captures is refused, unless the stream follows the tune
+ * (see mirisdr_set_stream()): the tune then switches it, in one restart.
  *
  * mirisdr_get_center_freq() returns the LO, which the result gives too.
  */

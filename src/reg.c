@@ -67,6 +67,8 @@ static int mirisdr_batch_flush (mirisdr_dev_t *p)
     if (!n) return 0;
     p->batch_n = 0;
 
+    if (!p->dh) return 0;           /* the null device */
+
     /* a list replaces a running one: let the last tune's finish first */
     if (p->batch_running) mirisdr_batch_wait(p);
 
@@ -178,7 +180,7 @@ int mirisdr_write_reg (mirisdr_dev_t *p, uint8_t reg, uint32_t val) {
     int r;
 
     if (!p) goto failed;
-    if (!p->dh) goto failed;
+    if (!p->dh && !p->fake) goto failed;
 
 #if MIRISDR_DEBUG >= 2
     fprintf( stderr, "write reg: 0x%02x, val 0x%08x\n", reg, val);
@@ -197,7 +199,7 @@ int mirisdr_write_reg (mirisdr_dev_t *p, uint8_t reg, uint32_t val) {
     else
     {
         if (p->batch_running) mirisdr_batch_wait(p);
-        r = libusb_control_transfer(p->dh, 0x42, 0x41, value, index, NULL, 0, CTRL_TIMEOUT);
+        r = p->dh ? libusb_control_transfer(p->dh, 0x42, 0x41, value, index, NULL, 0, CTRL_TIMEOUT) : 0;
     }
 
     if (reg == 0x09) mirisdr_tuner_track(p, val, r >= 0);

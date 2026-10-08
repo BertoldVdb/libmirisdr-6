@@ -169,6 +169,50 @@ static uint32_t mirisdr_format_agc (int format)
 	}
 }
 
+/* "AUTO", "AUTO_REAL" or a packing; NULL is dflt */
+static int mirisdr_parse_format (const char *v, const char *dflt, int *fauto, int *format, const char **canon)
+{
+	unsigned i;
+
+	if (!v) v = dflt;
+
+	if (!strcmp(v, "AUTO") || !strcmp(v, "AUTO_REAL"))
+	{
+		*fauto = strcmp(v, "AUTO") ? MIRISDR_FORMAT_AUTO_REAL : MIRISDR_FORMAT_AUTO_ON;
+		*format = strcmp(v, "AUTO") ? MIRISDR_FORMAT_504_REAL_S16 : MIRISDR_FORMAT_252_S16;
+		*canon = strcmp(v, "AUTO") ? "AUTO_REAL" : "AUTO";
+
+		return 0;
+	}
+
+	for (i = 0; (i < sizeof mirisdr_formats / sizeof mirisdr_formats[0]) && strcmp(v, mirisdr_formats[i].name); i++);
+
+	if (i == sizeof mirisdr_formats / sizeof mirisdr_formats[0])
+	{
+		fprintf(stderr, "unsupported format: %s\n", v);
+		return -1;
+	}
+
+	*fauto = MIRISDR_FORMAT_AUTO_OFF;
+	*format = mirisdr_formats[i].format;
+	*canon = mirisdr_formats[i].name;
+
+	return 0;
+}
+
+/* B/s the automatic choice plans on: what was asked for in bulk, the reservation (or
+   less) in an isochronous mode */
+static uint32_t mirisdr_stream_cap (int transfer, uint8_t alt, uint32_t usb_capacity)
+{
+	uint32_t res;
+
+	if (transfer == MIRISDR_TRANSFER_BULK) return usb_capacity ? usb_capacity : MIRISDR_BULK_CAPACITY;
+
+	res = 1024 * mirisdr_alt_burst(alt) * 8000;
+
+	return (usb_capacity && usb_capacity < res) ? usb_capacity : res;
+}
+
 typedef struct mirisdr_stream_plan
 {
 	mirisdr_stream_config_t cfg;    /* as asked, the strings canonical, the rate reached */
@@ -179,41 +223,46 @@ typedef struct mirisdr_stream_plan
 	unsigned ncand;
 } mirisdr_stream_plan_t;
 
-static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t *c, int flags,
+/* iq: the tuner outputs the tune runs, which a stream following it takes its kind from */
+static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t *c, int flags, int iq,
                                 mirisdr_stream_plan_t *pl)
 {
-	int adjust = flags & MIRISDR_STREAM_ADJUST;
+	int adjust = flags & MIRISDR_STREAM_ADJUST, sauto, sformat;
 	uint32_t rate_min, rate_max, spp;
 	uint64_t most;
 	unsigned i;
 
 	pl->cfg = *c;
 
-	/* format */
-	if (!c->format || !strcmp(c->format, "AUTO"))
-	{
-		pl->format_auto = MIRISDR_FORMAT_AUTO_ON;
-		pl->cfg.format = "AUTO";
-	}
-	else if (!strcmp(c->format, "AUTO_REAL"))
-	{
-		pl->format_auto = MIRISDR_FORMAT_AUTO_REAL;
-		pl->cfg.format = "AUTO_REAL";
-	}
-	else
-	{
-		for (i = 0; (i < sizeof mirisdr_formats / sizeof mirisdr_formats[0]) &&
-		            strcmp(c->format, mirisdr_formats[i].name); i++);
+	/* formats: one, or with follow_tune one for each kind */
+	if ((mirisdr_parse_format(c->format, "AUTO", &pl->format_auto, &pl->format, &pl->cfg.format) < 0) ||
+	    (mirisdr_parse_format(c->format_single, "AUTO_REAL", &sauto, &sformat, &pl->cfg.format_single) < 0))
+		return -1;
 
-		if (i == sizeof mirisdr_formats / sizeof mirisdr_formats[0])
+	pl->cfg.follow_tune = c->follow_tune ? 1 : 0;
+	pl->swap = pl->cfg.swap_iq = c->swap_iq ? 1 : 0;
+
+	if (pl->cfg.follow_tune)
+	{
+		if ((pl->format_auto == MIRISDR_FORMAT_AUTO_REAL) || mirisdr_format_real(pl->format))
 		{
-			fprintf(stderr, "unsupported format: %s\n", c->format);
+			fprintf(stderr, "following the tune, format is the complex one\n");
 			return -1;
 		}
 
-		pl->format_auto = MIRISDR_FORMAT_AUTO_OFF;
-		pl->format = mirisdr_formats[i].format;
-		pl->cfg.format = mirisdr_formats[i].name;
+		if ((sauto == MIRISDR_FORMAT_AUTO_ON) || !mirisdr_format_real(sformat))
+		{
+			fprintf(stderr, "following the tune, format_single is a real one\n");
+			return -1;
+		}
+
+		/* one tuner output: a real stream on its converter */
+		if (iq != MIRISDR_IQ_BOTH)
+		{
+			pl->format_auto = sauto;
+			pl->format = sformat;
+			pl->swap = (iq == MIRISDR_IQ_ONLY_Q);
+		}
 	}
 
 	/* transfer */
@@ -249,7 +298,6 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 
 	pl->cfg.decimation_bypass = mirisdr_decim_names[pl->decimation_bypass];
 
-	pl->swap = pl->cfg.swap_iq = c->swap_iq ? 1 : 0;
 	pl->cfg.gap_fill = c->gap_fill ? 1 : 0;
 
 	/* rate, within what the decimation setting allows */
@@ -272,8 +320,7 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 		pl->rate = (pl->rate < rate_min) ? rate_min : rate_max;
 	}
 
-	pl->cap = (pl->transfer == MIRISDR_TRANSFER_BULK) ? MIRISDR_BULK_CAPACITY
-	                                                  : 1024 * mirisdr_alt_burst(pl->alt) * 8000;
+	pl->cap = mirisdr_stream_cap(pl->transfer, pl->alt, c->usb_capacity);
 
 	/* the automatic choice: the least dense packing that fits */
 	if (pl->format_auto != MIRISDR_FORMAT_AUTO_OFF)
@@ -302,7 +349,9 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 			if (!adjust) return -1;
 		}
 	}
-	else if (!adjust && ((uint64_t) pl->rate * 1024 / mirisdr_format_spp(pl->format) > pl->cap))
+	/* an isochronous reservation is a hard limit, what bulk carries is up to the host */
+	else if (!adjust && (pl->transfer != MIRISDR_TRANSFER_BULK) &&
+	         ((uint64_t) pl->rate * 1024 / mirisdr_format_spp(pl->format) > pl->cap))
 	{
 		fprintf(stderr, "rate %u in %s needs %lu B/s, more than the %u B/s this mode supports\n", pl->rate,
 		        pl->cfg.format, (long unsigned) ((uint64_t) pl->rate * 1024 / mirisdr_format_spp(pl->format)),
@@ -318,9 +367,10 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 
 	if ((uint64_t) pl->rate > most)
 	{
-		fprintf(stderr, "rate %u needs %lu B/s of blocks, more than the engine's %lu%s%lu\n", pl->rate,
-		        (long unsigned) ((uint64_t) pl->rate * 1024 / spp), (long unsigned) MIRISDR_ENGINE_BLOCK_RATE,
-		        adjust ? ", using " : "", adjust ? (long unsigned) most : 0UL);
+		fprintf(stderr, "rate %u needs %lu B/s of blocks, more than the engine's %lu", pl->rate,
+		        (long unsigned) ((uint64_t) pl->rate * 1024 / spp), (long unsigned) MIRISDR_ENGINE_BLOCK_RATE);
+		if (adjust) fprintf(stderr, ", using %lu", (long unsigned) most);
+		fprintf(stderr, "\n");
 
 		if (!adjust) return -1;
 
@@ -346,23 +396,12 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 		return -1;
 	}
 
-	if (!adjust)
+	/* the tune switched off the output this would capture */
+	if (!adjust && !pl->cfg.follow_tune && mirisdr_format_real(pl->format) && (iq != MIRISDR_IQ_BOTH) &&
+	    ((pl->swap ? MIRISDR_IQ_ONLY_Q : MIRISDR_IQ_ONLY_I) != iq))
 	{
-		/* what the callback is handed changes shape between real and complex */
-		if ((p->async_status == MIRISDR_ASYNC_RUNNING) &&
-		    (mirisdr_format_real(pl->format) != mirisdr_format_real(p->format)))
-		{
-			fprintf(stderr, "cannot switch between a real and a complex format while streaming\n");
-			return -1;
-		}
-
-		/* the tune switched off the output this would capture */
-		if (mirisdr_format_real(pl->format) && (p->tune_iq != MIRISDR_IQ_BOTH) &&
-		    ((pl->swap ? MIRISDR_IQ_ONLY_Q : MIRISDR_IQ_ONLY_I) != p->tune_iq))
-		{
-			fprintf(stderr, "the tune switched off the tuner output this would capture\n");
-			return -1;
-		}
+		fprintf(stderr, "the tune switched off the tuner output this would capture\n");
+		return -1;
 	}
 
 	return 0;
@@ -379,20 +418,12 @@ static void mirisdr_stream_result_of (uint32_t rate, int format, int swap, int d
 	res->usb_capacity = cap;
 }
 
-static int mirisdr_stream_send (mirisdr_dev_t *p, const mirisdr_stream_plan_t *pl)
+/* the registers only: the stream is stopped around this */
+static void mirisdr_stream_regs (mirisdr_dev_t *p, const mirisdr_stream_plan_t *pl)
 {
-	int streaming = 0;
 	uint32_t reg3 = 0, reg4 = 0, reg7;
 	uint64_t i, vco, n, fract;
 	unsigned try;
-
-	/* registers change, so the stream stops and starts again around it */
-	if (p->async_status == MIRISDR_ASYNC_RUNNING)
-	{
-		streaming = 1;
-
-		if ((mirisdr_stop_async(p) < 0) || (mirisdr_adc_stop(p) < 0)) goto failed;
-	}
 
 	p->rate = pl->rate;
 	p->format = pl->format;
@@ -484,13 +515,25 @@ static int mirisdr_stream_send (mirisdr_dev_t *p, const mirisdr_stream_plan_t *p
 
 		if (try == pl->ncand) break;
 	}
+}
 
-	if (streaming && (mirisdr_start_async(p) < 0)) goto failed;
+/* stopped and started around it if it runs; returns whether it ran */
+static int mirisdr_stream_pause (mirisdr_dev_t *p)
+{
+	if (p->async_status != MIRISDR_ASYNC_RUNNING) return 0;
 
-	return 0;
+	return ((mirisdr_stop_async(p) < 0) || (mirisdr_adc_stop(p) < 0)) ? -1 : 1;
+}
 
-failed:
-	return -1;
+static int mirisdr_stream_send (mirisdr_dev_t *p, const mirisdr_stream_plan_t *pl)
+{
+	int streaming;
+
+	if ((streaming = mirisdr_stream_pause(p)) < 0) return -1;
+
+	mirisdr_stream_regs(p, pl);
+
+	return (streaming && (mirisdr_start_async(p) < 0)) ? -1 : 0;
 }
 
 static int mirisdr_stream_apply (mirisdr_dev_t *p, const mirisdr_stream_config_t *c, int flags,
@@ -499,7 +542,7 @@ static int mirisdr_stream_apply (mirisdr_dev_t *p, const mirisdr_stream_config_t
 	mirisdr_stream_plan_t pl;
 
 	if (!p || !c) return -1;
-	if (mirisdr_stream_plan(p, c, flags, &pl) < 0) return -1;
+	if (mirisdr_stream_plan(p, c, flags, p->tune_iq, &pl) < 0) return -1;
 
 	/* nothing the hardware holds changes: no restart */
 	if (!(flags & MIRISDR_STREAM_FORCE) && (pl.rate == p->rate) && (pl.format == (int) p->format) &&
@@ -541,7 +584,7 @@ int mirisdr_stream_check (mirisdr_dev_t *p, const mirisdr_stream_config_t *cfg, 
 	mirisdr_stream_plan_t pl;
 
 	if (!p || !cfg) return -1;
-	if (mirisdr_stream_plan(p, cfg, 0, &pl) < 0) return -1;
+	if (mirisdr_stream_plan(p, cfg, 0, p->tune_iq, &pl) < 0) return -1;
 
 	if (res) mirisdr_stream_result_of(pl.rate, pl.format, pl.swap, pl.decim, pl.cap, res);
 
@@ -554,8 +597,7 @@ int mirisdr_get_stream (mirisdr_dev_t *p, mirisdr_stream_config_t *cfg, mirisdr_
 
 	if (cfg) *cfg = p->stream;
 	if (res) mirisdr_stream_result_of(p->rate, p->format, p->swap_iq, p->decim_on,
-	                                  (p->transfer == MIRISDR_TRANSFER_BULK) ? MIRISDR_BULK_CAPACITY :
-	                                  1024 * mirisdr_alt_burst(p->alt_setting) * 8000, res);
+	                                  mirisdr_stream_cap(p->transfer, p->alt_setting, p->stream.usb_capacity), res);
 
 	return 0;
 }
@@ -589,6 +631,7 @@ int mirisdr_set_sample_format(mirisdr_dev_t *p, const char *v)
 
 	c = p->stream;
 	c.format = v;
+	c.follow_tune = 0;
 
 	return mirisdr_stream_apply(p, &c, MIRISDR_STREAM_ADJUST | MIRISDR_STREAM_FORCE, NULL);
 }

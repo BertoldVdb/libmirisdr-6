@@ -17,13 +17,17 @@
 
 #include "async.h"
 
+static int mirisdr_stream_adc (mirisdr_dev_t *p);
+
 static void mirisdr_cb_call (mirisdr_dev_t *p, unsigned char *buf, uint32_t len) {
     mirisdr_buffer_info_t *in = &p->cb_info;
     uint64_t ub = mirisdr_unit_bytes(p), start = p->cb_bytes, end = start + len, later = 0;
     int k = 0, j;
 
     memset(in, 0, sizeof *in);
-    in->sample = start / ub;
+    in->sample = p->cb_base + start / ub;
+    in->adc = mirisdr_stream_adc(p);
+    in->rate = p->rate;
 
     /* the queue's gaps up to this buffer's end, in order */
     while (k < p->gapq_n && p->gapq[k].at < end) {
@@ -832,6 +836,7 @@ int mirisdr_read_async (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx,
     p->fills_n = 0;
     p->fed_bytes = 0;
     p->cb_bytes = 0;
+    p->cb_base = 0;
     p->cb_lost = 0;
     p->ev_valid = 0;
     p->sync_ready = 0;
@@ -1012,6 +1017,27 @@ failed:
     return -1;
 }
 
+/* The buffer being filled is dropped at a restart, and the next format may take
+   other bytes a sample: count what was not handed out as lost and start the byte
+   positions again. The buffers' sample and index carry on across it. */
+static void mirisdr_cb_rebase (mirisdr_dev_t *p) {
+    uint64_t ub = mirisdr_unit_bytes(p), dropped = p->xfer_out_pos / ub, filled = 0, missing = 0;
+    int k;
+
+    for (k = 0; k < p->gapq_n; k++) {
+        filled += p->gapq[k].filled;
+        missing += p->gapq[k].samples;
+    }
+
+    /* the real samples of the dropped part, and all of the gaps not reached */
+    p->cb_lost += (dropped > filled ? dropped - filled : 0) + missing;
+    p->cb_base += p->cb_bytes / ub;
+    p->cb_bytes = 0;
+    p->fed_bytes = 0;
+    p->gapq_n = 0;
+    p->xfer_out_pos = 0;
+}
+
 /* zastavení streamování */
 int mirisdr_stop_async (mirisdr_dev_t *p) {
 
@@ -1035,6 +1061,8 @@ int mirisdr_stop_async (mirisdr_dev_t *p) {
     if (mirisdr_async_drain(p, 10) < 0) goto failed;
 
     if (p->async_status != MIRISDR_ASYNC_RUNNING) goto failed;
+
+    mirisdr_cb_rebase(p);
 
     p->async_status = MIRISDR_ASYNC_PAUSED;
 

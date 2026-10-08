@@ -40,6 +40,7 @@ int mirisdr_open_null (mirisdr_dev_t **out, const char *format) {
     p->format = f[i].format;  /* the enum is declared in the struct */
     p->addr_step = f[i].step;
     p->fw_ours = 1;             /* stamped blocks */
+    p->fake = 1;                /* the configs can be applied, and read back */
     p->gap_track = 1;
 
     *out = p;

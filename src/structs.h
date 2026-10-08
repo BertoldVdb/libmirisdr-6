@@ -43,6 +43,7 @@ struct mirisdr_dev {
     int                 lna_cal_run;        /* this tune is the calibration one */
     mirisdr_hw_flavour_t hw_flavour;
     int                 external_tuner;
+    int                 fake;           /* mirisdr_open_null(): writes succeed without a device */
     mirisdr_band_t      band;
     enum {
         MIRISDR_FORMAT_AUTO_ON = 0,
@@ -217,7 +218,8 @@ struct mirisdr_dev {
     uint64_t            conv_samples;  /* stats.samples when this conversion began */
     uint64_t            conv_filled;
     uint64_t            fed_bytes;     /* bytes passed on to the callbacks' buffering, fills included */
-    uint64_t            cb_bytes;      /* bytes handed to the application before this buffer */
+    uint64_t            cb_bytes;      /* bytes handed to the application before this buffer, since cb_base */
+    uint64_t            cb_base;       /* samples handed out before the last restart */
     uint64_t            cb_lost;       /* samples missing, not filled, before this buffer */
     mirisdr_buffer_info_t cb_info;
     int                 addr_valid;

@@ -445,9 +445,9 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
         pl->iq = MIRISDR_IQ_BOTH;
     }
 
-    /* the stream capturing the output switched off would go dead */
-    if (!adjust && (pl->iq != MIRISDR_IQ_BOTH) && (mirisdr_stream_adc(p) != MIRISDR_IQ_BOTH) &&
-        (mirisdr_stream_adc(p) != pl->iq))
+    /* the stream capturing the output switched off would go dead, unless it follows */
+    if (!adjust && !p->stream.follow_tune && (pl->iq != MIRISDR_IQ_BOTH) &&
+        (mirisdr_stream_adc(p) != MIRISDR_IQ_BOTH) && (mirisdr_stream_adc(p) != pl->iq))
     {
         fprintf(stderr, "the stream captures the tuner output this tune switches off\n");
         return -1;
@@ -476,11 +476,11 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
 }
 
 /* Where the received frequency lands, given what the stream captures */
-static void mirisdr_tune_result_of (mirisdr_dev_t *p, uint32_t rx, uint32_t lo, int iq, uint32_t bw,
+static void mirisdr_tune_result_of (int adc, uint32_t rx, uint32_t lo, int iq, uint32_t bw,
                                     mirisdr_band_t band, int gain, mirisdr_tune_result_t *res)
 {
     int64_t off = (int64_t) rx - lo;
-    int real = (iq != MIRISDR_IQ_BOTH) || (mirisdr_stream_adc(p) != MIRISDR_IQ_BOTH);
+    int real = (iq != MIRISDR_IQ_BOTH) || (adc != MIRISDR_IQ_BOTH);
 
     res->lo = lo;
     res->iq = iq;
@@ -493,14 +493,30 @@ static void mirisdr_tune_result_of (mirisdr_dev_t *p, uint32_t rx, uint32_t lo, 
     res->inverted = real && off < 0;
 }
 
+static int mirisdr_tune_adc (mirisdr_dev_t *p, int iq)
+{
+    return p->stream.follow_tune ? iq : mirisdr_stream_adc(p);
+}
+
 static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, int flags,
                                mirisdr_tune_result_t *res)
 {
     mirisdr_tune_plan_t pl;
-    int r;
+    mirisdr_stream_plan_t spl;
+    int r, restream = 0, streaming = 0;
 
     if (!p || !c) return -1;
     if (mirisdr_tune_plan(p, c, flags, &pl) < 0) return -1;
+
+    /* a stream following the tune changes kind or converter with it, in one restart */
+    if (p->stream.follow_tune)
+    {
+        if (mirisdr_stream_plan(p, &p->stream, flags & MIRISDR_TUNE_ADJUST ? MIRISDR_STREAM_ADJUST : 0,
+                                pl.iq, &spl) < 0) return -1;
+
+        restream = (spl.format != (int) p->format) || (spl.swap != p->swap_iq);
+        if (restream && ((streaming = mirisdr_stream_pause(p)) < 0)) return -1;
+    }
 
     mirisdr_filter_learn(p, pl.w.row);
     mirisdr_batch_begin(p);
@@ -527,8 +543,14 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
     r += mirisdr_set_gain(p);
     r += mirisdr_batch_end(p);
 
-    if (res) mirisdr_tune_result_of(p, c->frequency, p->tune_lo, p->tune_iq, pl.cfg.bandwidth, p->band,
-                                    mirisdr_get_tuner_gain(p), res);
+    if (restream)
+    {
+        mirisdr_stream_regs(p, &spl);
+        if (streaming && (mirisdr_start_async(p) < 0)) r = -1;
+    }
+
+    if (res) mirisdr_tune_result_of(mirisdr_stream_adc(p), c->frequency, p->tune_lo, p->tune_iq,
+                                    pl.cfg.bandwidth, p->band, mirisdr_get_tuner_gain(p), res);
 
     return r;
 }
@@ -565,8 +587,8 @@ int mirisdr_tune_check (mirisdr_dev_t *p, const mirisdr_tune_config_t *cfg, miri
     gain = (cfg->gain >= 0) ? cfg->gain : p->gain;
     if (gain > mirisdr_max_gain_of(pl.w.band)) gain = mirisdr_max_gain_of(pl.w.band);
 
-    if (res) mirisdr_tune_result_of(p, cfg->frequency, pl.w.lo_real, pl.iq, pl.cfg.bandwidth, pl.w.band,
-                                    gain, res);
+    if (res) mirisdr_tune_result_of(mirisdr_tune_adc(p, pl.iq), cfg->frequency, pl.w.lo_real, pl.iq,
+                                    pl.cfg.bandwidth, pl.w.band, gain, res);
 
     return 0;
 }
@@ -576,8 +598,8 @@ int mirisdr_get_tune (mirisdr_dev_t *p, mirisdr_tune_config_t *cfg, mirisdr_tune
     if (!p) return -1;
 
     if (cfg) *cfg = p->tune;
-    if (res) mirisdr_tune_result_of(p, p->tune.frequency, p->tune_lo, p->tune_iq, p->tune.bandwidth,
-                                    p->band, mirisdr_get_tuner_gain(p), res);
+    if (res) mirisdr_tune_result_of(mirisdr_stream_adc(p), p->tune.frequency, p->tune_lo, p->tune_iq,
+                                    p->tune.bandwidth, p->band, mirisdr_get_tuner_gain(p), res);
 
     return 0;
 }
