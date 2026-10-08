@@ -296,7 +296,7 @@ static void mirisdr_filter_learn (mirisdr_dev_t *p, const hw_switch_freq_plan_t 
     if (p->filter_cal >= 0 || p->external_tuner || !row->if1_low || !(p->tuner_valid & 1)) return;
     if ((p->tuner_reg[0] & (7UL << 17)) != mirisdr_xtalsel(p) << 17) return;
 
-    if (mirisdr_get_tuner_status(p, &st) == 0) p->filter_cal = st.filter;
+    if (mirisdr_get_tuner_status(p, 0, &st) == 0) p->filter_cal = st.filter;
 }
 
 /* Datasheet table 19: the synthesizer frequency that calibrates the L-band LNA to centre */
@@ -384,7 +384,7 @@ typedef struct mirisdr_tune_plan
 {
     mirisdr_tune_config_t cfg;  /* as asked, the bandwidth filled in */
     int ifm, bw, iq;
-    uint32_t lo;
+    uint32_t lo, ovr13, ovr14;
     mirisdr_tune_words_t w;
 } mirisdr_tune_plan_t;
 
@@ -450,6 +450,12 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
         (mirisdr_stream_adc(p) != MIRISDR_IQ_BOTH) && (mirisdr_stream_adc(p) != pl->iq))
     {
         fprintf(stderr, "the stream captures the tuner output this tune switches off\n");
+        return -1;
+    }
+
+    if (mirisdr_override_words(&c->override, &pl->ovr13, &pl->ovr14) < 0)
+    {
+        fprintf(stderr, "tuner override code out of range\n");
         return -1;
     }
 
@@ -521,6 +527,10 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
     mirisdr_filter_learn(p, pl.w.row);
     mirisdr_batch_begin(p);
 
+    /* the holds go out in the same list, and a held LNA code skips its calibration */
+    p->tuner_ovr13 = pl.ovr13;
+    p->tuner_ovr14 = pl.ovr14;
+
     r = mirisdr_lna_calibrate(p, pl.w.row, c->frequency, pl.ifm, pl.bw, pl.iq);
     r += mirisdr_tune_send(p, &pl.w);
 
@@ -571,9 +581,6 @@ void mirisdr_tune_config_default (mirisdr_tune_config_t *cfg)
     cfg->gain = MIRISDR_GAIN_KEEP;
 }
 
-/* one tuner so far */
-#define MIRISDR_TUNERS          1
-
 int mirisdr_tune (mirisdr_dev_t *p, int tuner, const mirisdr_tune_config_t *cfg, mirisdr_tune_result_t *res)
 {
     if ((tuner < 0) || (tuner >= MIRISDR_TUNERS)) return -1;
@@ -612,6 +619,19 @@ int mirisdr_get_tune (mirisdr_dev_t *p, int tuner, mirisdr_tune_config_t *cfg, m
 /* ------------------------------------------------------------------ */
 /* the single setters, on top of it                                    */
 /* ------------------------------------------------------------------ */
+
+int mirisdr_set_tuner_override (mirisdr_dev_t *p, int tuner, const mirisdr_tuner_override_t *ov)
+{
+    mirisdr_tune_config_t c;
+
+    if (!p || (tuner < 0) || (tuner >= MIRISDR_TUNERS) || p->external_tuner) return -1;
+
+    c = p->tune;
+    if (ov) c.override = *ov;
+    else memset(&c.override, 0, sizeof c.override);
+
+    return mirisdr_tune_apply(p, &c, MIRISDR_TUNE_ADJUST, NULL);
+}
 
 int mirisdr_set_center_freq(mirisdr_dev_t *p, uint32_t freq)
 {

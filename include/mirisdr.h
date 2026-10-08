@@ -294,6 +294,26 @@ MIRISDR_API mirisdr_band_t mirisdr_get_band (mirisdr_dev_t *p);         /* extra
 
 #define MIRISDR_GAIN_KEEP       (-1)
 
+/* Force specific tuner calibration codes instead of autodetection.
+ * A held code is kept across retunes, so clear the holds when adjusting the frequency a lot.
+ * mirisdr_get_tune() returns the holds in force. */
+typedef struct mirisdr_tuner_override
+{
+	uint8_t  hold_vco;
+	uint8_t  coarse;      /* VCO range 0-2 */
+	uint8_t  fine;        /* VCO capacitor band, 0-31 */
+	uint8_t  hold_upconv;
+	uint8_t  upconv;      /* up-converter LO code, 0-15 */
+	uint8_t  hold_lna;
+	uint8_t  lna_cal;     /* L-band LNA code, 0-15 */
+	uint8_t  hold_unknown; /* the status reads the search register instead */
+	uint8_t  unknown;     /* 0-31, higher is a lower frequency. With the VCO held, above
+	                         about 20 the loop nears the end of its range and ~29 loses lock */
+	uint8_t  hold_filter; /* the status still reads the calibrated code */
+	uint8_t  filter;      /* IF filter code, 0-31, 0 the widest. With the
+	                         bandwidth at MIRISDR_BW_MAX is this held at 0 */
+} mirisdr_tuner_override_t;
+
 typedef struct mirisdr_tune_config
 {
 	uint32_t frequency;     /* Hz to receive */
@@ -305,6 +325,7 @@ typedef struct mirisdr_tune_config
 	int      low_if_auto;   /* low IF: put the LO if_freq above frequency */
 	int      iq;            /* MIRISDR_IQ_*: low IF only, the output not requested is switched off */
 	int      gain;          /* dB as mirisdr_set_tuner_gain(), or MIRISDR_GAIN_KEEP */
+	mirisdr_tuner_override_t override; /* all holds off by default */
 } mirisdr_tune_config_t;
 
 typedef struct mirisdr_tune_result
@@ -326,6 +347,10 @@ MIRISDR_API int mirisdr_tune_check (mirisdr_dev_t *p, int tuner, const mirisdr_t
                                     mirisdr_tune_result_t *res); /* extra */
 MIRISDR_API int mirisdr_get_tune (mirisdr_dev_t *p, int tuner, mirisdr_tune_config_t *cfg,
                                   mirisdr_tune_result_t *res); /* extra */
+
+/* The stored tune with these overrides, NULL clears them all */
+MIRISDR_API int mirisdr_set_tuner_override (mirisdr_dev_t *p, int tuner,
+                                            const mirisdr_tuner_override_t *ov); /* extra */
 
 /* not implemented yet */
 MIRISDR_API int mirisdr_set_freq_correction (mirisdr_dev_t *p, int ppm);
@@ -557,7 +582,9 @@ typedef void (*mirisdr_ir_cb_t) (const mirisdr_ir_pulse_t *pulse, void *ctx);
 MIRISDR_API int mirisdr_set_ir (mirisdr_dev_t *p, uint32_t tick_ns, mirisdr_ir_cb_t cb, void *ctx); /* extra */
 MIRISDR_API uint32_t mirisdr_get_ir (mirisdr_dev_t *p);                 /* extra */
 
-/* This function allows you to read the current tuner state. Afaik there is no
+/* This function allows you to read the current state of a tuner (numbered as for
+ * mirisdr_tune(), 0 so far). It is a measurement, so it stays apart from the
+ * tune config: the codes held there read back as held. Afaik there is no
  * way to know if the PLL is locked, the HIGH and LOW limit flags only indicate
  * you are tuning near the edge of your chip, but that you try to tune beyond it. */
 #define MIRISDR_TUNER_SYNTH_OFF      0x01   /* no VCO range selected */
@@ -579,27 +606,7 @@ typedef struct mirisdr_tuner_status
 	uint8_t  flags;      /* MIRISDR_TUNER_* */
 } mirisdr_tuner_status_t;
 
-MIRISDR_API int mirisdr_get_tuner_status (mirisdr_dev_t *p, mirisdr_tuner_status_t *st); /* extra */
-
-/* Force specific tuner calibration. Kept across retunes, NULL clears them all. */
-typedef struct mirisdr_tuner_override
-{
-	uint8_t  hold_vco;
-	uint8_t  coarse;      /* VCO range 0-2 */
-	uint8_t  fine;        /* VCO capacitor band, 0-31 */
-	uint8_t  hold_upconv;
-	uint8_t  upconv;      /* up-converter LO code, 0-15 */
-	uint8_t  hold_lna;
-	uint8_t  lna_cal;     /* L-band LNA code, 0-15 */
-	uint8_t  hold_unknown; /* the status reads the search register instead */
-	uint8_t  unknown;     /* 0-31, higher is a lower frequency; with the VCO held, above
-	                         about 20 the loop nears the end of its range and ~29 loses lock */
-	uint8_t  hold_filter; /* the status still reads the calibrated code */
-	uint8_t  filter;      /* IF filter code, 0-31, 0 the widest; with the
-	                         bandwidth MIRISDR_BW_MAX is this held at 0 */
-} mirisdr_tuner_override_t;
-
-MIRISDR_API int mirisdr_set_tuner_override (mirisdr_dev_t *p, const mirisdr_tuner_override_t *ov); /* extra */
+MIRISDR_API int mirisdr_get_tuner_status (mirisdr_dev_t *p, int tuner, mirisdr_tuner_status_t *st); /* extra */
 
 /* Register lists, run by the firmware without host involvement: a tune, or a
  * scan that hops on stream interrupts. An entry with reg below 0x20

@@ -1196,7 +1196,7 @@ static tres_t t_tuner_status (void)
         usleep(20000);
 
         for (k = 0; k < 3; k++)
-            if (mirisdr_get_tuner_status(dev, &st[k]) < 0) { say("no readback at %u Hz", freqs[i]); return T_FAIL; }
+            if (mirisdr_get_tuner_status(dev, 0, &st[k]) < 0) { say("no readback at %u Hz", freqs[i]); return T_FAIL; }
 
         note("%10u Hz: %08x  coarse %d fine %2u unknown %2u  upconv %2u lna %2u filter %2u%s%s",
              freqs[i], st[0].raw, st[0].coarse, st[0].fine, st[0].unknown,
@@ -1235,26 +1235,26 @@ static tres_t t_tuner_override (void)
 
     if (mirisdr_set_center_freq(dev, 159000000) < 0) { say("159 MHz refused"); return T_FAIL; }
     usleep(20000);
-    if (mirisdr_get_tuner_status(dev, &a) < 0 || a.coarse < 0) { say("no calibrated readback"); return T_FAIL; }
+    if (mirisdr_get_tuner_status(dev, 0, &a) < 0 || a.coarse < 0) { say("no calibrated readback"); return T_FAIL; }
 
     /* one fine code off stays inside the PLL's pull-in */
     memset(&ov, 0, sizeof ov);
     ov.hold_vco = 1;    ov.coarse = a.coarse;  ov.fine = a.fine < 31 ? a.fine + 1 : 30;
     ov.hold_upconv = 1; ov.upconv = 5;
     ov.hold_lna = 1;    ov.lna_cal = 7;
-    if (mirisdr_set_tuner_override(dev, &ov) < 0) { say("override refused"); return T_FAIL; }
+    if (mirisdr_set_tuner_override(dev, 0, &ov) < 0) { say("override refused"); return T_FAIL; }
 
     /* kept across a retune */
     mirisdr_set_center_freq(dev, 159100000);
     usleep(20000);
-    if (mirisdr_get_tuner_status(dev, &b) < 0) { say("no readback with the override"); mirisdr_set_tuner_override(dev, NULL); return T_FAIL; }
+    if (mirisdr_get_tuner_status(dev, 0, &b) < 0) { say("no readback with the override"); mirisdr_set_tuner_override(dev, 0, NULL); return T_FAIL; }
     note("calibrated coarse %d fine %2u, held coarse %d fine %2u upconv %2u lna %2u",
          a.coarse, a.fine, b.coarse, b.fine, b.upconv, b.lna_cal);
 
-    mirisdr_set_tuner_override(dev, NULL);
+    mirisdr_set_tuner_override(dev, 0, NULL);
     mirisdr_set_center_freq(dev, 159000000);
     usleep(20000);
-    if (mirisdr_get_tuner_status(dev, &c) < 0) { say("no readback after clearing"); return T_FAIL; }
+    if (mirisdr_get_tuner_status(dev, 0, &c) < 0) { say("no readback after clearing"); return T_FAIL; }
     note("cleared coarse %d fine %2u", c.coarse, c.fine);
 
     if (b.coarse != ov.coarse || b.fine != ov.fine || b.upconv != ov.upconv || b.lna_cal != ov.lna_cal)
@@ -1973,7 +1973,7 @@ static int vco_set (double mhz, mirisdr_tuner_status_t *st)
     if (mirisdr_write_reg(dev, 0x09, ((uint32_t) frac | (uint32_t) n << 12) << 4 | 2) < 0) return -1;
     usleep(1000);
 
-    return mirisdr_get_tuner_status(dev, st);
+    return mirisdr_get_tuner_status(dev, 0, st);
 }
 
 static tres_t t_vco_limits (void)
@@ -2424,22 +2424,22 @@ static tres_t t_tuner_unknown (void)
 
     if (mirisdr_set_center_freq(dev, 159000000) < 0) { say("could not tune"); return T_FAIL; }
     usleep(5000);
-    if (mirisdr_get_tuner_status(dev, &a) < 0) { say("no readback"); return T_SKIP; }
+    if (mirisdr_get_tuner_status(dev, 0, &a) < 0) { say("no readback"); return T_SKIP; }
 
     memset(&ov, 0, sizeof ov);
     ov.hold_unknown = 1;
     ov.unknown = 31;
-    if (mirisdr_set_tuner_override(dev, &ov) < 0) { say("override refused"); return T_FAIL; }
+    if (mirisdr_set_tuner_override(dev, 0, &ov) < 0) { say("override refused"); return T_FAIL; }
     mirisdr_set_center_freq(dev, 159100000);
     mirisdr_set_center_freq(dev, 159000000);
     usleep(5000);
-    mirisdr_get_tuner_status(dev, &b);
+    mirisdr_get_tuner_status(dev, 0, &b);
 
-    mirisdr_set_tuner_override(dev, NULL);
+    mirisdr_set_tuner_override(dev, 0, NULL);
     mirisdr_set_center_freq(dev, 159100000);
     mirisdr_set_center_freq(dev, 159000000);
     usleep(5000);
-    mirisdr_get_tuner_status(dev, &c);
+    mirisdr_get_tuner_status(dev, 0, &c);
 
     note("calibrated fine %u unknown %u, unknown held at 31 fine %u, cleared fine %u unknown %u",
          a.fine, a.unknown, b.fine, c.fine, c.unknown);
@@ -2483,7 +2483,7 @@ static tres_t t_plan_tune (void)
                                       300000000, 600000000, 1500000000, 2050000000, 433920123,
                                       1575420000, 868300000, 12345678 };
     mirisdr_dev_t *n;
-    mirisdr_tune_config_t c;
+    mirisdr_tune_config_t c, got;
     mirisdr_tune_result_t r;
     double worst = 0;
     unsigned i;
@@ -2564,6 +2564,25 @@ static tres_t t_plan_tune (void)
     }
     if (worst > 20) { plan_bad++; say("LO off by up to %.0f Hz", worst); }
 
+    /* overrides: range checked, kept with the tune, cleared by the wrapper */
+    mirisdr_tune_config_default(&c);
+    c.override.hold_vco = 1; c.override.coarse = 3;
+    plan_tune(n, "VCO range 3 held", &c, 0, &r);
+    c.override.coarse = 1; c.override.fine = 12; c.override.hold_lna = 1; c.override.lna_cal = 16;
+    plan_tune(n, "LNA code 16 held", &c, 0, &r);
+    c.override.lna_cal = 7;
+    plan_tune(n, "VCO and LNA codes held", &c, 1, &r);
+    if (mirisdr_tune(n, 0, &c, NULL) < 0) { plan_bad++; say("a tune with holds refused"); }
+    mirisdr_get_tune(n, 0, &got, NULL);
+    if (!got.override.hold_vco || got.override.fine != 12 || got.override.lna_cal != 7)
+    { plan_bad++; say("get_tune lost the holds"); }
+    if (mirisdr_set_tuner_override(n, 0, NULL) < 0) { plan_bad++; say("clearing the overrides refused"); }
+    mirisdr_get_tune(n, 0, &got, NULL);
+    if (got.override.hold_vco || got.override.hold_lna || got.frequency != c.frequency)
+    { plan_bad++; say("clearing left hold_vco %u hold_lna %u, frequency %u",
+                      got.override.hold_vco, got.override.hold_lna, got.frequency); }
+    if (mirisdr_set_tuner_override(n, 1, NULL) == 0) { plan_bad++; say("an override on a second tuner accepted"); }
+
     mirisdr_close(n);
 
     /* a real stream: one converter, so the result is a real IF, and the other
@@ -2584,7 +2603,7 @@ static tres_t t_plan_tune (void)
 
     if (plan_bad) return T_FAIL;
 
-    say("IF and bandwidth rules, low IF auto, offsets, single outputs, gain limits, LO within %.0f Hz", worst);
+    say("IF and bandwidth rules, low IF auto, offsets, single outputs, gain limits, holds, LO within %.0f Hz", worst);
 
     return T_PASS;
 }
@@ -2830,6 +2849,7 @@ static tres_t t_tune_api (void)
     mirisdr_tune_config_t c, got;
     mirisdr_tune_result_t r;
     mirisdr_stream_config_t s;
+    mirisdr_tuner_status_t a, b;
 
     pump_stop();
 
@@ -2868,13 +2888,43 @@ static tres_t t_tune_api (void)
     c.if_freq = 450000; c.iq = MIRISDR_IQ_ONLY_Q;
     if (mirisdr_tune(dev, 0, &c, NULL) == 0) { say("Q only accepted with the stream on I"); return T_FAIL; }
 
+    /* holds in the tune go out with it and read back; the status is apart */
+    s.format = NULL;
+    if (mirisdr_set_stream(dev, &s, NULL) < 0) { say("could not go back to a complex stream"); return T_FAIL; }
+    mirisdr_tune_config_default(&c);
+    c.frequency = 159000000;
+    if (mirisdr_tune(dev, 0, &c, NULL) < 0) { say("159 MHz refused"); return T_FAIL; }
+    usleep(20000);
+    if (mirisdr_get_tuner_status(dev, 0, &a) < 0 || a.coarse < 0) { say("no calibrated readback"); return T_FAIL; }
+    if (mirisdr_get_tuner_status(dev, 1, &b) == 0) { say("a second tuner's status read"); return T_FAIL; }
+
+    c.override.hold_vco = 1; c.override.coarse = a.coarse; c.override.fine = a.fine < 31 ? a.fine + 1 : 30;
+    c.override.hold_upconv = 1; c.override.upconv = 5;
+    if (mirisdr_tune(dev, 0, &c, NULL) < 0) { say("a tune with holds refused"); return T_FAIL; }
+    usleep(20000);
+    mirisdr_get_tune(dev, 0, &got, NULL);
+    if (mirisdr_get_tuner_status(dev, 0, &b) < 0 || b.coarse != c.override.coarse || b.fine != c.override.fine ||
+        b.upconv != 5 || !got.override.hold_vco)
+    { mirisdr_set_tuner_override(dev, 0, NULL); say("held fine %u upconv %u read back fine %u upconv %u",
+                                                    c.override.fine, 5, b.fine, b.upconv); return T_FAIL; }
+
+    /* cleared, the next tune searches again */
+    memset(&c.override, 0, sizeof c.override);
+    c.frequency = 159100000;
+    mirisdr_tune(dev, 0, &c, NULL);
+    c.frequency = 159000000;
+    if (mirisdr_tune(dev, 0, &c, NULL) < 0) { say("a tune without holds refused"); return T_FAIL; }
+    usleep(20000);
+    if (mirisdr_get_tuner_status(dev, 0, &b) < 0 || b.coarse != a.coarse || b.fine + 1 < a.fine || b.fine > a.fine + 1)
+    { say("cleared, coarse %d fine %u, was coarse %d fine %u", b.coarse, b.fine, a.coarse, a.fine); return T_FAIL; }
+    note("searched fine %u, held %u, searched again %u", a.fine, got.override.fine, b.fine);
+
     /* back to the defaults */
     mirisdr_tune_config_default(&c);
-    s.format = NULL;
     if (mirisdr_tune(dev, 0, &c, NULL) < 0 || mirisdr_set_stream(dev, &s, NULL) < 0)
     { say("could not go back to the defaults"); return T_FAIL; }
 
-    say("tune, low IF auto, single output, refusals leave the state, setters keep the rest");
+    say("tune, low IF auto, single output, holds, refusals leave the state, setters keep the rest");
 
     return T_PASS;
 }

@@ -48,12 +48,12 @@ static int mirisdr_tuner_readback (mirisdr_dev_t *p, uint8_t *b)
     return r;
 }
 
-int mirisdr_get_tuner_status (mirisdr_dev_t *p, mirisdr_tuner_status_t *st)
+int mirisdr_get_tuner_status (mirisdr_dev_t *p, int tuner, mirisdr_tuner_status_t *st)
 {
     uint8_t b[4];
     uint32_t v, range;
 
-    if (!p || !st) goto failed;
+    if (!p || !st || (tuner < 0) || (tuner >= MIRISDR_TUNERS)) goto failed;
 
     /* the tuner port is wired somewhere else, or nowhere */
     if (p->external_tuner) goto failed;
@@ -116,36 +116,19 @@ static uint32_t mirisdr_reg13 (mirisdr_dev_t *p)
     return d | p->tuner_ovr13;
 }
 
-int mirisdr_set_tuner_override (mirisdr_dev_t *p, const mirisdr_tuner_override_t *ov)
+/* The override words, sent with the tune */
+static int mirisdr_override_words (const mirisdr_tuner_override_t *ov, uint32_t *r13, uint32_t *r14)
 {
-    uint32_t r13 = 0, r14 = 0;
+    *r13 = *r14 = 0;
 
-    if (!p) goto failed;
-    if (p->external_tuner) goto failed;
+    if (ov->coarse > 2 || ov->fine > 31 || ov->upconv > 15 || ov->lna_cal > 15 || ov->filter > 31 ||
+        ov->unknown > 31) return -1;
 
-    if (ov)
-    {
-        if (ov->coarse > 2 || ov->fine > 31 || ov->upconv > 15 || ov->lna_cal > 15 || ov->filter > 31 ||
-            ov->unknown > 31) goto failed;
-
-        if (ov->hold_vco)    r14 |= 1 | (uint32_t) ov->fine << 1 | (uint32_t) (ov->coarse + 1) << 17;
-        if (ov->hold_upconv) r14 |= 1 << 6 | (uint32_t) ov->upconv << 7;
-        if (ov->hold_unknown) r14 |= 1 << 11 | (uint32_t) ov->unknown << 12;
-        if (ov->hold_lna)    r13 |= 1 << 6 | (uint32_t) ov->lna_cal << 7;
-        if (ov->hold_filter) r13 |= 1 | (uint32_t) ov->filter << 1;
-    }
-
-    p->tuner_ovr13 = r13;
-    p->tuner_ovr14 = r14;
-
-    /* before the first tune they go out with it */
-    if (!(p->tuner_valid & 1)) return 0;
-
-    if (mirisdr_tuner_write(p, 14, p->tuner_ovr14, 0) < 0) goto failed;
-    if (mirisdr_tuner_write(p, 13, mirisdr_reg13(p), 0) < 0) goto failed;
+    if (ov->hold_vco)    *r14 |= 1 | (uint32_t) ov->fine << 1 | (uint32_t) (ov->coarse + 1) << 17;
+    if (ov->hold_upconv) *r14 |= 1 << 6 | (uint32_t) ov->upconv << 7;
+    if (ov->hold_unknown) *r14 |= 1 << 11 | (uint32_t) ov->unknown << 12;
+    if (ov->hold_lna)    *r13 |= 1 << 6 | (uint32_t) ov->lna_cal << 7;
+    if (ov->hold_filter) *r13 |= 1 | (uint32_t) ov->filter << 1;
 
     return 0;
-
-failed:
-    return -1;
 }
