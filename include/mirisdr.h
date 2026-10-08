@@ -35,7 +35,8 @@ extern "C" {
 
 typedef enum
 {
-    MIRISDR_HW_AUTO = -1,       /* open config only: by VID:PID, else MIRISDR_HW_DEFAULT */
+    MIRISDR_HW_AUTO = -1,       /* open config only: by VID:PID, else MIRISDR_HW_DEFAULT; under
+                                   our own ids (16d0:158c) a serial starting "B-" is an RSP1B */
     MIRISDR_HW_DEFAULT,
     MIRISDR_HW_SDRPLAY,
     MIRISDR_HW_RSP1B,           /* SDRplay RSP1B */

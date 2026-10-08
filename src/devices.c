@@ -37,13 +37,23 @@ static mirisdr_device_t *mirisdr_device_get (uint16_t vid, uint16_t pid) {
     return NULL;
 }
 
-/* the board behind an open handle, by its VID:PID */
+#define MIRISDR_OWN_VID         0x16d0
+#define MIRISDR_OWN_PID         0x158c
+#define MIRISDR_OWN_RSP1B       "B-"    /* our ids hide the board: an RSP1B serial starts so */
+
+/* the board behind an open handle, by its VID:PID, and under our own ids by the serial */
 static int mirisdr_flavour_of (libusb_device_handle *dh)
 {
     struct libusb_device_descriptor dd;
     mirisdr_device_t *d;
+    unsigned char serial[MIRISDR_FW_SERIAL_MAX + 1];
 
     if (libusb_get_device_descriptor(libusb_get_device(dh), &dd) < 0) return MIRISDR_HW_DEFAULT;
+
+    if ((dd.idVendor == MIRISDR_OWN_VID) && (dd.idProduct == MIRISDR_OWN_PID) && dd.iSerialNumber
+        && (libusb_get_string_descriptor_ascii(dh, dd.iSerialNumber, serial, sizeof serial) >= 2)
+        && !memcmp(serial, MIRISDR_OWN_RSP1B, 2)) return MIRISDR_HW_RSP1B;
+
     d = mirisdr_device_get(dd.idVendor, dd.idProduct);
 
     return d ? d->flavour : MIRISDR_HW_DEFAULT;

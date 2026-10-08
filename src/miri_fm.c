@@ -200,7 +200,7 @@ void usage(void)
         "\t[-T device_type device variant: 0 default, 1 SDRplay, 2 RSP1B (default: by VID:PID)]\n"
         "\t    0:       Default\n"
         "\t    1:       SDRPlay\n"
-		"\t[-g tuner_gain (default: automatic)]\n"
+		"\t[-g tuner_gain in 10 dB units, 0-10.2: 4.5 is 45 dB (default: automatic)]\n"
 		"\t[-m sample format (default: auto]\n"
 		"\t    504:    S8 (fastest)\n"
 		"\t    384:    S10 +2bits \n"

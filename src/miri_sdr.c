@@ -96,7 +96,7 @@ void usage(void)
 	    "\t[-T device_type device variant: 0 default, 1 SDRplay, 2 RSP1B (default: by VID:PID)]\n"
         "\t    0:       Default\n"
         "\t    1:       SDRPlay\n"
-		"\t[-g gain (0-102, default: 0 for auto)]\n"
+		"\t[-g gain in 10 dB units, 0-10.2: 4.5 is 45 dB (default: 0 for auto)]\n"
         "\t[-G individual gains separated by comma (mixer, lna, mixbuffer, baseband)]\n"
         "\t    mixer: 0, 1\n"
         "\t    LNA: 0, 1\n"
@@ -453,7 +453,7 @@ int main(int argc, char **argv)
             if (r < 0)
                 fprintf(stderr, "WARNING: Failed to set tuner gain.\n");
             else
-                fprintf(stderr, "Tuner gain set to %f dB.\n", gain/10.0);
+                fprintf(stderr, "Tuner gain set to %d dB.\n", mirisdr_get_tuner_gain(dev));
         } else {
             // mixer lna mb bb
             r = mirisdr_set_mixer_gain(dev, gain_mixer);
