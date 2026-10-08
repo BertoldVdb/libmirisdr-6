@@ -32,7 +32,7 @@ hw_switch_freq_plan_t hw_switch_freq_plan_default[] = {
         {0,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf780, 0, 0},
         {12,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xff80, 0, 0},
         {30,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf280, 0, 0},
-        {50,   MIRISDR_MODE_VHF, 0, 0, 32, 0xf380, 0, 0},
+        {55,   MIRISDR_MODE_VHF, 0, 0, 32, 0xf380, 0, 0},
         {108,  MIRISDR_MODE_B3,  0, 0, 16, 0xfa80, 0, 0},
         {250,  MIRISDR_MODE_B3,  0, 0, 16, 0xf680, 0, 0},
         {259,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf680, 6, 0},
@@ -56,19 +56,25 @@ hw_switch_freq_plan_t hw_switch_freq_plan_sdrplay[] = {
 };
 
 /* RSP1B: the default plan's tuner modes, register 8 holding GPIO_1 and GPIO_3 high with
-   GPIO_0 (MISO) an input, and the front end on the expander.  HF is provisional: the
-   bank is right, its four filters are not mapped, B0 low received 7 and 14 MHz best. */
+   GPIO_0 (MISO) an input, and the front end on the expander. A5 low costs 35-40 dB below
+   3 MHz and gains 13-16 dB at 40 MHz, so HF keeps it released up to 30 MHz. */
 #define RSP1B_DIRECT    0xFFDF  /* A5 low */
-#define RSP1B_HF        0x3EDF  /* B7 B6 low, B0 low, A5 low */
+#define RSP1B_LPF2      0x3FFF  /* B7 B6 low: the 2 MHz low pass */
+#define RSP1B_2_12      0x3CFF  /* and B1 B0 low */
+#define RSP1B_12_30     0x3EFF  /* and B0 low */
+#define RSP1B_30_60     0x3D5F  /* B7 B6 A7 B1 low, A5 low */
 #define RSP1B_250_300   0x3F5F  /* B7 B6 A7 low, A5 low */
 #define RSP1B_300_380   0x3C5F  /* and B1 B0 low */
 #define RSP1B_380_420   0x3E5F  /* and B0 low */
 
 hw_switch_freq_plan_t hw_switch_freq_plan_rsp1b[] = {
-        {0,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_HF},
-        {50,   MIRISDR_MODE_VHF, 0, 0, 32, 0xea80, 0, RSP1B_DIRECT},
+        {0,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_LPF2},
+        {2,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_2_12},
+        {12,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_12_30},
+        {30,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_30_60},
+        {55,   MIRISDR_MODE_VHF, 0, 0, 32, 0xea80, 0, RSP1B_DIRECT},
         {108,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1B_DIRECT},
-        {250,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1B_250_300},
+        {250,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1B_DIRECT},
         {259,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 6, RSP1B_250_300},
         {280,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1B_250_300},
         {300,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1B_300_380},
