@@ -39,6 +39,8 @@ struct mirisdr_dev {
     int                 gain_reduction_mixer;
     int                 gain_reduction_baseband;
     int                 gain_stages_set;    /* a stage set by hand: retunes keep the split */
+    int                 lna_cal_mhz;        /* the L-band LNA was last calibrated for this, 0 none */
+    int                 lna_cal_run;        /* this tune is the calibration one */
     mirisdr_hw_flavour_t hw_flavour;
     int                 external_tuner;
     mirisdr_band_t      band;

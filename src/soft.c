@@ -115,6 +115,48 @@ static void mirisdr_filter_learn (mirisdr_dev_t *p)
     if (mirisdr_get_tuner_status(p, &st) == 0) p->filter_cal = st.filter;
 }
 
+/* Datasheet table 19: the synthesizer frequency that calibrates the L-band LNA to centre */
+#define MIRISDR_LNA_CAL_US      1000
+
+static const uint16_t mirisdr_lna_cal_vco[] = { 2380, 2400, 2420, 2440, 2480, 2500, 2520, 2540, 2560, 2580 };
+static const uint16_t mirisdr_lna_cal_centre[] = { 1440, 1460, 1500, 1530, 1570, 1600, 1640, 1670, 1700, 1750 };
+
+/* The tune that calibrates the LNA for this frequency, MHz; beyond the table the end
+   segments carry on, which still lands on the end codes (15 below ~1350, 0 above ~1800) */
+static int mirisdr_lna_cal_tune (int mhz)
+{
+    int n = sizeof mirisdr_lna_cal_vco / sizeof mirisdr_lna_cal_vco[0], i = 1;
+
+    while (i < n - 1 && mhz > mirisdr_lna_cal_centre[i]) i++;
+
+    return (mirisdr_lna_cal_vco[i - 1] + (mhz - mirisdr_lna_cal_centre[i - 1]) *
+            (mirisdr_lna_cal_vco[i] - mirisdr_lna_cal_vco[i - 1]) /
+            (mirisdr_lna_cal_centre[i] - mirisdr_lna_cal_centre[i - 1])) / 2;
+}
+
+static int mirisdr_lna_calibrate (mirisdr_dev_t *p)
+{
+    int mhz = (int) (p->freq / 1000000), r;
+    uint32_t freq = p->freq;
+
+    if (p->external_tuner || mirisdr_plan_row(p)->mode != MIRISDR_MODE_BL || (p->tuner_ovr13 & 0x40)) return 0;
+    if ((p->tuner_valid & 1) && p->lna_cal_mhz && abs(mhz - p->lna_cal_mhz) <= 50) return 0;
+
+    p->freq = (uint32_t) mirisdr_lna_cal_tune(mhz) * 1000000;
+    p->lna_cal_run = 1;
+    r = mirisdr_set_soft_words(p);
+    p->lna_cal_run = 0;
+    p->freq = freq;
+
+    /* it needs the synthesizer settled, which can take ~400 us; 20 us sufficed in tests */
+    if (p->fw_ours && p->fw_list_at) r |= mirisdr_write_reg(p, MIRISDR_LIST_WAIT_US, MIRISDR_LNA_CAL_US);
+    else { r |= mirisdr_batch_flush(p); usleep(MIRISDR_LNA_CAL_US); }
+
+    if (r >= 0) p->lna_cal_mhz = mhz;
+
+    return r < 0 ? r : 0;
+}
+
 /* one list request for the whole tune */
 int mirisdr_set_soft(mirisdr_dev_t *p)
 {
@@ -122,7 +164,8 @@ int mirisdr_set_soft(mirisdr_dev_t *p)
 
     mirisdr_filter_learn(p);
     mirisdr_batch_begin(p);
-    r = mirisdr_set_soft_words(p);
+    r = mirisdr_lna_calibrate(p);
+    r += mirisdr_set_soft_words(p);
 
     return r + mirisdr_batch_end(p);
 }
@@ -346,7 +389,7 @@ static int mirisdr_set_soft_words(mirisdr_dev_t *p)
 
     reg2 |= (0xFFF & frac);
     reg2 |= (0x3F & n) << 12;
-    reg2 |= MIRISDR_LBAND_LNA_CALIBRATION_OFF << 18;
+    reg2 |= (uint32_t) (p->lna_cal_run ? MIRISDR_LBAND_LNA_CALIBRATION_ON : MIRISDR_LBAND_LNA_CALIBRATION_OFF) << 18;
 
     /* kernel driver nastavuje až při změně frekvence */
     /* kernel driver adjusts to changing frequencies  */
