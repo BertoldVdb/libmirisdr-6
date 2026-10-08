@@ -243,8 +243,8 @@ MIRISDR_API int mirisdr_get_bias (mirisdr_dev_t *p);                    /* extra
 
 /* Switchable notch filters, RSP1B only (-1 elsewhere),
  * enabling these filters can improve or reduce signal quality depending on your
- * specific scenario, so probably just have to try. MW notch will be added later. */
-#define MIRISDR_NOTCH_FM        0x01    /* 85-100 MHz */
+ * specific scenario, so probably just have to try. */
+#define MIRISDR_NOTCH_FM        0x01    /* 85-100 MHz; on the RSP1B also MW, 0.4-1.6 MHz */
 #define MIRISDR_NOTCH_DAB       0x02    /* 165-230 MHz */
 MIRISDR_API int mirisdr_set_notch (mirisdr_dev_t *p, int notches);      /* extra */
 MIRISDR_API int mirisdr_get_notch (mirisdr_dev_t *p);                   /* extra */

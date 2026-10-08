@@ -24,17 +24,19 @@
  *
  * The outputs are open drain: a pin is pulled low by clearing its IODIR bit, with
  * OLAT left at 0. IODIR bits, 0 = pulled low (measured 2026-10-07 with a signal generator
- * and an FM antenna):
+ * and an FM antenna, the notches and HF 2026-10-08 with tone sweeps):
  *
- *   B7 B6 A7   path: 000 direct (the VHF, B3, B45 and L inputs), 100 VHF through the
- *              FM notch, 110 the HF bank, 111 the 250-420 MHz bank
- *   B1 B0      filter in the bank: 250-300 both released, 300-380 both low, 380-420
- *              B0 low.  HF undetermined: B0 low received 7 and 14 MHz best, the four
- *              HF filters are not told apart yet
- *   A6         DAB notch
- *   A5         +9-15 dB everywhere, kept low
+ *   B7 B6 A7   path: 000 direct (the VHF, B3, B45 and L inputs), 100 a flat 28 dB down
+ *              at 60-105 MHz, 110 the HF bank, 111 the 250-420 MHz bank
+ *   B1 B0      filter in the bank. HF: 2 MHz low pass both released, 2-12 both low,
+ *              12-30 B0 low. 250-420 bank: 250-300 both released, 300-380 both low,
+ *              380-420 B0 low, 30-60 B1 low
+ *   A4         broadcast notch: MW up to 44 dB at 1 MHz, FM 37-42 dB at 80-115 MHz
+ *   A6         DAB notch: 13-30 dB at 165-235 MHz
+ *   A5         gain with a high pass: +13-16 dB at 40 MHz and above, -35..-40 below
+ *              3 MHz
  *   A1         bias-T
- *   A4, B2-B4  not placed (the HF filters, the MW notch)
+ *   B2-B4      step attenuator, 6, 12.5 and 18.5 dB
  *   A0, A2, A3, B5 are not connected on the board.
  */
 
@@ -46,10 +48,8 @@
 #define EXP_OLATB               0x15
 #define RSP1B_CS                (1 << 11)   /* register 8: GPIO_3's level */
 
-#define RSP1B_B7                (1u << 15)
-#define RSP1B_B6                (1u << 14)
-#define RSP1B_A7                (1u << 7)
 #define RSP1B_A6                (1u << 6)
+#define RSP1B_A4                (1u << 4)
 #define RSP1B_A1                (1u << 1)
 
 static int mirisdr_sdrplay_xfer (mirisdr_dev_t *p, uint32_t r8, uint32_t cs, uint8_t reg, uint8_t val)
@@ -71,8 +71,7 @@ static int mirisdr_rsp1b_frontend (mirisdr_dev_t *p, uint16_t word)
 
     if (!w) return 0;
 
-    if ((p->notch & MIRISDR_NOTCH_FM) &&
-        ((w & (RSP1B_B7 | RSP1B_B6 | RSP1B_A7)) == (RSP1B_B7 | RSP1B_B6 | RSP1B_A7))) w &= (uint16_t) ~RSP1B_B7;
+    if (p->notch & MIRISDR_NOTCH_FM) w &= (uint16_t) ~RSP1B_A4;
     if (p->notch & MIRISDR_NOTCH_DAB) w &= (uint16_t) ~RSP1B_A6;
 
     if (p->bias) w &= (uint16_t) ~RSP1B_A1;
