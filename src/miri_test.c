@@ -2434,6 +2434,320 @@ static tres_t t_tuner_unknown (void)
     return T_PASS;
 }
 
+/* ------------------------------------------------------------------ */
+/* plan: the tune and stream configs, worked out without a device     */
+/* ------------------------------------------------------------------ */
+
+static int plan_bad;
+
+/* one tune check against what it should give; want 0 is a refusal */
+static void plan_tune (mirisdr_dev_t *n, const char *what, mirisdr_tune_config_t *c, int want,
+                       mirisdr_tune_result_t *r)
+{
+    int got = mirisdr_tune_check(n, c, r) == 0;
+
+    if (got != want) { plan_bad++; say("%s: %s", what, got ? "accepted" : "refused"); }
+    note("%-36s %s", what, got ? "accepted" : "refused");
+}
+
+static int plan_near (double got, double want, double tol, const char *what)
+{
+    if (fabs(got - want) <= tol) return 1;
+
+    plan_bad++;
+    say("%s: %.0f, not %.0f", what, got, want);
+
+    return 0;
+}
+
+static tres_t t_plan_tune (void)
+{
+    static const uint32_t lo_at[] = { 500000, 10000000, 45000000, 100000000, 200000000, 257000000,
+                                      300000000, 600000000, 1500000000, 2050000000, 433920123,
+                                      1575420000, 868300000, 12345678 };
+    mirisdr_dev_t *n;
+    mirisdr_tune_config_t c;
+    mirisdr_tune_result_t r;
+    double worst = 0;
+    unsigned i;
+
+    plan_bad = 0;
+
+    if (mirisdr_open_null(&n, "252_S16") < 0) { say("no null device"); return T_FAIL; }
+    mirisdr_set_hw_flavour(n, MIRISDR_HW_RSP1B);
+
+    mirisdr_tune_config_default(&c);
+    plan_tune(n, "the default", &c, 1, &r);
+    if (r.bandwidth != 8000000) { plan_bad++; say("default bandwidth %u", r.bandwidth); }
+    plan_near(r.offset, 0, 10, "default offset");
+
+    /* the bandwidths each IF allows */
+    c.bandwidth = 300000;
+    plan_tune(n, "zero IF, 300 kHz", &c, 0, &r);
+    c.if_freq = 450000; c.bandwidth = 0;
+    plan_tune(n, "450 kHz IF, widest", &c, 1, &r);
+    if (r.bandwidth != 600000) { plan_bad++; say("450 kHz IF widest is %u", r.bandwidth); }
+    c.bandwidth = 1536000;
+    plan_tune(n, "450 kHz IF, 1536 kHz", &c, 0, &r);
+    c.if_freq = 1620000;
+    plan_tune(n, "1620 kHz IF, 1536 kHz", &c, 1, &r);
+    c.if_freq = 2048000; c.bandwidth = 200000;
+    plan_tune(n, "2048 kHz IF, 200 kHz", &c, 0, &r);
+    c.if_freq = 0; c.bandwidth = 5500000;
+    plan_tune(n, "a 5.5 MHz bandwidth", &c, 0, &r);
+    c.bandwidth = 14000000;
+    plan_tune(n, "zero IF, no filter", &c, 1, &r);
+
+    /* a single output needs a low IF */
+    mirisdr_tune_config_default(&c);
+    c.iq = MIRISDR_IQ_ONLY_I;
+    plan_tune(n, "zero IF, I only", &c, 0, &r);
+
+    /* low IF auto: the LO above, the signal below it */
+    mirisdr_tune_config_default(&c);
+    c.frequency = 100000000; c.if_freq = 450000; c.bandwidth = 300000; c.low_if_auto = 1;
+    plan_tune(n, "450 kHz IF, auto", &c, 1, &r);
+    plan_near(r.lo, 100450000, 20, "low IF auto LO");
+    plan_near(r.offset, -450000, 20, "low IF auto offset");
+    if (r.inverted) { plan_bad++; say("a complex stream reported inverted"); }
+
+    c.iq = MIRISDR_IQ_ONLY_I;
+    plan_tune(n, "450 kHz IF, auto, I only", &c, 1, &r);
+    plan_near(r.offset, 450000, 20, "single output IF");
+    if (!r.inverted || r.iq != MIRISDR_IQ_ONLY_I) { plan_bad++; say("I only: inverted %d, iq %d", r.inverted, r.iq); }
+
+    /* an offset moves the LO */
+    mirisdr_tune_config_default(&c);
+    c.frequency = 433920000; c.lo_offset = 200000;
+    plan_tune(n, "zero IF, 200 kHz offset", &c, 1, &r);
+    plan_near(r.lo, 434120000, 20, "offset LO");
+    plan_near(r.offset, -200000, 20, "offset");
+
+    /* past the plan, and the gain each band reaches */
+    c.lo_offset = 0;
+    c.frequency = 2500000000U;
+    plan_tune(n, "2.5 GHz", &c, 0, &r);
+    c.frequency = 1500000000; c.gain = 200;
+    plan_tune(n, "1.5 GHz, gain 200", &c, 1, &r);
+    if (r.gain != 82) { plan_bad++; say("L band gain %d, not 82", r.gain); }
+    c.frequency = 100000000;
+    plan_tune(n, "100 MHz, gain 200", &c, 1, &r);
+    if (r.gain != 102) { plan_bad++; say("VHF gain %d, not 102", r.gain); }
+    c.gain = -5;
+    plan_tune(n, "a negative gain", &c, 0, &r);
+
+    /* the LO the synthesizer reaches, across the bands */
+    mirisdr_tune_config_default(&c);
+    for (i = 0; i < sizeof lo_at / sizeof lo_at[0]; i++)
+    {
+        c.frequency = lo_at[i];
+        plan_tune(n, "LO accuracy", &c, 1, &r);
+        if (fabs((double) r.lo - lo_at[i]) > worst) worst = fabs((double) r.lo - lo_at[i]);
+    }
+    if (worst > 20) { plan_bad++; say("LO off by up to %.0f Hz", worst); }
+
+    mirisdr_close(n);
+
+    /* a real stream: one converter, so the result is a real IF, and the other
+       output cannot be switched off */
+    if (mirisdr_open_null(&n, "504_REAL_S16") < 0) { say("no null device"); return T_FAIL; }
+
+    mirisdr_tune_config_default(&c);
+    c.frequency = 100000000; c.if_freq = 450000; c.low_if_auto = 1;
+    plan_tune(n, "real stream, both outputs", &c, 1, &r);
+    plan_near(r.offset, 450000, 20, "real stream IF");
+    if (!r.inverted) { plan_bad++; say("real stream not inverted"); }
+    c.iq = MIRISDR_IQ_ONLY_Q;
+    plan_tune(n, "stream on I, tune Q only", &c, 0, &r);
+    c.iq = MIRISDR_IQ_ONLY_I;
+    plan_tune(n, "stream on I, tune I only", &c, 1, &r);
+
+    mirisdr_close(n);
+
+    if (plan_bad) return T_FAIL;
+
+    say("IF and bandwidth rules, low IF auto, offsets, single outputs, gain limits, LO within %.0f Hz", worst);
+
+    return T_PASS;
+}
+
+static void plan_stream (mirisdr_dev_t *n, const char *what, mirisdr_stream_config_t *c, int want,
+                         mirisdr_stream_result_t *r)
+{
+    int got = mirisdr_stream_check(n, c, r) == 0;
+
+    if (got != want) { plan_bad++; say("%s: %s", what, got ? "accepted" : "refused"); }
+    note("%-36s %s%s%s", what, got ? "accepted" : "refused", got ? ", " : "", got ? r->format : "");
+}
+
+static tres_t t_plan_stream (void)
+{
+    mirisdr_dev_t *n;
+    mirisdr_stream_config_t c;
+    mirisdr_stream_result_t r;
+
+    plan_bad = 0;
+
+    if (mirisdr_open_null(&n, "252_S16") < 0) { say("no null device"); return T_FAIL; }
+
+    mirisdr_stream_config_default(&c);
+    plan_stream(n, "the default", &c, 1, &r);
+    if (strcmp(r.format, "252_S16") || r.adc != MIRISDR_IQ_BOTH || r.usb_bytes != 8126984)
+    { plan_bad++; say("default: %s, adc %d, %u B/s", r.format, r.adc, r.usb_bytes); }
+
+    c.format = "AUTO_REAL";
+    plan_stream(n, "real, I", &c, 1, &r);
+    if (strcmp(r.format, "504_REAL_S16") || r.adc != MIRISDR_IQ_ONLY_I) { plan_bad++; say("real: %s, adc %d", r.format, r.adc); }
+    c.swap_iq = 1;
+    plan_stream(n, "real, Q", &c, 1, &r);
+    if (r.adc != MIRISDR_IQ_ONLY_Q) { plan_bad++; say("real swapped: adc %d", r.adc); }
+
+    /* what each transfer mode carries */
+    mirisdr_stream_config_default(&c);
+    c.transfer = "ISOC1"; c.rate = 3000000; c.format = "252_S16";
+    plan_stream(n, "ISOC1, 3 Msps in 252", &c, 0, &r);
+    c.format = NULL;
+    plan_stream(n, "ISOC1, 3 Msps automatic", &c, 1, &r);
+    if (strcmp(r.format, "384_S16")) { plan_bad++; say("ISOC1 3 Msps picked %s", r.format); }
+    c.transfer = "BULK"; c.rate = 12000000;
+    plan_stream(n, "BULK, 12 Msps automatic", &c, 1, &r);
+    if (strcmp(r.format, "504_S16")) { plan_bad++; say("BULK 12 Msps picked %s", r.format); }
+    c.rate = 20000000;
+    plan_stream(n, "BULK, 20 Msps", &c, 0, &r);
+
+    /* the rate range and the decimator */
+    mirisdr_stream_config_default(&c);
+    c.rate = 1000000;
+    plan_stream(n, "1 Msps", &c, 0, &r);
+    c.rate = 16000000; c.decimation_bypass = "OFF";
+    plan_stream(n, "16 Msps, no bypass", &c, 0, &r);
+    c.rate = 3000000; c.decimation_bypass = "ON";
+    plan_stream(n, "3 Msps, bypass", &c, 1, &r);
+    if (!r.decimation_bypassed) { plan_bad++; say("bypass not reported"); }
+
+    /* names */
+    mirisdr_stream_config_default(&c);
+    c.format = "FOO";
+    plan_stream(n, "an unknown format", &c, 0, &r);
+    c.format = NULL; c.transfer = "ISOC9";
+    plan_stream(n, "an unknown transfer", &c, 0, &r);
+    c.transfer = NULL; c.decimation_bypass = "MAYBE";
+    plan_stream(n, "an unknown decimation setting", &c, 0, &r);
+
+    mirisdr_close(n);
+
+    if (plan_bad) return T_FAIL;
+
+    say("formats, transfer capacity, rate range, decimation and names");
+
+    return T_PASS;
+}
+
+/* ------------------------------------------------------------------ */
+/* the configs on the device                                           */
+/* ------------------------------------------------------------------ */
+
+static tres_t t_tune_api (void)
+{
+    mirisdr_tune_config_t c, got;
+    mirisdr_tune_result_t r;
+    mirisdr_stream_config_t s;
+
+    pump_stop();
+
+    mirisdr_tune_config_default(&c);
+    c.frequency = 100000000; c.gain = 30;
+    if (mirisdr_tune(dev, &c, &r) < 0) { say("a plain tune refused"); return T_FAIL; }
+    if (mirisdr_get_center_freq(dev) != 100000000 || mirisdr_get_tuner_gain(dev) != 30)
+    { say("tuned to %u at %d dB", mirisdr_get_center_freq(dev), mirisdr_get_tuner_gain(dev)); return T_FAIL; }
+
+    c.if_freq = 450000; c.bandwidth = 300000; c.low_if_auto = 1; c.iq = MIRISDR_IQ_ONLY_I; c.gain = MIRISDR_GAIN_KEEP;
+    if (mirisdr_tune(dev, &c, &r) < 0) { say("a low IF tune refused"); return T_FAIL; }
+    if (mirisdr_get_center_freq(dev) != 100450000 || mirisdr_get_if_freq(dev) != 450000 ||
+        mirisdr_get_bandwidth(dev) != 300000 || r.iq != MIRISDR_IQ_ONLY_I || r.offset != 450000 || !r.inverted)
+    { say("low IF: LO %u, IF %u, bandwidth %u, iq %d, offset %d", mirisdr_get_center_freq(dev),
+          mirisdr_get_if_freq(dev), mirisdr_get_bandwidth(dev), r.iq, r.offset); return T_FAIL; }
+
+    mirisdr_get_tune(dev, &got, NULL);
+    if (got.frequency != 100000000 || got.if_freq != 450000 || !got.low_if_auto)
+    { say("get_tune gave %u, IF %u", got.frequency, got.if_freq); return T_FAIL; }
+
+    /* a refused tune leaves everything as it was */
+    c.if_freq = 0; c.bandwidth = 0;
+    if (mirisdr_tune(dev, &c, NULL) == 0) { say("zero IF with I only accepted"); return T_FAIL; }
+    if (mirisdr_get_center_freq(dev) != 100450000) { say("a refused tune moved the LO"); return T_FAIL; }
+
+    /* the single setters keep the rest of the tune */
+    if (mirisdr_set_center_freq(dev, 200000000) < 0 || mirisdr_get_center_freq(dev) != 200450000)
+    { say("set_center_freq gave LO %u", mirisdr_get_center_freq(dev)); return T_FAIL; }
+
+    /* the stream's converter and the tuner's output: refused both ways */
+    mirisdr_get_stream(dev, &s, NULL);
+    s.format = "AUTO_REAL"; s.swap_iq = 1;
+    if (mirisdr_set_stream(dev, &s, NULL) == 0) { say("a real stream on Q accepted with only I on"); return T_FAIL; }
+    s.swap_iq = 0;
+    if (mirisdr_set_stream(dev, &s, NULL) < 0) { say("a real stream on I refused"); return T_FAIL; }
+    c.if_freq = 450000; c.iq = MIRISDR_IQ_ONLY_Q;
+    if (mirisdr_tune(dev, &c, NULL) == 0) { say("Q only accepted with the stream on I"); return T_FAIL; }
+
+    /* back to the defaults */
+    mirisdr_tune_config_default(&c);
+    s.format = NULL;
+    if (mirisdr_tune(dev, &c, NULL) < 0 || mirisdr_set_stream(dev, &s, NULL) < 0)
+    { say("could not go back to the defaults"); return T_FAIL; }
+
+    say("tune, low IF auto, single output, refusals leave the state, setters keep the rest");
+
+    return T_PASS;
+}
+
+static tres_t t_stream_api (void)
+{
+    mirisdr_stream_config_t c, got;
+    mirisdr_stream_result_t r;
+    mirisdr_stream_stats_t d;
+    double sps;
+
+    pump_stop();
+
+    mirisdr_stream_config_default(&c);
+    c.transfer = "BULK";
+    if (mirisdr_set_stream(dev, &c, &r) < 0 || strcmp(r.format, "252_S16"))
+    { say("the default stream gave %s", r.format); return T_FAIL; }
+
+    mirisdr_get_stream(dev, &got, NULL);
+    if (strcmp(got.format, "AUTO") || strcmp(got.transfer, "BULK") || strcmp(got.decimation_bypass, "AUTO"))
+    { say("get_stream gave %s %s %s", got.format, got.transfer, got.decimation_bypass); return T_FAIL; }
+
+    if (pump_start() < 0) { say("stream did not start"); return T_FAIL; }
+
+    /* a rate change restarts the stream */
+    c.rate = 4000000;
+    if (mirisdr_set_stream(dev, &c, &r) < 0) { pump_stop(); say("4 Msps refused while streaming"); return T_FAIL; }
+    usleep(200000);
+    sps = stream_rate(0.35, &d);
+    if (!within(sps, 4000000, 0.03)) { pump_stop(); say("4 Msps streams at %.0f", sps); return T_FAIL; }
+
+    /* the same again changes nothing */
+    if (mirisdr_set_stream(dev, &c, NULL) < 0) { pump_stop(); say("the same config refused"); return T_FAIL; }
+
+    /* real to complex would change what the callback gets */
+    c.format = "AUTO_REAL";
+    if (mirisdr_set_stream(dev, &c, NULL) == 0) { pump_stop(); say("a real format accepted while streaming"); return T_FAIL; }
+
+    sps = stream_rate(0.35, &d);
+    pump_stop();
+    if (!within(sps, 4000000, 0.03)) { say("streams at %.0f after the refusals", sps); return T_FAIL; }
+
+    mirisdr_stream_config_default(&c);
+    c.transfer = "BULK";
+    mirisdr_set_stream(dev, &c, NULL);
+
+    say("set and read back, a rate change while streaming, a real switch refused");
+
+    return T_PASS;
+}
+
 static const struct {
     const char *group;
     const char *name;
@@ -2442,6 +2756,9 @@ static const struct {
     { "decode",   "bulk blocks, clean",         t_dec_clean           },
     { "decode",   "bulk gaps and gap fill",     t_dec_gaps            },
     { "decode",   "bulk slips",                 t_dec_slips           },
+
+    { "plan",     "tune config rules",          t_plan_tune           },
+    { "plan",     "stream config rules",        t_plan_stream         },
 
     { "identity", "device enumerates",          t_enumerate           },
     { "identity", "usb descriptors",            t_usb_strings         },
@@ -2461,6 +2778,7 @@ static const struct {
     { "stream",   "rate range 1.3 to 12 Msps",  t_rate_range          },
     { "stream",   "rate clamping",              t_rate_clamping       },
     { "stream",   "automatic format choice",    t_format_auto         },
+    { "stream",   "stream config",              t_stream_api          },
 
     { "fixes",    "rate changes keep the stream", t_rate_changes      },
     { "fixes",    "repeated stop and start",    t_stop_start          },
@@ -2490,6 +2808,7 @@ static const struct {
     { "tuner",    "gain steps",                 t_gain                },
     { "tuner",    "filter bandwidths",          t_bandwidth           },
     { "tuner",    "settings round trip",        t_settings_roundtrip  },
+    { "tuner",    "tune config",                t_tune_api            },
     { "tuner",    "VCO limits (--characterise)", t_vco_limits         },
     { "tuner",    "gpio inputs",                t_gpio_read           },
 
@@ -2573,8 +2892,8 @@ int main (int argc, char **argv)
         if (mirisdr_running_from_rom(dev) != 1) mirisdr_reboot(dev, MIRISDR_BOOT_ROM);
     }
 
-    /* the decode group needs no device */
-    if (opt_only && !strcmp(opt_only, "decode")) goto run;
+    /* the decode and plan groups need no device */
+    if (opt_only && (!strcmp(opt_only, "decode") || !strcmp(opt_only, "plan"))) goto run;
 
     if ((opt_rom ? device_reopen() : device_open()) < 0) {
         fprintf(stderr, "cannot open the device\n");
