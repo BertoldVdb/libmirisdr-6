@@ -80,10 +80,24 @@ static volatile int     pump_bytes;
 static volatile int     pump_result;   /* what read_async returned: -1 means it
                                           gave up on its transfers */
 
+/* the last buffer's converters, and buffers whose position went back */
+static volatile int     pump_adc = -1, pump_backwards, pump_infos;
+static uint64_t         pump_sample, pump_index;
+
 static void stream_cb (unsigned char *buf, uint32_t len, void *ctx)
 {
+    mirisdr_buffer_info_t in;
+
     (void) buf; (void) ctx;
     pump_bytes += (int) len;
+
+    if (mirisdr_get_buffer_info(dev, &in) < 0) return;
+
+    if (pump_infos && ((in.sample <= pump_sample) || (in.index < pump_index))) pump_backwards++;
+    pump_sample = in.sample;
+    pump_index = in.index;
+    pump_adc = in.adc;
+    pump_infos++;
 }
 
 static void *pump_main (void *arg)
@@ -99,6 +113,9 @@ static int pump_start (void)
 
     pump_bytes = 0;
     pump_result = 0;
+    pump_adc = -1;
+    pump_backwards = 0;
+    pump_infos = 0;
 
     if (mirisdr_reset_buffer(dev) < 0) return -1;
     if (pthread_create(&pump_thread, NULL, pump_main, NULL)) return -1;
@@ -2643,6 +2660,166 @@ static tres_t t_plan_stream (void)
     return T_PASS;
 }
 
+/* the stream following the tune, offline on the null device */
+static volatile int label_adc, label_n;
+
+static void label_cb (unsigned char *buf, uint32_t len, void *ctx)
+{
+    mirisdr_buffer_info_t in;
+
+    (void) buf; (void) len;
+    if (mirisdr_get_buffer_info((mirisdr_dev_t *) ctx, &in) == 0) { label_adc = in.adc; label_n++; }
+}
+
+static int plan_label (const char *format)
+{
+    dec_plan_t pl = { .blocks = 20, .cut = -1 };
+    mirisdr_dev_t *n;
+    uint32_t len;
+    uint8_t *b = dec_gen(&pl, &len);
+
+    label_adc = -1; label_n = 0;
+    if (mirisdr_open_null(&n, format) < 0) { free(b); return -2; }
+    mirisdr_feed_bulk(n, label_cb, n, 0, b, len);
+    mirisdr_close(n);
+    free(b);
+
+    return label_n ? label_adc : -2;
+}
+
+static tres_t t_plan_follow (void)
+{
+    mirisdr_dev_t *n;
+    mirisdr_stream_config_t s;
+    mirisdr_stream_result_t sr;
+    mirisdr_tune_config_t c;
+    mirisdr_tune_result_t r;
+
+    plan_bad = 0;
+
+    if (mirisdr_open_null(&n, "252_S16") < 0) { say("no null device"); return T_FAIL; }
+
+    mirisdr_stream_config_default(&s);
+    s.transfer = "BULK"; s.follow_tune = 1;
+    if (mirisdr_set_stream(n, &s, &sr) < 0 || sr.adc != MIRISDR_IQ_BOTH) { plan_bad++; say("following stream: adc %d", sr.adc); }
+
+    /* the result says what the switch will give before it happens */
+    mirisdr_tune_config_default(&c);
+    c.frequency = 100000000; c.if_freq = 450000; c.low_if_auto = 1; c.iq = MIRISDR_IQ_ONLY_I;
+    if (mirisdr_tune_check(n, &c, &r) < 0 || !r.inverted || r.offset != 450000) { plan_bad++; say("check: offset %d", r.offset); }
+
+    if (mirisdr_tune(n, &c, NULL) < 0) { plan_bad++; say("I only refused"); }
+    mirisdr_get_stream(n, NULL, &sr);
+    if (strcmp(sr.format, "504_REAL_S16") || sr.adc != MIRISDR_IQ_ONLY_I) { plan_bad++; say("I only: %s, adc %d", sr.format, sr.adc); }
+
+    c.iq = MIRISDR_IQ_ONLY_Q;
+    if (mirisdr_tune(n, &c, NULL) < 0) { plan_bad++; say("Q only refused"); }
+    mirisdr_get_stream(n, NULL, &sr);
+    if (sr.adc != MIRISDR_IQ_ONLY_Q) { plan_bad++; say("Q only: adc %d", sr.adc); }
+
+    mirisdr_tune_config_default(&c);
+    if (mirisdr_tune(n, &c, NULL) < 0) { plan_bad++; say("back to zero IF refused"); }
+    mirisdr_get_stream(n, NULL, &sr);
+    if (strcmp(sr.format, "252_S16") || sr.adc != MIRISDR_IQ_BOTH) { plan_bad++; say("zero IF: %s, adc %d", sr.format, sr.adc); }
+
+    /* both formats given */
+    s.format = "336_S16"; s.format_single = "768_REAL_S16";
+    if (mirisdr_set_stream(n, &s, NULL) < 0) { plan_bad++; say("explicit formats refused"); }
+    c.if_freq = 450000; c.low_if_auto = 1; c.iq = MIRISDR_IQ_ONLY_I;
+    mirisdr_tune(n, &c, NULL);
+    mirisdr_get_stream(n, NULL, &sr);
+    if (strcmp(sr.format, "768_REAL_S16")) { plan_bad++; say("explicit single: %s", sr.format); }
+    mirisdr_tune_config_default(&c);
+    mirisdr_tune(n, &c, NULL);
+    mirisdr_get_stream(n, NULL, &sr);
+    if (strcmp(sr.format, "336_S16")) { plan_bad++; say("explicit both: %s", sr.format); }
+
+    /* each format of the right kind */
+    s.format = "AUTO_REAL"; s.format_single = NULL;
+    plan_stream(n, "following, a real format for both", &s, 0, &sr);
+    s.format = NULL; s.format_single = "252_S16";
+    plan_stream(n, "following, a complex format for one", &s, 0, &sr);
+
+    /* what bulk is allowed: the host's business, apart from the receiver's own limit */
+    mirisdr_stream_config_default(&s);
+    s.transfer = "BULK"; s.rate = 12000000;
+    plan_stream(n, "BULK 12 Msps, default capacity", &s, 1, &sr);
+    if (strcmp(sr.format, "504_S16")) { plan_bad++; say("default capacity picked %s", sr.format); }
+    s.usb_capacity = 50000000;
+    plan_stream(n, "BULK 12 Msps, 50 MB/s capacity", &s, 1, &sr);
+    if (strcmp(sr.format, "252_S16")) { plan_bad++; say("50 MB/s capacity picked %s", sr.format); }
+    s.usb_capacity = 0; s.format = "252_S16";
+    plan_stream(n, "BULK 12 Msps in 252", &s, 1, &sr);
+    s.rate = 14000000;
+    plan_stream(n, "BULK 14 Msps in 252, over the receiver", &s, 0, &sr);
+    s.transfer = "ISOC"; s.rate = 7000000;
+    plan_stream(n, "ISOC 7 Msps in 252", &s, 0, &sr);
+
+    mirisdr_close(n);
+
+    /* each buffer says what it holds */
+    if (plan_label("504_REAL_S16") != MIRISDR_IQ_ONLY_I) { plan_bad++; say("real buffers labelled %d", label_adc); }
+    if (plan_label("504_S8") != MIRISDR_IQ_BOTH) { plan_bad++; say("complex buffers labelled %d", label_adc); }
+
+    if (plan_bad) return T_FAIL;
+
+    say("following the tune both ways and with given formats, bulk and isochronous limits, buffer labels");
+
+    return T_PASS;
+}
+
+/* the stream following the tune, on the device and streaming */
+static tres_t t_stream_follow (void)
+{
+    static const int seq[] = { MIRISDR_IQ_ONLY_I, MIRISDR_IQ_ONLY_Q, MIRISDR_IQ_BOTH, MIRISDR_IQ_ONLY_I, MIRISDR_IQ_BOTH };
+    mirisdr_stream_config_t s;
+    mirisdr_stream_result_t sr;
+    mirisdr_tune_config_t c;
+    mirisdr_stream_stats_t d;
+    unsigned i;
+    double sps;
+
+    pump_stop();
+
+    mirisdr_stream_config_default(&s);
+    s.transfer = "BULK"; s.follow_tune = 1;
+    mirisdr_tune_config_default(&c);
+    if (mirisdr_tune(dev, &c, NULL) < 0 || mirisdr_set_stream(dev, &s, NULL) < 0) { say("setup refused"); return T_FAIL; }
+
+    if (pump_start() < 0) { say("stream did not start"); return T_FAIL; }
+
+    for (i = 0; i < sizeof seq / sizeof seq[0]; i++)
+    {
+        mirisdr_tune_config_default(&c);
+        c.frequency = 100000000; c.iq = seq[i];
+        if (seq[i] != MIRISDR_IQ_BOTH) { c.if_freq = 450000; c.low_if_auto = 1; }
+
+        if (mirisdr_tune(dev, &c, NULL) < 0) { pump_stop(); say("tune %u refused", i); return T_FAIL; }
+        usleep(300000);
+        mirisdr_get_stream(dev, NULL, &sr);
+        sps = stream_rate(0.35, &d);
+
+        note("iq %d: stream %s adc %d, buffers adc %d, %.0f sps", seq[i], sr.format, sr.adc, pump_adc, sps);
+
+        if (sr.adc != seq[i] || pump_adc != seq[i] || !within(sps, 2000000, 0.03))
+        { pump_stop(); say("iq %d: stream adc %d, buffers %d, %.0f sps", seq[i], sr.adc, pump_adc, sps); return T_FAIL; }
+    }
+
+    pump_stop();
+
+    if (pump_backwards) { say("%d buffers went back in position", pump_backwards); return T_FAIL; }
+
+    mirisdr_tune_config_default(&c);
+    mirisdr_stream_config_default(&s);
+    s.transfer = "BULK";
+    mirisdr_tune(dev, &c, NULL);
+    mirisdr_set_stream(dev, &s, NULL);
+
+    say("%u tunes switched the running stream, buffers labelled, rate held, positions forward", (unsigned) (sizeof seq / sizeof seq[0]));
+
+    return T_PASS;
+}
+
 /* ------------------------------------------------------------------ */
 /* the configs on the device                                           */
 /* ------------------------------------------------------------------ */
@@ -2731,19 +2908,22 @@ static tres_t t_stream_api (void)
     /* the same again changes nothing */
     if (mirisdr_set_stream(dev, &c, NULL) < 0) { pump_stop(); say("the same config refused"); return T_FAIL; }
 
-    /* real to complex would change what the callback gets */
+    /* real while streaming: the buffers say so */
     c.format = "AUTO_REAL";
-    if (mirisdr_set_stream(dev, &c, NULL) == 0) { pump_stop(); say("a real format accepted while streaming"); return T_FAIL; }
+    if (mirisdr_set_stream(dev, &c, NULL) < 0) { pump_stop(); say("a real format refused while streaming"); return T_FAIL; }
+    usleep(300000);
+    if (pump_adc != MIRISDR_IQ_ONLY_I) { pump_stop(); say("real buffers say %d", pump_adc); return T_FAIL; }
 
     sps = stream_rate(0.35, &d);
     pump_stop();
-    if (!within(sps, 4000000, 0.03)) { say("streams at %.0f after the refusals", sps); return T_FAIL; }
+    if (!within(sps, 4000000, 0.03)) { say("streams at %.0f after the switch", sps); return T_FAIL; }
+    if (pump_backwards) { say("%d buffers went back in position", pump_backwards); return T_FAIL; }
 
     mirisdr_stream_config_default(&c);
     c.transfer = "BULK";
     mirisdr_set_stream(dev, &c, NULL);
 
-    say("set and read back, a rate change while streaming, a real switch refused");
+    say("set and read back, a rate change and a real switch while streaming, buffers labelled");
 
     return T_PASS;
 }
@@ -2759,6 +2939,7 @@ static const struct {
 
     { "plan",     "tune config rules",          t_plan_tune           },
     { "plan",     "stream config rules",        t_plan_stream         },
+    { "plan",     "stream following the tune",  t_plan_follow         },
 
     { "identity", "device enumerates",          t_enumerate           },
     { "identity", "usb descriptors",            t_usb_strings         },
@@ -2779,6 +2960,7 @@ static const struct {
     { "stream",   "rate clamping",              t_rate_clamping       },
     { "stream",   "automatic format choice",    t_format_auto         },
     { "stream",   "stream config",              t_stream_api          },
+    { "stream",   "stream following the tune",  t_stream_follow       },
 
     { "fixes",    "rate changes keep the stream", t_rate_changes      },
     { "fixes",    "repeated stop and start",    t_stop_start          },
