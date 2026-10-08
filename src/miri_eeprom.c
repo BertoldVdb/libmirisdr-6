@@ -20,6 +20,7 @@
 #endif
 
 #include <mirisdr.h>
+#include <libusb.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,6 +40,8 @@ static void usage (void)
 {
     fprintf(stderr,
         "usage: miri_eeprom [-d index] <command>\n\n"
+        "  saferead <file> [bytes] [-u vid:pid] [-g reg8]\n"
+        "                                safest way to make an EEPROM dump\n\n"
         "  info                          what is fitted and what byte 0 says\n"
         "  probe                         measure the real size, restoring what it touches\n"
         "  read <file> [bytes]           dump to a file\n"
@@ -212,6 +215,161 @@ static int patch (uint8_t *img, long len, long vid, long pid, const char *serial
     }
 
     return mirisdr_fw_patch(img, (uint32_t) len, &p);
+}
+
+#define SD_VID              0x1df7
+#define SD_TIMEOUT          1000
+#define SD_POLL             200
+#define SD_MIN              256
+#define SD_GPIO             0x002280    /* GPIO_1 an output, high, the rest inputs */
+
+static libusb_device_handle *sd_dh;
+
+static int sd_wreg (uint8_t reg, uint32_t val)
+{
+    return (libusb_control_transfer(sd_dh, 0x42, 0x41, (uint16_t) ((val & 0xff) << 8 | reg),
+                                    (uint16_t) (val >> 8), NULL, 0, SD_TIMEOUT) < 0) ? -1 : 0;
+}
+
+static int sd_rreg (int index, uint8_t *v)
+{
+    uint8_t b[4];
+
+    if (libusb_control_transfer(sd_dh, 0xC0, 0x42, 0, (uint16_t) (index * 4), b, 4, SD_TIMEOUT) != 4) return -1;
+
+    *v = b[0];
+
+    return 0;
+}
+
+/* one transfer of n bytes from t1 on, rx the last byte clocked in */
+static int sd_spi (int n, uint8_t t1, uint8_t t2, uint8_t t3, uint8_t t4, uint8_t *rx)
+{
+    uint8_t st;
+    int i;
+
+    if (sd_wreg(0x0B, (uint32_t) (0x04 | (n - 1))) || sd_wreg(0x0C, (uint32_t) (t4 | t3 << 8))
+        || sd_wreg(0x0D, (uint32_t) (t2 | t1 << 8))) return -1;
+
+    for (i = 0; i < SD_POLL; i++)
+    {
+        if (sd_rreg(5, &st)) return -1;
+        if ((st & 0x30) == 0x30) break;
+    }
+
+    if (i == SD_POLL) return -1;
+
+    return sd_rreg(7, rx);
+}
+
+/* READ only: 16 bit addresses, or 9 on a small part with the top bit in the command */
+static int sd_read (int large, int addr, uint8_t *v)
+{
+    if (!large) return sd_spi(3, (uint8_t) (0x03 | ((addr >> 5) & 0x08)), (uint8_t) addr, 0, 0, v);
+
+    return sd_spi(4, 0x03, (uint8_t) (addr >> 8), (uint8_t) addr, 0, v);
+}
+
+static int sd_open (long vid, long pid, uint32_t index)
+{
+    libusb_device **list;
+    libusb_device_handle *dh = NULL;
+    struct libusb_device_descriptor dd;
+    unsigned char product[64] = "";
+    ssize_t n, i;
+
+    if (libusb_init(NULL) < 0 || (n = libusb_get_device_list(NULL, &list)) < 0) return -1;
+
+    for (i = 0; i < n; i++)
+    {
+        if (libusb_get_device_descriptor(list[i], &dd) < 0) continue;
+        if (dd.idVendor != ((vid < 0) ? SD_VID : vid) || ((pid >= 0) && (dd.idProduct != pid))) continue;
+        if (index--) continue;
+
+        if (libusb_open(list[i], &dh) < 0) { fprintf(stderr, "  cannot open %04x:%04x\n", dd.idVendor, dd.idProduct); dh = NULL; }
+        break;
+    }
+
+    libusb_free_device_list(list, 1);
+
+    if (!dh) return -1;
+
+    libusb_set_auto_detach_kernel_driver(dh, 1);
+
+    if (libusb_claim_interface(dh, 0) < 0)
+    {
+        fprintf(stderr, "  interface 0 is in use\n");
+        libusb_close(dh);
+
+        return -1;
+    }
+
+    if (dd.iProduct) libusb_get_string_descriptor_ascii(dh, dd.iProduct, product, sizeof(product));
+
+    printf("  %04x:%04x bcdDevice %04x, product \"%s\"\n", dd.idVendor, dd.idProduct, dd.bcdDevice, product);
+
+    sd_dh = dh;
+
+    return 0;
+}
+
+static int cmd_saferead (const char *path, int len, long vid, long pid, uint32_t index, long reg8)
+{
+    uint8_t *buf, strap;
+    int large, max, n, a, r = -1;
+    FILE *f;
+
+    if (sd_open(vid, pid, index))
+    {
+        fprintf(stderr, "  no device\n");
+
+        return -1;
+    }
+
+    if (sd_wreg(0x08, (uint32_t) ((reg8 >= 0) ? reg8 : SD_GPIO))) goto out;
+
+    if (sd_rreg(6, &strap)) goto out;
+
+    large = (strap & 0x04) != 0;
+    max = large ? 0x10000 : 0x200;
+
+    printf("  %s addressing (strap %s)\n", large ? "16 bit" : "9 bit", large ? "high" : "low");
+
+    if ((len < 0) || (len > max)) len = max;
+    if (!(buf = malloc((size_t) max))) goto out;
+
+    /* doubling blocks, find the size by looking for repetition (doesn't work for blank part/header) */
+    for (n = 0; n < (len ? len : max); n++)
+    {
+        if (sd_read(large, n, &buf[n])) { fprintf(stderr, "  read failed at 0x%04x\n", n); free(buf); goto out; }
+
+        if (!len && (n + 1 >= 2 * SD_MIN) && !((n + 1) & n) && !memcmp(buf, buf + (n + 1) / 2, (size_t) (n + 1) / 2))
+        {
+            n = (n + 1) / 2;
+            printf("  the contents repeat every %d bytes\n", n);
+            break;
+        }
+    }
+
+    for (a = 1; a < n && buf[a] == buf[0]; a++);
+    if (a == n) printf("  every byte is 0x%02X: a blank part, or no EEPROM\n", buf[0]);
+    else printf("  byte 0 is 0x%02X (0xB4 ids, 0xD2 an image)\n", buf[0]);
+
+    if (!(f = fopen(path, "wb"))) { perror(path); free(buf); goto out; }
+
+    r = (fwrite(buf, 1, (size_t) n, f) == (size_t) n) ? 0 : -1;
+    fclose(f);
+    free(buf);
+
+    if (!r) printf("  %d bytes to %s\n", n, path);
+
+out:
+    sd_wreg(0x0B, 0);
+    libusb_release_interface(sd_dh, 0);
+    libusb_close(sd_dh);
+    libusb_exit(NULL);
+
+    return r;
 }
 
 static int cmd_info (void)
@@ -431,7 +589,7 @@ static int cmd_disable (void)
 int main (int argc, char **argv)
 {
     const char *serial = NULL, *cmd;
-    long vid = -1, pid = -1, bcd = 0x0200;
+    long vid = -1, pid = -1, bcd = 0x0200, uvid = -1, upid = -1, reg8 = -1;
     uint32_t index = 0;
     int i, r = 1;
 
@@ -451,6 +609,25 @@ int main (int argc, char **argv)
         if (!strcmp(argv[i], "-v")) vid = strtol(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "-p")) pid = strtol(argv[++i], NULL, 0);
         else if (!strcmp(argv[i], "-s")) serial = argv[++i];
+        else if (!strcmp(argv[i], "-g")) reg8 = strtol(argv[++i], NULL, 0);
+        else if (!strcmp(argv[i], "-u"))
+        {
+            char *e;
+
+            uvid = strtol(argv[++i], &e, 16);
+            if (*e == ':') upid = strtol(e + 1, NULL, 16);
+        }
+    }
+
+    /* before any open: the library would upload its firmware */
+    if (!strcmp(cmd, "saferead") && (argc > 2))
+    {
+        printf("\n");
+        r = cmd_saferead(argv[2], ((argc > 3) && (argv[3][0] != '-')) ? (int) strtol(argv[3], NULL, 0) : 0,
+                     uvid, upid, index, reg8);
+        printf("\n");
+
+        return r ? 1 : 0;
     }
 
 
