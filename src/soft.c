@@ -35,7 +35,7 @@ hw_switch_freq_plan_t hw_switch_freq_plan_default[] = {
         {55,   MIRISDR_MODE_VHF, 0, 0, 32, 0xf380, 0, 0},
         {108,  MIRISDR_MODE_B3,  0, 0, 16, 0xfa80, 0, 0},
         {250,  MIRISDR_MODE_B3,  0, 0, 16, 0xf680, 0, 0},
-        {259,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf680, 6, 0},
+        {255,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf680, 6, 0},
         {280,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf680, 7, 0},
         {420,  MIRISDR_MODE_B45, 0, 0, 4,  0xf380, 0, 0},
         {960,  MIRISDR_MODE_BL,  0, 0, 2,  0xfa80, 0, 0},
@@ -76,7 +76,7 @@ hw_switch_freq_plan_t hw_switch_freq_plan_rsp1b[] = {
         {55,   MIRISDR_MODE_VHF, 0, 0, 32, 0xea80, 0, RSP1B_VHF_B45},
         {108,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1B_B3_L},
         {250,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1B_B3_L},
-        {259,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 6, RSP1B_250_300},
+        {255,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 6, RSP1B_250_300},
         {280,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1B_250_300},
         {300,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1B_300_380},
         {380,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1B_380_420},
@@ -201,7 +201,7 @@ static int mirisdr_set_soft_words(mirisdr_dev_t *p)
         reg0 |= switch_plan.upconvert_mixer_on << 5;
         reg0 |= switch_plan.am_port << 7;
 
-        /* 259-420 MHz goes low side instead (below), high side puts the VCO far out of range */
+        /* 255-420 MHz goes low side instead (below), high side puts the VCO far out of range */
         if (switch_plan.upconvert_mixer_on && !switch_plan.if1_low)
         {
             offset += 120000000UL;

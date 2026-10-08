@@ -81,7 +81,7 @@ int mirisdr_get_tuner_status (mirisdr_dev_t *p, mirisdr_tuner_status_t *st)
     st->coarse = range == 1 ? 0 : range == 2 ? 1 : range == 4 ? 2 : -1;
 
     if (!range) st->flags |= MIRISDR_TUNER_SYNTH_OFF;
-    if (range == 1 && st->fine == 31 && st->unknown == 22) st->flags |= MIRISDR_TUNER_AT_LOW_LIMIT;
+    if (range == 1 && st->fine == 31) st->flags |= MIRISDR_TUNER_AT_LOW_LIMIT;
     if (range == 4 && st->fine == 0) st->flags |= MIRISDR_TUNER_AT_HIGH_LIMIT;
 
     return 0;

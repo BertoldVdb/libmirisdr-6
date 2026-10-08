@@ -1941,6 +1941,127 @@ static tres_t t_pll_characterise (void)
     return T_PASS;
 }
 
+#define VCO_THRESH      4000
+#define VCO_MARGIN      2       /* bands kept from either pin for "safe" */
+#define VCO_START       2800.0
+#define VCO_FLOOR       1400.0
+#define VCO_CEIL        4600.0
+
+static int vco_set (double mhz, mirisdr_tuner_status_t *st)
+{
+    unsigned n = (unsigned) (mhz / 96.0);
+    unsigned frac = (unsigned) ((mhz / 96.0 - n) * VCO_THRESH);
+
+    if (mirisdr_write_reg(dev, 0x09, ((uint32_t) VCO_THRESH | 0x28UL << 12) << 4 | 5) < 0) return -1;
+    if (mirisdr_write_reg(dev, 0x09, ((uint32_t) frac | (uint32_t) n << 12) << 4 | 2) < 0) return -1;
+    usleep(1000);
+
+    return mirisdr_get_tuner_status(dev, st);
+}
+
+static tres_t t_vco_limits (void)
+{
+    /* how each band reaches the VCO: f = vco / div - off, the AM rows' first IF in off */
+    static const struct { const char *name; double div, off; } bands[] = {
+        { "AM up-converted",  16, 120 }, { "VHF", 32, 0 }, { "B3", 16, 0 },
+        { "gap x6 (low side)", 16, -144 }, { "gap x7 (low side)", 16, -168 },
+        { "B45", 4, 0 }, { "L", 2, 0 },
+    };
+    double v, lo_pin = 0, hi_pin = 0, lo_safe = 0, hi_safe = 0, span[3][2], code[3][32][2];
+    uint8_t ulo[3][32], uhi[3][32];
+    double step = opt_step;
+    mirisdr_tuner_status_t st;
+    uint32_t was = mirisdr_get_center_freq(dev);
+    unsigned i;
+    int none = 0, dir;
+
+    if (!opt_chars) { say("needs --characterise"); return T_SKIP; }
+
+    pump_stop();
+
+    for (i = 0; i < 3; i++) span[i][0] = span[i][1] = 0;
+    memset(code, 0, sizeof code);
+
+    /* any mode will do: L band, so nothing else is in the way */
+    if (mirisdr_set_center_freq(dev, 1500000000) < 0) { say("could not tune"); return T_FAIL; }
+
+    printf("\n     VCO from %.0f MHz out to the first pin each way, %.2f MHz steps\n", VCO_START, step);
+
+    /* down to the low pin, then up to the high one, never past either */
+    for (dir = -1; dir <= 1; dir += 2)
+    {
+        for (v = (dir < 0) ? VCO_START : VCO_START + step; (v >= VCO_FLOOR) && (v <= VCO_CEIL); v += dir * step)
+        {
+            if (vco_set(v, &st) < 0) { mirisdr_set_center_freq(dev, was); say("no readback at %.1f MHz", v); return T_FAIL; }
+
+            if (st.flags & MIRISDR_TUNER_SYNTH_OFF) { none++; continue; }
+            if (st.flags & MIRISDR_TUNER_AT_LOW_LIMIT) { lo_pin = v; break; }
+            if (st.flags & MIRISDR_TUNER_AT_HIGH_LIMIT) { hi_pin = v; break; }
+
+            if ((st.coarse >= 0) && (st.coarse < 3))
+            {
+                double *c = code[st.coarse][st.fine & 31];
+
+                if (!span[st.coarse][0] || v < span[st.coarse][0]) span[st.coarse][0] = v;
+                if (v > span[st.coarse][1]) span[st.coarse][1] = v;
+
+                /* each code's span and the fine control's values there, for -v */
+                if (!c[0]) { ulo[st.coarse][st.fine & 31] = uhi[st.coarse][st.fine & 31] = st.unknown; }
+                if (!c[0] || v < c[0]) c[0] = v;
+                if (v > c[1]) c[1] = v;
+                if (st.unknown < ulo[st.coarse][st.fine & 31]) ulo[st.coarse][st.fine & 31] = st.unknown;
+                if (st.unknown > uhi[st.coarse][st.fine & 31]) uhi[st.coarse][st.fine & 31] = st.unknown;
+            }
+
+            /* safe: at least VCO_MARGIN bands from either end */
+            if ((st.coarse > 0 || st.fine <= 31 - VCO_MARGIN) && (st.coarse < 2 || st.fine >= VCO_MARGIN))
+            {
+                if (!lo_safe || v < lo_safe) lo_safe = v;
+                if (v > hi_safe) hi_safe = v;
+            }
+        }
+    }
+
+    mirisdr_set_center_freq(dev, was);
+
+    if (!lo_pin || !hi_pin) { say("no pin found: low %.1f, high %.1f MHz", lo_pin, hi_pin); return T_FAIL; }
+
+    printf("     pinned low up to %.1f MHz, pinned high from %.1f MHz\n", lo_pin, hi_pin);
+    for (i = 0; i < 3; i++)
+        printf("     range %u  %6.1f to %6.1f MHz\n", i, span[i][0], span[i][1]);
+    if (none) printf("     %d points with no range selected\n", none);
+
+    if (opt_verbose)
+    {
+        int r, f;
+
+        printf("\n     each code, over the VCO span the search chose it (the pinned ends excluded)\n");
+        printf("     range band      from       to   width   unknown\n");
+        for (r = 0; r < 3; r++)
+            for (f = 31; f >= 0; f--)
+            {
+                double *c = code[r][f];
+
+                if (!c[0]) continue;
+                printf("     %u     %2d    %7.1f  %7.1f  %5.1f   %2u-%2u\n", r, f, c[0], c[1],
+                       c[1] - c[0] + step, ulo[r][f], uhi[r][f]);
+            }
+    }
+
+    printf("\n     with %d bands kept from either end, %.1f to %.1f MHz, so for each band\n", VCO_MARGIN, lo_safe, hi_safe);
+    printf("     band                  divider   unpinned (MHz)       safe (MHz)\n");
+    for (i = 0; i < sizeof bands / sizeof bands[0]; i++)
+        printf("     %-20s  /%-3.0f  %8.1f to %7.1f  %8.1f to %7.1f\n", bands[i].name, bands[i].div,
+               (lo_pin + step) / bands[i].div - bands[i].off, (hi_pin - step) / bands[i].div - bands[i].off,
+               lo_safe / bands[i].div - bands[i].off, hi_safe / bands[i].div - bands[i].off);
+    printf("\n");
+
+    say("VCO unpinned %.1f to %.1f MHz, %.1f to %.1f with %d bands to spare",
+        lo_pin + step, hi_pin - step, lo_safe, hi_safe, VCO_MARGIN);
+
+    return T_PASS;
+}
+
 /* The capture engine seems to have a hard bandwidth ceiling that is independent of the
  * chip or USB host, check for corruption in the internal buffer */
 static int chars_stamps (void)
@@ -2369,6 +2490,7 @@ static const struct {
     { "tuner",    "gain steps",                 t_gain                },
     { "tuner",    "filter bandwidths",          t_bandwidth           },
     { "tuner",    "settings round trip",        t_settings_roundtrip  },
+    { "tuner",    "VCO limits (--characterise)", t_vco_limits         },
     { "tuner",    "gpio inputs",                t_gpio_read           },
 
     { "extras",   "eeprom size probe",          t_eeprom_probe        },

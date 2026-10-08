@@ -41,7 +41,7 @@ static void usage (void)
     fprintf(stderr,
         "usage: miri_eeprom [-d index] <command>\n\n"
         "  saferead <file> [bytes] [-u vid:pid] [-g reg8]\n"
-        "                                safest way to make an EEPROM dump\n\n"
+        "                                safest way to make an EEPROM dump\n"
         "  info                          what is fitted and what byte 0 says\n"
         "  probe                         measure the real size, restoring what it touches\n"
         "  read <file> [bytes]           dump to a file\n"

@@ -34,14 +34,28 @@ static int mirisdr_rreg (mirisdr_dev_t *p, int source, uint16_t addr, uint8_t *b
    entry offset, passes */
 #define MIRISDR_LIST_BLOCK      9
 
-/* The firmware refuses register writes while a list runs. Do short wait for the list to be done */
+/* The firmware refuses register writes while a list runs, and a new list stops the
+   running one, so wait for it to end. */
+#define MIRISDR_LIST_POLL_US    250
+#define MIRISDR_LIST_WAIT_MS    200
+
 static void mirisdr_batch_wait (mirisdr_dev_t *p)
 {
-    uint8_t run;
+    uint8_t run = 0;
     int i;
 
-    for (i = 0; p->fw_list_at && i < 100; i++)
+    for (i = 0; p->fw_list_at && i < MIRISDR_LIST_WAIT_MS * 1000 / MIRISDR_LIST_POLL_US; i++)
+    {
         if (mirisdr_read_mem(p, p->fw_list_at, &run, 1, MIRISDR_MEM_IRAM) < 0 || !run) break;
+        usleep(MIRISDR_LIST_POLL_US);
+    }
+
+    /* what the next request cuts off never happened, whatever the caches say */
+    if (run)
+    {
+        p->tuner_valid = 0;
+        p->reg8_valid = 0;
+    }
 
     p->batch_running = 0;
 }

@@ -449,7 +449,7 @@ MIRISDR_API uint32_t mirisdr_get_ir (mirisdr_dev_t *p);                 /* extra
  * way to know if the PLL is locked, the HIGH and LOW limit flags only indicate
  * you are tuning near the edge of your chip, but that you try to tune beyond it. */
 #define MIRISDR_TUNER_SYNTH_OFF      0x01   /* no VCO range selected */
-#define MIRISDR_TUNER_AT_LOW_LIMIT   0x02   /* coarse 0, fine 31, unknown 22 */
+#define MIRISDR_TUNER_AT_LOW_LIMIT   0x02   /* coarse 0, fine 31 */
 #define MIRISDR_TUNER_AT_HIGH_LIMIT  0x04   /* coarse 2, fine 0 */
 
 typedef struct mirisdr_tuner_status
