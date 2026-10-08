@@ -156,14 +156,64 @@ static int mirisdr_set_gain_words(mirisdr_dev_t *p)
     return 0;
 }
 
+static int mirisdr_front_gain(mirisdr_dev_t *p)
+{
+    switch (p->band)
+    {
+    case MIRISDR_BAND_AM1:  return 18;
+    case MIRISDR_BAND_45:   return 7;
+    case MIRISDR_BAND_L:    return 4;
+    default:                return 24;
+    }
+}
+
+static int mirisdr_max_gain(mirisdr_dev_t *p)
+{
+    return 59 + 19 + mirisdr_front_gain(p);
+}
+
+static void mirisdr_gain_split(mirisdr_dev_t *p)
+{
+    int front = mirisdr_front_gain(p), gain = p->gain;
+
+    if (gain > mirisdr_max_gain(p)) gain = mirisdr_max_gain(p);
+
+    if (gain >= front + 19)
+    {
+        p->gain_reduction_lna = 0;
+        p->gain_reduction_mixbuffer = 0;
+        p->gain_reduction_mixer = 0;
+        p->gain_reduction_baseband = 59 - (gain - front - 19);
+    }
+    else if (gain >= 19)
+    {
+        p->gain_reduction_lna = 1;
+        p->gain_reduction_mixbuffer = 3;
+        p->gain_reduction_mixer = 0;
+        p->gain_reduction_baseband = 59 - (gain - 19);
+    }
+    else
+    {
+        p->gain_reduction_lna = 1;
+        p->gain_reduction_mixbuffer = 3;
+        p->gain_reduction_mixer = 1;
+        p->gain_reduction_baseband = 59 - gain;
+    }
+}
+
+static void mirisdr_gain_retune (mirisdr_dev_t *p)
+{
+    if (p->gain >= 0 && !p->gain_stages_set) mirisdr_gain_split(p);
+}
+
 /*
  * Provide list of available gain settings.
  * Used e.g. from gnuradio-osmosdr/lib/miri
  * The (first) call with *gains==NULL returns number of available gains.
  * The (second) call with *gains!=NULL fills the array and returns the count.
  *
- * The max. available gain depends on the selected band, but is always <= 102.
- * TODO: make this dependent on the band/frequency setting.
+ * The max. available gain depends on the selected band: 102, 85 in band IV/V, 82 in
+ * L band and 96 on AM port 1.
  */
 int mirisdr_get_tuner_gains(mirisdr_dev_t *p, int *gains)
 {
@@ -171,10 +221,10 @@ int mirisdr_get_tuner_gains(mirisdr_dev_t *p, int *gains)
 #if MIRISDR_DEBUG >= 3
     fprintf(stderr, "mirisdr_get_tuner_gains: %p (band: %d)\n", gains, p->band);
 #endif
-    i = 103;
+    i = mirisdr_max_gain(p) + 1;
     if (gains)
     {
-        for (i = 0; i <= 102; i++)
+        for (i = 0; i <= mirisdr_max_gain(p); i++)
         {
             gains[i] = i;
         }
@@ -194,46 +244,13 @@ int mirisdr_set_tuner_gain(mirisdr_dev_t *p, int gain)
         fprintf(stderr, "mirisdr_set_tuner_gain: error: nil device pointer!\n");
         return -1;
     }
-    /*
-     * Pro VHF režim je lna zapnutý +24dB, mixer +19dB a baseband
-     * je možné nastavovat plynule od 0 - 59 dB, z toho je maximální
-     * zesílení 102 dB
-     *
-     * For VHF mode LNA is turned on to + 24 db, mixer to + 19 dB and baseband
-     * can be adjusted continuously from 0 to 59 db, of which the maximum gain of 102 db
-     */
-    if (p->gain > 102)
-    {
-        p->gain = 102;
-    }
-    else if (p->gain < 0)
+    if (p->gain < 0)
     {
         goto gain_auto;
     }
 
-    /* Nejvyšší citlivost vždy bez redukce mixeru a lna */
-    /* Always the highest sensitivity without reducing the mixer and LNA */
-    if (p->gain >= 43)
-    {
-        p->gain_reduction_lna = 0;
-        p->gain_reduction_mixbuffer = 0; // LNA equivalent for AM inputs
-        p->gain_reduction_mixer = 0;
-        p->gain_reduction_baseband = 59 - (p->gain - 43);
-    }
-    else if (p->gain >= 19)
-    {
-        p->gain_reduction_lna = 1;
-        p->gain_reduction_mixbuffer = 3; // LNA equivalent for AM inputs (AM1: 18dB / AM2: 24 dB)
-        p->gain_reduction_mixer = 0;
-        p->gain_reduction_baseband = 59 - (p->gain - 19);
-    }
-    else
-    {
-        p->gain_reduction_lna = 1;
-        p->gain_reduction_mixbuffer = 3; // LNA equivalent for AM inputs (AM1: 18dB / AM2: 24 dB)
-        p->gain_reduction_mixer = 1;
-        p->gain_reduction_baseband = 59 - p->gain;
-    }
+    p->gain_stages_set = 0;
+    mirisdr_gain_split(p);
 
     return mirisdr_set_gain(p);
 
@@ -333,6 +350,8 @@ int mirisdr_set_mixer_gain(mirisdr_dev_t *p, int gain)
     }
     p->gain_reduction_mixer = gain ? 0 : 1;
 
+    p->gain_stages_set = 1;
+
     return mirisdr_set_gain(p);
 }
 
@@ -357,6 +376,8 @@ int mirisdr_set_mixbuffer_gain(mirisdr_dev_t *p, int gain)
 
     p->gain_reduction_mixbuffer = (3 - gain / 6) & 0x03;
 
+    p->gain_stages_set = 1;
+
     return mirisdr_set_gain(p);
 }
 
@@ -371,6 +392,8 @@ int mirisdr_set_lna_gain(mirisdr_dev_t *p, int gain)
         return -1;
     }
     p->gain_reduction_lna = gain ? 0 : 1;
+
+    p->gain_stages_set = 1;
 
     return mirisdr_set_gain(p);
 }
@@ -388,6 +411,8 @@ int mirisdr_set_baseband_gain(mirisdr_dev_t *p, int gain)
     if (gain < 0) gain = 0;
     if (gain > 59) gain = 59;
     p->gain_reduction_baseband = 59 - gain;
+
+    p->gain_stages_set = 1;
 
     return mirisdr_set_gain(p);
 }
@@ -420,7 +445,7 @@ int mirisdr_get_lna_gain(mirisdr_dev_t *p)
     int gain = 24;
     if (p->gain_reduction_lna) gain = 0;
     else if (p->band == MIRISDR_BAND_45) gain = 7;
-    else if (p->band == MIRISDR_BAND_L) gain = 5; /* rounded 4.5 dB */
+    else if (p->band == MIRISDR_BAND_L) gain = 4; /* mean of measured values, with LNA cal */
 #if MIRISDR_DEBUG >= 3
     fprintf(stderr, "mirisdr_get_lna_gain: %d dB (band: %d)\n", gain, p->band);
 #endif
