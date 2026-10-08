@@ -2461,7 +2461,7 @@ static int plan_bad;
 static void plan_tune (mirisdr_dev_t *n, const char *what, mirisdr_tune_config_t *c, int want,
                        mirisdr_tune_result_t *r)
 {
-    int got = mirisdr_tune_check(n, c, r) == 0;
+    int got = mirisdr_tune_check(n, 0, c, r) == 0;
 
     if (got != want) { plan_bad++; say("%s: %s", what, got ? "accepted" : "refused"); }
     note("%-36s %s", what, got ? "accepted" : "refused");
@@ -2495,6 +2495,7 @@ static tres_t t_plan_tune (void)
 
     mirisdr_tune_config_default(&c);
     plan_tune(n, "the default", &c, 1, &r);
+    if (mirisdr_tune_check(n, 1, &c, &r) == 0) { plan_bad++; say("a second tuner accepted"); }
     if (r.bandwidth != 8000000) { plan_bad++; say("default bandwidth %u", r.bandwidth); }
     plan_near(r.offset, 0, 10, "default offset");
 
@@ -2706,19 +2707,19 @@ static tres_t t_plan_follow (void)
     /* the result says what the switch will give before it happens */
     mirisdr_tune_config_default(&c);
     c.frequency = 100000000; c.if_freq = 450000; c.low_if_auto = 1; c.iq = MIRISDR_IQ_ONLY_I;
-    if (mirisdr_tune_check(n, &c, &r) < 0 || !r.inverted || r.offset != 450000) { plan_bad++; say("check: offset %d", r.offset); }
+    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || !r.inverted || r.offset != 450000) { plan_bad++; say("check: offset %d", r.offset); }
 
-    if (mirisdr_tune(n, &c, NULL) < 0) { plan_bad++; say("I only refused"); }
+    if (mirisdr_tune(n, 0, &c, NULL) < 0) { plan_bad++; say("I only refused"); }
     mirisdr_get_stream(n, NULL, &sr);
     if (strcmp(sr.format, "504_REAL_S16") || sr.adc != MIRISDR_IQ_ONLY_I) { plan_bad++; say("I only: %s, adc %d", sr.format, sr.adc); }
 
     c.iq = MIRISDR_IQ_ONLY_Q;
-    if (mirisdr_tune(n, &c, NULL) < 0) { plan_bad++; say("Q only refused"); }
+    if (mirisdr_tune(n, 0, &c, NULL) < 0) { plan_bad++; say("Q only refused"); }
     mirisdr_get_stream(n, NULL, &sr);
     if (sr.adc != MIRISDR_IQ_ONLY_Q) { plan_bad++; say("Q only: adc %d", sr.adc); }
 
     mirisdr_tune_config_default(&c);
-    if (mirisdr_tune(n, &c, NULL) < 0) { plan_bad++; say("back to zero IF refused"); }
+    if (mirisdr_tune(n, 0, &c, NULL) < 0) { plan_bad++; say("back to zero IF refused"); }
     mirisdr_get_stream(n, NULL, &sr);
     if (strcmp(sr.format, "252_S16") || sr.adc != MIRISDR_IQ_BOTH) { plan_bad++; say("zero IF: %s, adc %d", sr.format, sr.adc); }
 
@@ -2726,11 +2727,11 @@ static tres_t t_plan_follow (void)
     s.format = "336_S16"; s.format_single = "768_REAL_S16";
     if (mirisdr_set_stream(n, &s, NULL) < 0) { plan_bad++; say("explicit formats refused"); }
     c.if_freq = 450000; c.low_if_auto = 1; c.iq = MIRISDR_IQ_ONLY_I;
-    mirisdr_tune(n, &c, NULL);
+    mirisdr_tune(n, 0, &c, NULL);
     mirisdr_get_stream(n, NULL, &sr);
     if (strcmp(sr.format, "768_REAL_S16")) { plan_bad++; say("explicit single: %s", sr.format); }
     mirisdr_tune_config_default(&c);
-    mirisdr_tune(n, &c, NULL);
+    mirisdr_tune(n, 0, &c, NULL);
     mirisdr_get_stream(n, NULL, &sr);
     if (strcmp(sr.format, "336_S16")) { plan_bad++; say("explicit both: %s", sr.format); }
 
@@ -2784,7 +2785,7 @@ static tres_t t_stream_follow (void)
     mirisdr_stream_config_default(&s);
     s.transfer = "BULK"; s.follow_tune = 1;
     mirisdr_tune_config_default(&c);
-    if (mirisdr_tune(dev, &c, NULL) < 0 || mirisdr_set_stream(dev, &s, NULL) < 0) { say("setup refused"); return T_FAIL; }
+    if (mirisdr_tune(dev, 0, &c, NULL) < 0 || mirisdr_set_stream(dev, &s, NULL) < 0) { say("setup refused"); return T_FAIL; }
 
     if (pump_start() < 0) { say("stream did not start"); return T_FAIL; }
 
@@ -2794,7 +2795,7 @@ static tres_t t_stream_follow (void)
         c.frequency = 100000000; c.iq = seq[i];
         if (seq[i] != MIRISDR_IQ_BOTH) { c.if_freq = 450000; c.low_if_auto = 1; }
 
-        if (mirisdr_tune(dev, &c, NULL) < 0) { pump_stop(); say("tune %u refused", i); return T_FAIL; }
+        if (mirisdr_tune(dev, 0, &c, NULL) < 0) { pump_stop(); say("tune %u refused", i); return T_FAIL; }
         usleep(300000);
         mirisdr_get_stream(dev, NULL, &sr);
         sps = stream_rate(0.35, &d);
@@ -2812,7 +2813,7 @@ static tres_t t_stream_follow (void)
     mirisdr_tune_config_default(&c);
     mirisdr_stream_config_default(&s);
     s.transfer = "BULK";
-    mirisdr_tune(dev, &c, NULL);
+    mirisdr_tune(dev, 0, &c, NULL);
     mirisdr_set_stream(dev, &s, NULL);
 
     say("%u tunes switched the running stream, buffers labelled, rate held, positions forward", (unsigned) (sizeof seq / sizeof seq[0]));
@@ -2834,24 +2835,24 @@ static tres_t t_tune_api (void)
 
     mirisdr_tune_config_default(&c);
     c.frequency = 100000000; c.gain = 30;
-    if (mirisdr_tune(dev, &c, &r) < 0) { say("a plain tune refused"); return T_FAIL; }
+    if (mirisdr_tune(dev, 0, &c, &r) < 0) { say("a plain tune refused"); return T_FAIL; }
     if (mirisdr_get_center_freq(dev) != 100000000 || mirisdr_get_tuner_gain(dev) != 30)
     { say("tuned to %u at %d dB", mirisdr_get_center_freq(dev), mirisdr_get_tuner_gain(dev)); return T_FAIL; }
 
     c.if_freq = 450000; c.bandwidth = 300000; c.low_if_auto = 1; c.iq = MIRISDR_IQ_ONLY_I; c.gain = MIRISDR_GAIN_KEEP;
-    if (mirisdr_tune(dev, &c, &r) < 0) { say("a low IF tune refused"); return T_FAIL; }
+    if (mirisdr_tune(dev, 0, &c, &r) < 0) { say("a low IF tune refused"); return T_FAIL; }
     if (mirisdr_get_center_freq(dev) != 100450000 || mirisdr_get_if_freq(dev) != 450000 ||
         mirisdr_get_bandwidth(dev) != 300000 || r.iq != MIRISDR_IQ_ONLY_I || r.offset != 450000 || !r.inverted)
     { say("low IF: LO %u, IF %u, bandwidth %u, iq %d, offset %d", mirisdr_get_center_freq(dev),
           mirisdr_get_if_freq(dev), mirisdr_get_bandwidth(dev), r.iq, r.offset); return T_FAIL; }
 
-    mirisdr_get_tune(dev, &got, NULL);
+    mirisdr_get_tune(dev, 0, &got, NULL);
     if (got.frequency != 100000000 || got.if_freq != 450000 || !got.low_if_auto)
     { say("get_tune gave %u, IF %u", got.frequency, got.if_freq); return T_FAIL; }
 
     /* a refused tune leaves everything as it was */
     c.if_freq = 0; c.bandwidth = 0;
-    if (mirisdr_tune(dev, &c, NULL) == 0) { say("zero IF with I only accepted"); return T_FAIL; }
+    if (mirisdr_tune(dev, 0, &c, NULL) == 0) { say("zero IF with I only accepted"); return T_FAIL; }
     if (mirisdr_get_center_freq(dev) != 100450000) { say("a refused tune moved the LO"); return T_FAIL; }
 
     /* the single setters keep the rest of the tune */
@@ -2865,12 +2866,12 @@ static tres_t t_tune_api (void)
     s.swap_iq = 0;
     if (mirisdr_set_stream(dev, &s, NULL) < 0) { say("a real stream on I refused"); return T_FAIL; }
     c.if_freq = 450000; c.iq = MIRISDR_IQ_ONLY_Q;
-    if (mirisdr_tune(dev, &c, NULL) == 0) { say("Q only accepted with the stream on I"); return T_FAIL; }
+    if (mirisdr_tune(dev, 0, &c, NULL) == 0) { say("Q only accepted with the stream on I"); return T_FAIL; }
 
     /* back to the defaults */
     mirisdr_tune_config_default(&c);
     s.format = NULL;
-    if (mirisdr_tune(dev, &c, NULL) < 0 || mirisdr_set_stream(dev, &s, NULL) < 0)
+    if (mirisdr_tune(dev, 0, &c, NULL) < 0 || mirisdr_set_stream(dev, &s, NULL) < 0)
     { say("could not go back to the defaults"); return T_FAIL; }
 
     say("tune, low IF auto, single output, refusals leave the state, setters keep the rest");

@@ -285,6 +285,8 @@ MIRISDR_API mirisdr_band_t mirisdr_get_band (mirisdr_dev_t *p);         /* extra
  * (see mirisdr_set_stream()): the tune then switches it, in one restart.
  *
  * mirisdr_get_center_freq() returns the LO, which the result gives too.
+ *
+ * tuner is which tuner of the receiver, currently always 0.
  */
 #define MIRISDR_IQ_BOTH         0
 #define MIRISDR_IQ_ONLY_I       1
@@ -318,11 +320,11 @@ typedef struct mirisdr_tune_result
 } mirisdr_tune_result_t;
 
 MIRISDR_API void mirisdr_tune_config_default (mirisdr_tune_config_t *cfg); /* extra */
-MIRISDR_API int mirisdr_tune (mirisdr_dev_t *p, const mirisdr_tune_config_t *cfg,
+MIRISDR_API int mirisdr_tune (mirisdr_dev_t *p, int tuner, const mirisdr_tune_config_t *cfg,
                               mirisdr_tune_result_t *res); /* extra */
-MIRISDR_API int mirisdr_tune_check (mirisdr_dev_t *p, const mirisdr_tune_config_t *cfg,
+MIRISDR_API int mirisdr_tune_check (mirisdr_dev_t *p, int tuner, const mirisdr_tune_config_t *cfg,
                                     mirisdr_tune_result_t *res); /* extra */
-MIRISDR_API int mirisdr_get_tune (mirisdr_dev_t *p, mirisdr_tune_config_t *cfg,
+MIRISDR_API int mirisdr_get_tune (mirisdr_dev_t *p, int tuner, mirisdr_tune_config_t *cfg,
                                   mirisdr_tune_result_t *res); /* extra */
 
 /* not implemented yet */

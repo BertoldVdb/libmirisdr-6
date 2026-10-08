@@ -571,17 +571,22 @@ void mirisdr_tune_config_default (mirisdr_tune_config_t *cfg)
     cfg->gain = MIRISDR_GAIN_KEEP;
 }
 
-int mirisdr_tune (mirisdr_dev_t *p, const mirisdr_tune_config_t *cfg, mirisdr_tune_result_t *res)
+/* one tuner so far */
+#define MIRISDR_TUNERS          1
+
+int mirisdr_tune (mirisdr_dev_t *p, int tuner, const mirisdr_tune_config_t *cfg, mirisdr_tune_result_t *res)
 {
+    if ((tuner < 0) || (tuner >= MIRISDR_TUNERS)) return -1;
+
     return mirisdr_tune_apply(p, cfg, 0, res);
 }
 
-int mirisdr_tune_check (mirisdr_dev_t *p, const mirisdr_tune_config_t *cfg, mirisdr_tune_result_t *res)
+int mirisdr_tune_check (mirisdr_dev_t *p, int tuner, const mirisdr_tune_config_t *cfg, mirisdr_tune_result_t *res)
 {
     mirisdr_tune_plan_t pl;
     int gain;
 
-    if (!p || !cfg) return -1;
+    if (!p || !cfg || (tuner < 0) || (tuner >= MIRISDR_TUNERS)) return -1;
     if (mirisdr_tune_plan(p, cfg, 0, &pl) < 0) return -1;
 
     gain = (cfg->gain >= 0) ? cfg->gain : p->gain;
@@ -593,9 +598,9 @@ int mirisdr_tune_check (mirisdr_dev_t *p, const mirisdr_tune_config_t *cfg, miri
     return 0;
 }
 
-int mirisdr_get_tune (mirisdr_dev_t *p, mirisdr_tune_config_t *cfg, mirisdr_tune_result_t *res)
+int mirisdr_get_tune (mirisdr_dev_t *p, int tuner, mirisdr_tune_config_t *cfg, mirisdr_tune_result_t *res)
 {
-    if (!p) return -1;
+    if (!p || (tuner < 0) || (tuner >= MIRISDR_TUNERS)) return -1;
 
     if (cfg) *cfg = p->tune;
     if (res) mirisdr_tune_result_of(mirisdr_stream_adc(p), p->tune.frequency, p->tune_lo, p->tune_iq,
