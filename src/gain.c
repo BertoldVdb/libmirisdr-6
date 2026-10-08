@@ -156,9 +156,9 @@ static int mirisdr_set_gain_words(mirisdr_dev_t *p)
     return 0;
 }
 
-static int mirisdr_front_gain(mirisdr_dev_t *p)
+static int mirisdr_front_gain_of(mirisdr_band_t band)
 {
-    switch (p->band)
+    switch (band)
     {
     case MIRISDR_BAND_AM1:  return 18;
     case MIRISDR_BAND_45:   return 7;
@@ -167,9 +167,19 @@ static int mirisdr_front_gain(mirisdr_dev_t *p)
     }
 }
 
+static int mirisdr_front_gain(mirisdr_dev_t *p)
+{
+    return mirisdr_front_gain_of(p->band);
+}
+
+static int mirisdr_max_gain_of(mirisdr_band_t band)
+{
+    return 59 + 19 + mirisdr_front_gain_of(band);
+}
+
 static int mirisdr_max_gain(mirisdr_dev_t *p)
 {
-    return 59 + 19 + mirisdr_front_gain(p);
+    return mirisdr_max_gain_of(p->band);
 }
 
 static void mirisdr_gain_split(mirisdr_dev_t *p)

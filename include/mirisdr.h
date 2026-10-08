@@ -191,6 +191,43 @@ MIRISDR_API int mirisdr_get_buffer_info (mirisdr_dev_t *p, mirisdr_buffer_info_t
  * samples that follow the gap. Off by default. */
 MIRISDR_API int mirisdr_set_gap_fill (mirisdr_dev_t *p, int on); /* extra */
 
+/*
+ * The stream set up in one call. Start from mirisdr_get_stream() (or
+ * mirisdr_stream_config_default()), change what is needed and apply. The strings take
+ * the values of the single setters above, NULL for their default. An invalid or
+ * conflicting combination is refused as a whole, rather than adjusted. While streaming
+ * the stream restarts with a short gap, as with the single setters, but a switch
+ * between a real and a complex format is refused. mirisdr_stream_check() says what a
+ * config would give without applying it.
+ */
+typedef struct mirisdr_stream_config
+{
+	uint32_t    rate;               /* samples per second */
+	const char *format;             /* as mirisdr_set_sample_format(), NULL for "AUTO" */
+	const char *transfer;           /* as mirisdr_set_transfer(), NULL for the platform's default */
+	const char *decimation_bypass;  /* as mirisdr_set_decimation_bypass(), NULL for "AUTO" */
+	int         swap_iq;            /* as mirisdr_set_swap_iq(): a real format captures Q when set */
+	int         gap_fill;           /* as mirisdr_set_gap_fill() */
+} mirisdr_stream_config_t;
+
+typedef struct mirisdr_stream_result
+{
+	uint32_t    rate;               /* samples per second, as the sample clock reaches it */
+	const char *format;             /* the one running, never an AUTO one */
+	int         adc;                /* what is digitised: MIRISDR_IQ_BOTH, _ONLY_I or _ONLY_Q */
+	int         decimation_bypassed;
+	uint32_t    usb_bytes;          /* per second */
+	uint32_t    usb_capacity;       /* what the transfer mode carries per second */
+} mirisdr_stream_result_t;
+
+MIRISDR_API void mirisdr_stream_config_default (mirisdr_stream_config_t *cfg); /* extra */
+MIRISDR_API int mirisdr_set_stream (mirisdr_dev_t *p, const mirisdr_stream_config_t *cfg,
+                                    mirisdr_stream_result_t *res); /* extra */
+MIRISDR_API int mirisdr_stream_check (mirisdr_dev_t *p, const mirisdr_stream_config_t *cfg,
+                                      mirisdr_stream_result_t *res); /* extra */
+MIRISDR_API int mirisdr_get_stream (mirisdr_dev_t *p, mirisdr_stream_config_t *cfg,
+                                    mirisdr_stream_result_t *res); /* extra */
+
 /* A fake device for unit tests */
 MIRISDR_API int mirisdr_open_null (mirisdr_dev_t **p, const char *format); /* extra */
 MIRISDR_API int mirisdr_feed_bulk (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx, uint32_t buf_len,
@@ -215,6 +252,60 @@ MIRISDR_API int mirisdr_set_bandwidth (mirisdr_dev_t *p, uint32_t bw);  /* extra
 MIRISDR_API uint32_t mirisdr_get_bandwidth (mirisdr_dev_t *p);          /* extra */
 MIRISDR_API int mirisdr_set_offset_tuning (mirisdr_dev_t *p, int on);   /* extra */
 MIRISDR_API mirisdr_band_t mirisdr_get_band (mirisdr_dev_t *p);         /* extra */
+
+/*
+ * Tuning in one call. Start from mirisdr_get_tune() (or mirisdr_tune_config_default()),
+ * change what is needed and apply: everything goes out as one request. An invalid
+ * combination is refused as a whole, rather than adjusted as the single setters do.
+ * mirisdr_tune_check() says what a config would give without applying it.
+ *
+ * In low IF modes the tuner passes the band if_freq below its LO and rejects the
+ * other side (by ~40 dB). With low_if_auto the LO is put if_freq above `frequency`,
+ * so that is what is received. The I and Q outputs then each carry it as a real signal
+ * at if_freq, so either can be switched off (iq) and captured with a real sample
+ * format on the matching converter (see mirisdr_set_swap_iq()). A tune that switches
+ * off the output the stream captures is refused.
+ *
+ * mirisdr_get_center_freq() returns the LO, which the result gives too.
+ */
+#define MIRISDR_IQ_BOTH         0
+#define MIRISDR_IQ_ONLY_I       1
+#define MIRISDR_IQ_ONLY_Q       2
+
+#define MIRISDR_GAIN_KEEP       (-1)
+
+typedef struct mirisdr_tune_config
+{
+	uint32_t frequency;     /* Hz to receive */
+	uint32_t bandwidth;     /* Hz: 200000, 300000 or 600000 with a 450 kHz IF, 600000 or 1536000
+	                           with 1620 and 2048 kHz, 1536000, 5000000 to 8000000 (1 MHz steps)
+	                           or 14000000 (no filter) with zero IF. 0 is the widest */
+	uint32_t if_freq;       /* 0 (zero IF), 450000, 1620000 or 2048000 */
+	int32_t  lo_offset;     /* Hz to move the LO by, on top of low_if_auto */
+	int      low_if_auto;   /* low IF: put the LO if_freq above frequency */
+	int      iq;            /* MIRISDR_IQ_*: low IF only, the output not requested is switched off */
+	int      gain;          /* dB as mirisdr_set_tuner_gain(), or MIRISDR_GAIN_KEEP */
+} mirisdr_tune_config_t;
+
+typedef struct mirisdr_tune_result
+{
+	uint32_t lo;            /* Hz, the LO, what the VCO if outputting */
+	int32_t  offset;        /* in a complex stream its signed offset from the LO,
+                               in a single output its real IF */
+	int      inverted;      /* single output: frequency up is IF down */
+	int      iq;            /* the outputs running, MIRISDR_IQ_* */
+	uint32_t bandwidth;     /* Hz in force */
+	int      gain;          /* dB in force */
+	mirisdr_band_t band;
+} mirisdr_tune_result_t;
+
+MIRISDR_API void mirisdr_tune_config_default (mirisdr_tune_config_t *cfg); /* extra */
+MIRISDR_API int mirisdr_tune (mirisdr_dev_t *p, const mirisdr_tune_config_t *cfg,
+                              mirisdr_tune_result_t *res); /* extra */
+MIRISDR_API int mirisdr_tune_check (mirisdr_dev_t *p, const mirisdr_tune_config_t *cfg,
+                                    mirisdr_tune_result_t *res); /* extra */
+MIRISDR_API int mirisdr_get_tune (mirisdr_dev_t *p, mirisdr_tune_config_t *cfg,
+                                  mirisdr_tune_result_t *res); /* extra */
 
 /* not implemented yet */
 MIRISDR_API int mirisdr_set_freq_correction (mirisdr_dev_t *p, int ppm);

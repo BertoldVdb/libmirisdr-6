@@ -18,18 +18,7 @@
 #include "hard.h"
 
 
-static uint32_t mirisdr_capacity(mirisdr_dev_t *p)
-{
-	if (p->transfer == MIRISDR_TRANSFER_BULK)
-		return MIRISDR_BULK_CAPACITY;
 
-	return 1024 * mirisdr_burst(p) * 8000;
-}
-
-static int mirisdr_format_fits(mirisdr_dev_t *p, uint32_t spp, uint32_t cap)
-{
-	return ((uint64_t) p->rate * 1024 / spp) <= cap;
-}
 
 /* samples in each 1 kB block, which sets what a rate costs the engine */
 static uint32_t mirisdr_format_spp (int format)
@@ -81,264 +70,369 @@ static unsigned mirisdr_pll_candidates (uint32_t pll_rate, uint64_t *out)
 
 /* nastavení parametrů které vyžadují restart */
 /* parameters that require restart */
-int mirisdr_set_hard(mirisdr_dev_t *p)
+/* The converters a stream captures, MIRISDR_IQ_* */
+static int mirisdr_stream_adc (mirisdr_dev_t *p)
+{
+    switch (p->format)
+    {
+    case MIRISDR_FORMAT_504_REAL_S16:
+    case MIRISDR_FORMAT_672_REAL_S16:
+    case MIRISDR_FORMAT_768_REAL_S16:
+        return p->swap_iq ? MIRISDR_IQ_ONLY_Q : MIRISDR_IQ_ONLY_I;
+    default:
+        return MIRISDR_IQ_BOTH;
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* the stream config                                                  */
+/* ------------------------------------------------------------------ */
+
+#define MIRISDR_STREAM_ADJUST   1       /* the single setters: clamp and warn rather than refuse */
+#define MIRISDR_STREAM_FORCE    2       /* write it all even if nothing changed */
+
+static const struct { const char *name; int format; } mirisdr_formats[] = {
+	{ "252_S16",      MIRISDR_FORMAT_252_S16 },
+	{ "336_S16",      MIRISDR_FORMAT_336_S16 },
+	{ "384_S16",      MIRISDR_FORMAT_384_S16 },
+	{ "504_S16",      MIRISDR_FORMAT_504_S16 },
+	{ "504_S8",       MIRISDR_FORMAT_504_S8 },
+	{ "504_REAL_S16", MIRISDR_FORMAT_504_REAL_S16 },
+	{ "672_REAL_S16", MIRISDR_FORMAT_672_REAL_S16 },
+	{ "768_REAL_S16", MIRISDR_FORMAT_768_REAL_S16 },
+};
+
+/* The isochronous settings differ in how many 1kB slots they reserve in the microframe:
+ * ISOC=3, ISOC1=1, ISOC2=2 (2 requires custom fw) */
+static const struct { const char *name; int transfer; uint8_t alt; } mirisdr_transfers[] = {
+	{ "BULK",  MIRISDR_TRANSFER_BULK, 3 },
+	{ "ISOC",  MIRISDR_TRANSFER_ISOC, 1 },
+	{ "ISOC1", MIRISDR_TRANSFER_ISOC, 2 },
+	{ "ISOC2", MIRISDR_TRANSFER_ISOC, 4 },
+};
+
+/* ISOC is more stable but works only on Unix systems */
+#if !defined (_WIN32) || defined(__MINGW32__)
+#define MIRISDR_TRANSFER_DEFAULT        "ISOC"
+#else
+#define MIRISDR_TRANSFER_DEFAULT        "BULK"
+#endif
+
+static const char *mirisdr_decim_names[] = { "AUTO", "OFF", "ON" };     /* by MIRISDR_DECIMATION_BYPASS_* */
+
+static int mirisdr_format_real (int format)
+{
+	return (format == MIRISDR_FORMAT_504_REAL_S16) || (format == MIRISDR_FORMAT_672_REAL_S16) ||
+	       (format == MIRISDR_FORMAT_768_REAL_S16);
+}
+
+static const char *mirisdr_format_name (int format)
+{
+	unsigned i;
+
+	for (i = 0; i < sizeof mirisdr_formats / sizeof mirisdr_formats[0]; i++)
+		if (mirisdr_formats[i].format == format) return mirisdr_formats[i].name;
+
+	return "";
+}
+
+/* the register 7 word of a format, without the swap, decimation and burst bits */
+static uint32_t mirisdr_format_reg7 (int format)
+{
+	switch (format)
+	{
+	case MIRISDR_FORMAT_252_S16:      return 0x000014;
+	case MIRISDR_FORMAT_336_S16:      return 0x000005;
+	case MIRISDR_FORMAT_384_S16:      return 0x000025;
+	case MIRISDR_FORMAT_504_S16:
+	case MIRISDR_FORMAT_504_S8:       return 0x000c14;
+	case MIRISDR_FORMAT_504_REAL_S16: return 0x000414;
+	case MIRISDR_FORMAT_672_REAL_S16: return 0x000405;
+	case MIRISDR_FORMAT_768_REAL_S16: return 0x000425;
+	}
+
+	return 0x000014;
+}
+
+/* the register 3 AGC field of a format */
+static uint32_t mirisdr_format_agc (int format)
+{
+	switch (format)
+	{
+	case MIRISDR_FORMAT_336_S16:
+	case MIRISDR_FORMAT_672_REAL_S16: return 0x05;
+	case MIRISDR_FORMAT_384_S16:
+	case MIRISDR_FORMAT_768_REAL_S16: return 0x09;
+	case MIRISDR_FORMAT_504_S16:
+	case MIRISDR_FORMAT_504_S8:       return 0x0d;
+	default:                          return 0x01;
+	}
+}
+
+typedef struct mirisdr_stream_plan
+{
+	mirisdr_stream_config_t cfg;    /* as asked, the strings canonical, the rate reached */
+	uint32_t rate, pll_rate, cap;
+	int format, format_auto, decimation_bypass, decim, transfer, swap;
+	uint8_t alt;
+	uint64_t cand[8];
+	unsigned ncand;
+} mirisdr_stream_plan_t;
+
+static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t *c, int flags,
+                                mirisdr_stream_plan_t *pl)
+{
+	int adjust = flags & MIRISDR_STREAM_ADJUST;
+	uint32_t rate_min, rate_max, spp;
+	uint64_t most;
+	unsigned i;
+
+	pl->cfg = *c;
+
+	/* format */
+	if (!c->format || !strcmp(c->format, "AUTO"))
+	{
+		pl->format_auto = MIRISDR_FORMAT_AUTO_ON;
+		pl->cfg.format = "AUTO";
+	}
+	else if (!strcmp(c->format, "AUTO_REAL"))
+	{
+		pl->format_auto = MIRISDR_FORMAT_AUTO_REAL;
+		pl->cfg.format = "AUTO_REAL";
+	}
+	else
+	{
+		for (i = 0; (i < sizeof mirisdr_formats / sizeof mirisdr_formats[0]) &&
+		            strcmp(c->format, mirisdr_formats[i].name); i++);
+
+		if (i == sizeof mirisdr_formats / sizeof mirisdr_formats[0])
+		{
+			fprintf(stderr, "unsupported format: %s\n", c->format);
+			return -1;
+		}
+
+		pl->format_auto = MIRISDR_FORMAT_AUTO_OFF;
+		pl->format = mirisdr_formats[i].format;
+		pl->cfg.format = mirisdr_formats[i].name;
+	}
+
+	/* transfer */
+	if (!c->transfer) pl->cfg.transfer = MIRISDR_TRANSFER_DEFAULT;
+
+	for (i = 0; (i < sizeof mirisdr_transfers / sizeof mirisdr_transfers[0]) &&
+	            strcmp(pl->cfg.transfer, mirisdr_transfers[i].name); i++);
+
+	if (i == sizeof mirisdr_transfers / sizeof mirisdr_transfers[0])
+	{
+		fprintf(stderr, "unsupported transfer type: %s\n", pl->cfg.transfer);
+		return -1;
+	}
+
+	pl->transfer = mirisdr_transfers[i].transfer;
+	pl->alt = mirisdr_transfers[i].alt;
+	pl->cfg.transfer = mirisdr_transfers[i].name;
+
+	/* decimation */
+	if (!c->decimation_bypass) pl->decimation_bypass = MIRISDR_DECIMATION_BYPASS_AUTO;
+	else
+	{
+		for (i = 0; (i < 3) && strcmp(c->decimation_bypass, mirisdr_decim_names[i]); i++);
+
+		if (i == 3)
+		{
+			fprintf(stderr, "unsupported decimation bypass: %s\n", c->decimation_bypass);
+			return -1;
+		}
+
+		pl->decimation_bypass = (int) i;
+	}
+
+	pl->cfg.decimation_bypass = mirisdr_decim_names[pl->decimation_bypass];
+
+	pl->swap = pl->cfg.swap_iq = c->swap_iq ? 1 : 0;
+	pl->cfg.gap_fill = c->gap_fill ? 1 : 0;
+
+	/* rate, within what the decimation setting allows */
+	pl->rate = c->rate;
+	pl->decim = (pl->decimation_bypass == MIRISDR_DECIMATION_BYPASS_ON) ||
+	            ((pl->decimation_bypass == MIRISDR_DECIMATION_BYPASS_AUTO) &&
+	             (pl->rate > MIRISDR_DECIMATION_AUTO_RATE));
+
+	rate_min = pl->decim ? 2 * MIRISDR_SAMPLE_RATE_MIN : MIRISDR_SAMPLE_RATE_MIN;
+	rate_max = pl->decim ? 2 * MIRISDR_SAMPLE_RATE_MAX : MIRISDR_SAMPLE_RATE_MAX;
+
+	if ((pl->rate < rate_min) || (pl->rate > rate_max))
+	{
+		if (!adjust)
+		{
+			fprintf(stderr, "rate %u is outside %u to %u sps\n", pl->rate, rate_min, rate_max);
+			return -1;
+		}
+
+		pl->rate = (pl->rate < rate_min) ? rate_min : rate_max;
+	}
+
+	pl->cap = (pl->transfer == MIRISDR_TRANSFER_BULK) ? MIRISDR_BULK_CAPACITY
+	                                                  : 1024 * mirisdr_alt_burst(pl->alt) * 8000;
+
+	/* the automatic choice: the least dense packing that fits */
+	if (pl->format_auto != MIRISDR_FORMAT_AUTO_OFF)
+	{
+		static const struct { uint32_t spp; int format; } complex[] = {
+			{ 252, MIRISDR_FORMAT_252_S16 }, { 336, MIRISDR_FORMAT_336_S16 },
+			{ 384, MIRISDR_FORMAT_384_S16 }, { 504, MIRISDR_FORMAT_504_S16 } },
+		real[] = {
+			{ 504, MIRISDR_FORMAT_504_REAL_S16 }, { 672, MIRISDR_FORMAT_672_REAL_S16 },
+			{ 768, MIRISDR_FORMAT_768_REAL_S16 } };
+		int is_real = pl->format_auto == MIRISDR_FORMAT_AUTO_REAL;
+		unsigned n = is_real ? 3 : 4;
+
+		for (i = 0; i < n; i++)
+		{
+			spp = is_real ? real[i].spp : complex[i].spp;
+			pl->format = is_real ? real[i].format : complex[i].format;
+			if ((uint64_t) pl->rate * 1024 / spp <= pl->cap) break;
+		}
+
+		if (i == n)
+		{
+			fprintf(stderr, "rate %u needs %lu B/s, more than the %u B/s this mode supports\n", pl->rate,
+			        (long unsigned) ((uint64_t) pl->rate * 1024 / spp), pl->cap);
+
+			if (!adjust) return -1;
+		}
+	}
+	else if (!adjust && ((uint64_t) pl->rate * 1024 / mirisdr_format_spp(pl->format) > pl->cap))
+	{
+		fprintf(stderr, "rate %u in %s needs %lu B/s, more than the %u B/s this mode supports\n", pl->rate,
+		        pl->cfg.format, (long unsigned) ((uint64_t) pl->rate * 1024 / mirisdr_format_spp(pl->format)),
+		        pl->cap);
+		return -1;
+	}
+
+	/* The format is settled now, so the engine's own limit can be applied: after the
+	   automatic choice, which needs the rate, and before register 7, since clamping can
+	   drop the rate back under the decimation threshold and change that bit. */
+	spp = mirisdr_format_spp(pl->format);
+	most = MIRISDR_ENGINE_BLOCK_RATE * spp / 1024;
+
+	if ((uint64_t) pl->rate > most)
+	{
+		fprintf(stderr, "rate %u needs %lu B/s of blocks, more than the engine's %lu%s%lu\n", pl->rate,
+		        (long unsigned) ((uint64_t) pl->rate * 1024 / spp), (long unsigned) MIRISDR_ENGINE_BLOCK_RATE,
+		        adjust ? ", using " : "", adjust ? (long unsigned) most : 0UL);
+
+		if (!adjust) return -1;
+
+		pl->rate = (uint32_t) most;
+
+		/* the clamp only ever lowers it, which can turn decimation off */
+		pl->decim = (pl->decimation_bypass == MIRISDR_DECIMATION_BYPASS_ON) ||
+		            ((pl->decimation_bypass == MIRISDR_DECIMATION_BYPASS_AUTO) &&
+		             (pl->rate > MIRISDR_DECIMATION_AUTO_RATE));
+
+		if (pl->rate < (pl->decim ? 2 * MIRISDR_SAMPLE_RATE_MIN : MIRISDR_SAMPLE_RATE_MIN))
+			pl->rate = pl->decim ? 2 * MIRISDR_SAMPLE_RATE_MIN : MIRISDR_SAMPLE_RATE_MIN;
+	}
+
+	pl->pll_rate = pl->decim ? pl->rate / 2 : pl->rate;
+	pl->cfg.rate = pl->rate;
+
+	/* The sample clock: N of at least 2, or the rate cannot be switched back (see the
+	   rate limits in hard.h) */
+	if (!(pl->ncand = mirisdr_pll_candidates(pl->pll_rate, pl->cand)))
+	{
+		fprintf(stderr, "no PLL divider puts the VCO in range for %u sps\n", pl->rate);
+		return -1;
+	}
+
+	if (!adjust)
+	{
+		/* what the callback is handed changes shape between real and complex */
+		if ((p->async_status == MIRISDR_ASYNC_RUNNING) &&
+		    (mirisdr_format_real(pl->format) != mirisdr_format_real(p->format)))
+		{
+			fprintf(stderr, "cannot switch between a real and a complex format while streaming\n");
+			return -1;
+		}
+
+		/* the tune switched off the output this would capture */
+		if (mirisdr_format_real(pl->format) && (p->tune_iq != MIRISDR_IQ_BOTH) &&
+		    ((pl->swap ? MIRISDR_IQ_ONLY_Q : MIRISDR_IQ_ONLY_I) != p->tune_iq))
+		{
+			fprintf(stderr, "the tune switched off the tuner output this would capture\n");
+			return -1;
+		}
+	}
+
+	return 0;
+}
+
+static void mirisdr_stream_result_of (uint32_t rate, int format, int swap, int decim, uint32_t cap,
+                                      mirisdr_stream_result_t *res)
+{
+	res->rate = rate;
+	res->format = mirisdr_format_name(format);
+	res->adc = !mirisdr_format_real(format) ? MIRISDR_IQ_BOTH : swap ? MIRISDR_IQ_ONLY_Q : MIRISDR_IQ_ONLY_I;
+	res->decimation_bypassed = decim;
+	res->usb_bytes = (uint32_t) ((uint64_t) rate * 1024 / mirisdr_format_spp(format));
+	res->usb_capacity = cap;
+}
+
+static int mirisdr_stream_send (mirisdr_dev_t *p, const mirisdr_stream_plan_t *pl)
 {
 	int streaming = 0;
-	uint32_t reg3 = 0, reg4 = 0, swap, burst, decim, pll_rate, rate_min, rate_max;
-	uint64_t i, vco, n, fract, cand[8];
-	unsigned ncand, try;
+	uint32_t reg3 = 0, reg4 = 0, reg7;
+	uint64_t i, vco, n, fract;
+	unsigned try;
 
-	/* při změně registrů musíme zastavit streamování */
-	/* at a registry change we must stop streaming */
+	/* registers change, so the stream stops and starts again around it */
 	if (p->async_status == MIRISDR_ASYNC_RUNNING)
 	{
 		streaming = 1;
 
-		if ((mirisdr_stop_async(p) < 0) || (mirisdr_adc_stop(p) < 0)) {
-			goto failed;
-		}
+		if ((mirisdr_stop_async(p) < 0) || (mirisdr_adc_stop(p) < 0)) goto failed;
 	}
 
-	swap = p->swap_iq ? (1 << 9) : 0;
+	p->rate = pl->rate;
+	p->format = pl->format;
+	p->format_auto = pl->format_auto;
+	p->decimation_bypass = pl->decimation_bypass;
+	p->decim_on = pl->decim;
+	p->swap_iq = pl->swap;
+	p->transfer = pl->transfer;
+	p->alt_setting = pl->alt;
+	p->gap_fill = pl->cfg.gap_fill;
+	p->stream = pl->cfg;
 
-	burst = (mirisdr_burst(p) - 1) << 6;
+	reg7 = mirisdr_format_reg7(pl->format) | (pl->swap ? (1 << 9) : 0) | (pl->decim ? (1 << 3) : 0) |
+	       ((mirisdr_alt_burst(pl->alt) - 1) << 6);
+	mirisdr_write_reg(p, 0x07, reg7);
+	p->addr_step = mirisdr_format_spp(pl->format);
+	p->addr = p->addr_step + 2;
 
-	decim = ((p->decimation_bypass == MIRISDR_DECIMATION_BYPASS_ON) ||
-	         ((p->decimation_bypass == MIRISDR_DECIMATION_BYPASS_AUTO) &&
-	          (p->rate > MIRISDR_DECIMATION_AUTO_RATE))) ? (1 << 3) : 0;
+	i = pl->cand[0];
+	vco = (uint64_t) pl->pll_rate * i * 12;
 
-	rate_min = decim ? 2 * MIRISDR_SAMPLE_RATE_MIN : MIRISDR_SAMPLE_RATE_MIN;
-	rate_max = decim ? 2 * MIRISDR_SAMPLE_RATE_MAX : MIRISDR_SAMPLE_RATE_MAX;
-
-	/* omezení rozsahu */
-	/* limit the scope of */
-	if (p->rate > rate_max)
-	{
-		p->rate = rate_max;
-	}
-	else if (p->rate < rate_min)
-	{
-		p->rate = rate_min;
-	}
-
-	pll_rate = decim ? p->rate / 2 : p->rate;
-
-	/* automatická volba formátu */
-	/* automatic choice format */
-	if (p->format_auto != MIRISDR_FORMAT_AUTO_OFF)
-	{
-		uint32_t cap = mirisdr_capacity(p);
-
-		if (p->format_auto == MIRISDR_FORMAT_AUTO_REAL)
-		{
-			if (mirisdr_format_fits(p, 504, cap)) {
-				p->format = MIRISDR_FORMAT_504_REAL_S16;
-			} else if (mirisdr_format_fits(p, 672, cap)) {
-				p->format = MIRISDR_FORMAT_672_REAL_S16;
-			} else {
-				p->format = MIRISDR_FORMAT_768_REAL_S16;
-			}
-		}
-		else
-		{
-			if (mirisdr_format_fits(p, 252, cap)) {
-				p->format = MIRISDR_FORMAT_252_S16;
-			} else if (mirisdr_format_fits(p, 336, cap)) {
-				p->format = MIRISDR_FORMAT_336_S16;
-			} else if (mirisdr_format_fits(p, 384, cap)) {
-				p->format = MIRISDR_FORMAT_384_S16;
-			} else {
-				p->format = MIRISDR_FORMAT_504_S16;
-			}
-		}
-
-		if (!mirisdr_format_fits(p, p->format_auto == MIRISDR_FORMAT_AUTO_REAL ? 768 : 504, cap))
-			fprintf(stderr, "rate %u needs %lu B/s, more than the %u B/s this mode supports\n",
-			        p->rate,
-			        (long unsigned int) ((uint64_t) p->rate * 1024 /
-			                             (p->format_auto == MIRISDR_FORMAT_AUTO_REAL ? 768 : 504)),
-			        cap);
-	}
-
-	/* The format is settled now, so the engine's own limit can be applied.  It
-	   has to happen here: after the automatic choice, which needs the rate, and
-	   before the switch below writes register 7, since clamping can drop the
-	   rate back under the decimation threshold and change that bit. */
-	{
-		uint64_t spp  = mirisdr_format_spp(p->format);
-		uint64_t most = MIRISDR_ENGINE_BLOCK_RATE * spp / 1024;
-
-		if ((uint64_t) p->rate > most)
-		{
-			fprintf(stderr, "rate %u needs %lu B/s of blocks, more than the engine's %lu, using %lu\n",
-			        p->rate,
-			        (long unsigned int) ((uint64_t) p->rate * 1024 / spp),
-			        (long unsigned int) MIRISDR_ENGINE_BLOCK_RATE,
-			        (long unsigned int) most);
-
-			p->rate = (uint32_t) most;
-
-			/* the clamp only ever lowers it, which can turn decimation off */
-			decim = ((p->decimation_bypass == MIRISDR_DECIMATION_BYPASS_ON) ||
-			         ((p->decimation_bypass == MIRISDR_DECIMATION_BYPASS_AUTO) &&
-			          (p->rate > MIRISDR_DECIMATION_AUTO_RATE))) ? (1 << 3) : 0;
-
-			if (p->rate < (decim ? 2 * MIRISDR_SAMPLE_RATE_MIN : MIRISDR_SAMPLE_RATE_MIN))
-				p->rate = decim ? 2 * MIRISDR_SAMPLE_RATE_MIN : MIRISDR_SAMPLE_RATE_MIN;
-
-			pll_rate = decim ? p->rate / 2 : p->rate;
-		}
-	}
-
-	/* typ forámtu a šířka pásma */
-	/* format type and bandwidth */
-	switch (p->format)
-	{
-	case MIRISDR_FORMAT_252_S16:
-		/* maximum rate 6.048 Msps | 24.576 MB/s | 196.608 Mbit/s  */
-#if MIRISDR_DEBUG >= 1
-		fprintf( stderr, "format: 252\n");
-#endif
-		mirisdr_write_reg(p, 0x07, 0x000014 | swap | decim | burst);
-		p->addr = 252 + 2;
-		p->addr_step = 252;
-		break;
-	case MIRISDR_FORMAT_336_S16:
-		/* maximum rate 8.064 Msps | 24.576 MB/s | 196.608 Mbit/s */
-#if MIRISDR_DEBUG >= 1
-		fprintf( stderr, "format: 336\n");
-#endif
-		mirisdr_write_reg(p, 0x07, 0x000005 | swap | decim | burst);
-		p->addr = 336 + 2;
-		p->addr_step = 336;
-		break;
-	case MIRISDR_FORMAT_384_S16:
-		/* maximum rate 9.216 Msps | 24.576 MB/s | 196.608 Mbit/s */
-#if MIRISDR_DEBUG >= 1
-		fprintf( stderr, "format: 384\n");
-#endif
-		mirisdr_write_reg(p, 0x07, 0x000025 | swap | decim | burst);
-		p->addr = 384 + 2;
-		p->addr_step = 384;
-		break;
-	case MIRISDR_FORMAT_504_S16:
-	case MIRISDR_FORMAT_504_S8:
-		/* maximum rate 12.096 Msps | 24.576 MB/s | 196.608 Mbit/s */
-#if MIRISDR_DEBUG >= 1
-		fprintf( stderr, "format: 504\n");
-#endif
-		mirisdr_write_reg(p, 0x07, 0x000c14 | swap | decim | burst);
-		p->addr = 504 + 2;
-		p->addr_step = 504;
-		break;
-	case MIRISDR_FORMAT_504_REAL_S16:
-#if MIRISDR_DEBUG >= 1
-		fprintf( stderr, "format: 504 real\n");
-#endif
-		mirisdr_write_reg(p, 0x07, 0x000414 | swap | decim | burst);
-		p->addr = 504 + 2;
-		p->addr_step = 504;
-		break;
-	case MIRISDR_FORMAT_672_REAL_S16:
-#if MIRISDR_DEBUG >= 1
-		fprintf( stderr, "format: 672 real\n");
-#endif
-		mirisdr_write_reg(p, 0x07, 0x000405 | swap | decim | burst);
-		p->addr = 672 + 2;
-		p->addr_step = 672;
-		break;
-	case MIRISDR_FORMAT_768_REAL_S16:
-#if MIRISDR_DEBUG >= 1
-		fprintf( stderr, "format: 768 real\n");
-#endif
-		mirisdr_write_reg(p, 0x07, 0x000425 | swap | decim | burst);
-		p->addr = 768 + 2;
-		p->addr_step = 768;
-		break;
-	}
-
-	/*
-	 * Výpočet dělení vzorkovací frekvence
-	 * Min: >= 1.3 Msps
-	 * Max: <= 15 Msps, od 12,096 Msps prokládaně
-	 * Poznámka: Nastavení vyšší frekvence než 15 Msps uvede tuner do speciálního
-	 *           režimu kdy není možné přepnout rate zpět, stejně tak nastavení nižší
-	 *           frekvence než je 571429 sps, protože pak bude N menší jak 2, což není
-	 *           přípustný stav.
-	 */
-	/*
-	 * Calculating division sampling frequency
-	 * Min: >= 1.3 Msps
-	 * Max: <= 15 Msps, from 12,096 Msps interpolated
-	 * Note: Setting a higher frequency than 15 Msps indicate tuner into a special mode
-	 * 		 where you can not switch back rate, as well as setting a lower frequency than 571,429 SPS
-	 * 		 because it will be less than N 2, which is not an acceptable condition.
-	 */
-	ncand = mirisdr_pll_candidates(pll_rate, cand);
-
-	if (!ncand)
-	{
-		fprintf(stderr, "no PLL divider puts the VCO in range for %u sps\n", p->rate);
-		goto failed;
-	}
-
-	i = cand[0];
-	vco = (uint64_t) pll_rate * i * 12;
-
-	/* z předchozího výpočtu je N minimálně 4 */
-	/* from the previous calculation N is at least 4 */
+	/* N is at least 4 here */
 	n = vco / 48000000UL;
 	fract = 0x200000UL * (vco % 48000000UL) / 48000000UL;
 #if MIRISDR_DEBUG >= 1
-	fprintf( stderr, "rate: %u, pll: %u, vco: %lu (%lu), n: %lu, fraction: %lu\n",
-			p->rate, pll_rate, (long unsigned int)vco, (long unsigned int)(i / 2) - 1,
-			(long unsigned int)n, (long unsigned int)fract);
+	fprintf(stderr, "rate: %u, pll: %u, vco: %lu (%lu), n: %lu, fraction: %lu\n", pl->rate, pl->pll_rate,
+	        (long unsigned) vco, (long unsigned) (i / 2) - 1, (long unsigned) n, (long unsigned) fract);
 #endif
-	/* nastavení vzorkovací frekvence */
-	/* Setting the sampling rate */
-	reg3 |= (0x03 & 3) << 0; /* ?? */
-	reg3 |= (0x07 & (i / 2 - 1)) << 2; /* rozlišení / distinction */
-	reg3 |= (0x03 & 0) << 5; /* ?? */
-	reg3 |= (0x01 & (fract >> 20)) << 7; /* +0.5 */
-	reg3 |= (0x0f & n) << 8; /* hlavní rozsah / main range */
 
-	switch (p->format)
-	{ /* AGC */
-	case MIRISDR_FORMAT_252_S16:
-	case MIRISDR_FORMAT_504_REAL_S16:
-		reg3 |= (0x0f & 0x01) << 12;
-		break;
-	case MIRISDR_FORMAT_336_S16:
-	case MIRISDR_FORMAT_672_REAL_S16:
-		reg3 |= (0x0f & 0x05) << 12;
-		break;
-	case MIRISDR_FORMAT_384_S16:
-	case MIRISDR_FORMAT_768_REAL_S16:
-		reg3 |= (0x0f & 0x09) << 12;
-		break;
-	case MIRISDR_FORMAT_504_S16:
-	case MIRISDR_FORMAT_504_S8:
-		reg3 |= (0x0f & 0x0d) << 12;
-		break;
-	}
-
-	reg3 |= (0x01 & 1) << 16; /* ?? */
+	reg3 |= 3 << 0;                                 /* ?? */
+	reg3 |= (0x07 & (i / 2 - 1)) << 2;              /* the divider */
+	reg3 |= (0x01 & (fract >> 20)) << 7;            /* +0.5 */
+	reg3 |= (0x0f & n) << 8;                        /* the main range */
+	reg3 |= mirisdr_format_agc(pl->format) << 12;
+	reg3 |= 1 << 16;                                /* ?? */
 
 	/* The real formats digitise one converter, so gate the other off: bit 5
 	   powers down I, bit 6 Q.  reg7 bit 9 chooses which one is read. */
-	switch (p->format)
-	{
-	case MIRISDR_FORMAT_504_REAL_S16:
-	case MIRISDR_FORMAT_672_REAL_S16:
-	case MIRISDR_FORMAT_768_REAL_S16:
-		reg3 |= (p->swap_iq ? (1 << 5) : (1 << 6));
-		break;
-	default:
-		break;
-	}
+	if (mirisdr_format_real(pl->format)) reg3 |= pl->swap ? (1 << 5) : (1 << 6);
 
-	/* registr pro detailní nastavení vzorkovací frekvence */
-	/* Registry settings for detailed sampling frequency */
 	reg4 |= (0xfffff & fract) << 0;
 
 	mirisdr_write_reg(p, 0x04, reg4);
@@ -346,9 +440,9 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 
 	/* The part reports its VCO band selection in read index 0, low nibble.
 	   Extremes: 0xF when it wants more capacitance than the bank has, 0 when it has
-	   none left to remove. We try to avoid the edges to increase tolerance to 
-       variation */
-	for (try = 1; (ncand > 1) && (try <= ncand); try++)
+	   none left to remove. We try to avoid the edges to increase tolerance to
+	   variation */
+	for (try = 1; (pl->ncand > 1) && (try <= pl->ncand); try++)
 	{
 		uint8_t rd[4];
 		uint64_t alt, v;
@@ -362,14 +456,14 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 
 		if (mirisdr_read_reg(p, 0, rd, sizeof(rd)) != (int) sizeof(rd)) break;
 
-		rd[0]&= 0x0f;
+		rd[0] &= 0x0f;
 
 		if ((rd[0] > 1) && (rd[0] < 0x0e)) break;
 
 		/* Once the list is exhausted nothing was better than where it started,
 		   so put the first choice back rather than leave the last one tried. */
-		alt = (try < ncand) ? cand[try] : cand[0];
-		v = (uint64_t) pll_rate * alt * 12;
+		alt = (try < pl->ncand) ? pl->cand[try] : pl->cand[0];
+		v = (uint64_t) pl->pll_rate * alt * 12;
 		n = v / 48000000UL;
 		fract = 0x200000UL * (v % 48000000UL) / 48000000UL;
 
@@ -388,94 +482,144 @@ int mirisdr_set_hard(mirisdr_dev_t *p)
 		mirisdr_write_reg(p, 0x04, reg4);
 		mirisdr_write_reg(p, 0x03, reg3);
 
-		if (try == ncand) break;
+		if (try == pl->ncand) break;
 	}
 
-	/* opětovné spuštění streamu */
-	/* restart stream */
-	if ((streaming) && (mirisdr_start_async(p) < 0)) {
-		goto failed;
-	}
+	if (streaming && (mirisdr_start_async(p) < 0)) goto failed;
 
 	return 0;
 
-	failed: return -1;
+failed:
+	return -1;
 }
+
+static int mirisdr_stream_apply (mirisdr_dev_t *p, const mirisdr_stream_config_t *c, int flags,
+                                 mirisdr_stream_result_t *res)
+{
+	mirisdr_stream_plan_t pl;
+
+	if (!p || !c) return -1;
+	if (mirisdr_stream_plan(p, c, flags, &pl) < 0) return -1;
+
+	/* nothing the hardware holds changes: no restart */
+	if (!(flags & MIRISDR_STREAM_FORCE) && (pl.rate == p->rate) && (pl.format == (int) p->format) &&
+	    (pl.decim == p->decim_on) && (pl.swap == p->swap_iq) && (pl.alt == p->alt_setting))
+	{
+		p->format_auto = pl.format_auto;
+		p->decimation_bypass = pl.decimation_bypass;
+		p->transfer = pl.transfer;
+		p->gap_fill = pl.cfg.gap_fill;
+		p->stream = pl.cfg;
+	}
+	else if (mirisdr_stream_send(p, &pl) < 0) return -1;
+
+	if (res) mirisdr_stream_result_of(p->rate, p->format, p->swap_iq, p->decim_on, pl.cap, res);
+
+	return 0;
+}
+
+int mirisdr_set_hard(mirisdr_dev_t *p)
+{
+	return mirisdr_stream_apply(p, &p->stream, MIRISDR_STREAM_ADJUST | MIRISDR_STREAM_FORCE, NULL);
+}
+
+void mirisdr_stream_config_default (mirisdr_stream_config_t *cfg)
+{
+	if (!cfg) return;
+
+	memset(cfg, 0, sizeof *cfg);
+	cfg->rate = DEFAULT_RATE;
+}
+
+int mirisdr_set_stream (mirisdr_dev_t *p, const mirisdr_stream_config_t *cfg, mirisdr_stream_result_t *res)
+{
+	return mirisdr_stream_apply(p, cfg, 0, res);
+}
+
+int mirisdr_stream_check (mirisdr_dev_t *p, const mirisdr_stream_config_t *cfg, mirisdr_stream_result_t *res)
+{
+	mirisdr_stream_plan_t pl;
+
+	if (!p || !cfg) return -1;
+	if (mirisdr_stream_plan(p, cfg, 0, &pl) < 0) return -1;
+
+	if (res) mirisdr_stream_result_of(pl.rate, pl.format, pl.swap, pl.decim, pl.cap, res);
+
+	return 0;
+}
+
+int mirisdr_get_stream (mirisdr_dev_t *p, mirisdr_stream_config_t *cfg, mirisdr_stream_result_t *res)
+{
+	if (!p) return -1;
+
+	if (cfg) *cfg = p->stream;
+	if (res) mirisdr_stream_result_of(p->rate, p->format, p->swap_iq, p->decim_on,
+	                                  (p->transfer == MIRISDR_TRANSFER_BULK) ? MIRISDR_BULK_CAPACITY :
+	                                  1024 * mirisdr_alt_burst(p->alt_setting) * 8000, res);
+
+	return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* keep the old API                                                   */
+/* ------------------------------------------------------------------ */
 
 int mirisdr_set_sample_rate(mirisdr_dev_t *p, uint32_t rate)
 {
+	mirisdr_stream_config_t c;
 	int r;
 
-	p->rate = rate;
-	r = mirisdr_set_hard(p);
+	if (!p) return -1;
+
+	c = p->stream;
+	c.rate = rate;
+	r = mirisdr_stream_apply(p, &c, MIRISDR_STREAM_ADJUST | MIRISDR_STREAM_FORCE, NULL);
 
 	/* the range depends on the decimation bypass, report what was reached */
-	if (p->rate != rate) {
-		fprintf(stderr, "can't set rate %u, using %u\n", rate, p->rate);
-	}
+	if (p->rate != rate) fprintf(stderr, "can't set rate %u, using %u\n", rate, p->rate);
 
 	return r;
+}
+
+int mirisdr_set_sample_format(mirisdr_dev_t *p, const char *v)
+{
+	mirisdr_stream_config_t c;
+
+	if (!p || !v) return -1;
+
+	c = p->stream;
+	c.format = v;
+
+	return mirisdr_stream_apply(p, &c, MIRISDR_STREAM_ADJUST | MIRISDR_STREAM_FORCE, NULL);
+}
+
+int mirisdr_set_decimation_bypass(mirisdr_dev_t *p, const char *v)
+{
+	mirisdr_stream_config_t c;
+
+	if (!p || !v) return -1;
+
+	c = p->stream;
+	c.decimation_bypass = v;
+
+	return mirisdr_stream_apply(p, &c, MIRISDR_STREAM_ADJUST | MIRISDR_STREAM_FORCE, NULL);
+}
+
+int mirisdr_set_swap_iq(mirisdr_dev_t *p, int swap)
+{
+	mirisdr_stream_config_t c;
+
+	if (!p) return -1;
+
+	c = p->stream;
+	c.swap_iq = swap;
+
+	return mirisdr_stream_apply(p, &c, MIRISDR_STREAM_ADJUST | MIRISDR_STREAM_FORCE, NULL);
 }
 
 uint32_t mirisdr_get_sample_rate(mirisdr_dev_t *p)
 {
 	return p->rate;
-}
-
-int mirisdr_set_sample_format(mirisdr_dev_t *p, const char *v)
-{
-	if (!strcmp(v, "AUTO"))
-	{
-		p->format_auto = MIRISDR_FORMAT_AUTO_ON;
-	}
-	else if (!strcmp(v, "AUTO_REAL"))
-	{
-		p->format_auto = MIRISDR_FORMAT_AUTO_REAL;
-	}
-	else
-	{
-		p->format_auto = MIRISDR_FORMAT_AUTO_OFF;
-		if (!strcmp(v, "252_S16")) {
-			p->format = MIRISDR_FORMAT_252_S16;
-		} else if (!strcmp(v, "336_S16")) {
-			p->format = MIRISDR_FORMAT_336_S16;
-		} else if (!strcmp(v, "384_S16")) {
-			p->format = MIRISDR_FORMAT_384_S16;
-		} else if (!strcmp(v, "504_S16")) {
-			p->format = MIRISDR_FORMAT_504_S16;
-		} else if (!strcmp(v, "504_S8")) {
-			p->format = MIRISDR_FORMAT_504_S8;
-		} else if (!strcmp(v, "504_REAL_S16")) {
-			p->format = MIRISDR_FORMAT_504_REAL_S16;
-		} else if (!strcmp(v, "672_REAL_S16")) {
-			p->format = MIRISDR_FORMAT_672_REAL_S16;
-		} else if (!strcmp(v, "768_REAL_S16")) {
-			p->format = MIRISDR_FORMAT_768_REAL_S16;
-		} else {
-			fprintf(stderr, "unsupported format: %s\n", v);
-			goto failed;
-		}
-	}
-
-	return mirisdr_set_hard(p);
-
-	failed: return -1;
-}
-
-int mirisdr_set_decimation_bypass(mirisdr_dev_t *p, const char *v)
-{
-	if (!strcmp(v, "AUTO")) {
-		p->decimation_bypass = MIRISDR_DECIMATION_BYPASS_AUTO;
-	} else if (!strcmp(v, "ON")) {
-		p->decimation_bypass = MIRISDR_DECIMATION_BYPASS_ON;
-	} else if (!strcmp(v, "OFF")) {
-		p->decimation_bypass = MIRISDR_DECIMATION_BYPASS_OFF;
-	} else {
-		fprintf(stderr, "unsupported decimation bypass: %s\n", v);
-		return -1;
-	}
-
-	return mirisdr_set_hard(p);
 }
 
 const char *mirisdr_get_decimation_bypass(mirisdr_dev_t *p)
@@ -489,13 +633,6 @@ const char *mirisdr_get_decimation_bypass(mirisdr_dev_t *p)
 	default:
 		return "AUTO";
 	}
-}
-
-int mirisdr_set_swap_iq(mirisdr_dev_t *p, int swap)
-{
-	p->swap_iq = swap ? 1 : 0;
-
-	return mirisdr_set_hard(p);
 }
 
 int mirisdr_get_swap_iq(mirisdr_dev_t *p)
@@ -540,4 +677,3 @@ const char *mirisdr_get_sample_format_selected(mirisdr_dev_t *p)
 
 	return "";
 }
-

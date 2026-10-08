@@ -109,6 +109,7 @@ int mirisdr_setup (mirisdr_dev_t **out_dev, mirisdr_dev_t *dev) {
     mirisdr_adc_stop(dev);
 
     /* inicializace tuneru */
+    mirisdr_tune_config_default(&dev->tune);
     dev->freq = DEFAULT_FREQ;
     dev->rate = DEFAULT_RATE;
     dev->gain = DEFAULT_GAIN;
@@ -134,14 +135,8 @@ int mirisdr_setup (mirisdr_dev_t **out_dev, mirisdr_dev_t *dev) {
     mirisdr_set_i2c_rate(dev, 50000);
     dev->ee_size = -1;              /* not probed yet, see eeprom.c */
 
-    /* ISOC is more stable but works only on Unix systems */
-#if !defined (_WIN32) || defined(__MINGW32__)
-    dev->transfer = MIRISDR_TRANSFER_ISOC;
-    dev->alt_setting = 1;
-#else
-    dev->transfer = MIRISDR_TRANSFER_BULK;
-    dev->alt_setting = 3;
-#endif
+    /* the transfer mode is the platform's default, see hard.c */
+    mirisdr_stream_config_default(&dev->stream);
 
     mirisdr_adc_init(dev);
     mirisdr_set_hard(dev);

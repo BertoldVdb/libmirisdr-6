@@ -122,6 +122,11 @@ struct mirisdr_dev {
     int                 swap_iq;
     int                 driver_active;
     int                 bias;
+    mirisdr_tune_config_t tune;         /* the tune asked for, see mirisdr_tune() */
+    uint32_t            tune_lo;        /* Hz the LO reaches, as the received frequency */
+    int                 tune_iq;        /* the tuner outputs running, MIRISDR_IQ_* */
+    mirisdr_stream_config_t stream;     /* the stream asked for, see mirisdr_set_stream() */
+    int                 decim_on;       /* the decimator is bypassed */
     int                 reg8;
     uint32_t            reg8_sent;      /* last word written to register 8 */
     int                 reg8_valid;     /* register 8 still holds reg8_sent */

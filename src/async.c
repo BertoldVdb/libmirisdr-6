@@ -330,15 +330,20 @@ static int mirisdr_bulk_phase (mirisdr_dev_t *p, const uint8_t *b, int n)
  * memory is used and the chance of gaps increases. If it is too high (eg 4
  * packets in a 1 slot isochronous transfer), the stream stops.
  */
-static uint32_t mirisdr_burst(mirisdr_dev_t *p)
+static uint32_t mirisdr_alt_burst(uint8_t alt)
 {
-	switch (p->alt_setting)
+	switch (alt)
 	{
 	case 1:  return 3;          /* isochronous, 3 x 1024 per microframe */
 	case 2:  return 1;          /* isochronous, 1 x 1024 */
 	case 4:  return 2;          /* isochronous, 2 x 1024 (requires custom firmware) */
 	default: return 4;          /* bulk */
 	}
+}
+
+static uint32_t mirisdr_burst(mirisdr_dev_t *p)
+{
+	return mirisdr_alt_burst(p->alt_setting);
 }
 
 static int mirisdr_async_drain (mirisdr_dev_t *p, int rounds) {
@@ -1051,6 +1056,7 @@ int mirisdr_set_gap_fill (mirisdr_dev_t *p, int on) {
     if (!p) return -1;
 
     p->gap_fill = !!on;
+    p->stream.gap_fill = p->gap_fill;
 
     return 0;
 }
