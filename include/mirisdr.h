@@ -326,6 +326,11 @@ typedef struct mirisdr_tune_config
 	int      iq;            /* MIRISDR_IQ_*: low IF only, the output not requested is switched off */
 	int      gain;          /* dB as mirisdr_set_tuner_gain(), or MIRISDR_GAIN_KEEP */
 	mirisdr_tuner_override_t override; /* all holds off by default */
+	uint32_t synth_thresh;  /* 0: the LO set to ~1 Hz. 1-4095: the synthesizer's fraction denominator
+	                           fixed at this and no AFC, so the LO lands on a grid of 3 MHz (VHF),
+	                           6 MHz (AM, band III), 24 MHz (band IV/V) or 48 MHz (L) divided by it
+	                           and tunes in one band differ in register 2 only. For fast hopping or
+                               better control of fractional spurious tones. */
 } mirisdr_tune_config_t;
 
 typedef struct mirisdr_tune_result
@@ -633,6 +638,97 @@ typedef struct mirisdr_list_status {
 
 MIRISDR_API int mirisdr_load_list (mirisdr_dev_t *p, int bank, int flags, const mirisdr_list_entry_t *e, int n); /* extra */
 MIRISDR_API int mirisdr_get_list_status (mirisdr_dev_t *p, mirisdr_list_status_t *st); /* extra */
+
+/*
+ * Scanning. The firmware hops the tuner through a list of tunes on its own, one hop
+ * every `dwell` stream interrupts, while the host only keeps the two list banks fed.
+ *
+ * mirisdr_scan_compile() turns the tunes into list entries, as the library would send
+ * them, against the device's state (flavour, crystal, filter calibration, notches): the
+ * receiver itself (or possibly the null device to work offline). Each hop is register 2
+ * plus what changed since the hop before, then the wait. The first hop of a pass is written
+ * in full, so the list can wrap. synth_thresh keeps registers 3 and 5 the same within a
+ * band, so a hop there is two entries. A hop that is not held searches the VCO in the
+ * tuner after its register 2, which only takes longer to settle. An L band hop must
+ * hold its LNA code (see mirisdr_tune_learn()), as the calibration requires a second tune,
+ * which would confuse the tune event output from the chip stream.
+ *
+ * The entries are cut into chunks on hop boundaries. Each chunk starts by flipping the
+ * stream marker, so the stream says which chunk runs, and every hop toggles the tune
+ * event once. mirisdr_scan_start() loads the first chunks and calls cb from the stream
+ * (read_async) for every hop as it shows. mirisdr_scan_feed() keeps the banks fed:
+ * call it often from another thread, at least once per chunk's run. Register writes
+ * are refused while the scan runs and PPS pauses. The scan takes the stream marker
+ * (mirisdr_set_stream_mark()) and leaves it cleared. mirisdr_scan_stop() ends it and
+ * puts the tune from before back.
+ *
+ * Timing: a hop's register 2 goes out just after the interrupt that ends the wait
+ * before it, which is the start of the packet before the one that toggles. Each wait
+ * counts its own dwell interrupts of 1 (isochronous 1x1024) to 4 (bulk) packets, so a
+ * hop that started late still gets them and the hops after it move. Entries before
+ * register 2 (a band change, the expander, held codes) delay it by up to ~3 packets, and
+ * the host loading the next chunk now and then delays a hop more (up to ~0.5 ms seen in
+ * isochronous mode). The reports come from each hop's own toggle, so they correctly identify
+ * the samples regardless of delays.
+ * Measured on an RSP1B at 8 Msps: the tone moves ~27 us in and is within 2 kHz after
+ * ~0.13-0.15 ms and ~0.09-0.13 ms with all codes held.
+ */
+typedef struct mirisdr_scan mirisdr_scan_t;
+
+typedef struct mirisdr_scan_hop
+{
+	uint32_t chunk;          /* the chunk it runs in */
+	uint16_t entries;        /* list entries it takes, its wait included */
+	uint16_t pre_entries;    /* entries before its register 2 */
+	uint16_t pre_words;      /* of which tuner words, ~5.6 us each */
+	mirisdr_tune_result_t res;
+} mirisdr_scan_hop_t;
+
+#define MIRISDR_SCAN_MISSED     0x01    /* packets were lost since the hop before */
+#define MIRISDR_SCAN_RESTART    0x02    /* hopping lits underflow, the hop before ran longer */
+#define MIRISDR_SCAN_LOST       0x04    /* tune events and hops disagree: the count resyncs at
+                                           the next chunk */
+
+typedef struct mirisdr_scan_report
+{
+	uint32_t hop;            /* index into the hops compiled */
+	uint32_t pass;
+	uint64_t sample;         /* where its register 2 went out: the start of the packet before
+	                            the one that toggled, in the delivered count of
+	                            mirisdr_get_buffer_info() */
+	uint64_t index;          /* same as sample, but now lost samples counted */
+	uint32_t length;         /* the dwell in samples. */
+	uint8_t  flags;          /* MIRISDR_SCAN_* */
+} mirisdr_scan_report_t;
+
+typedef void (*mirisdr_scan_cb_t) (const mirisdr_scan_report_t *r, void *ctx);
+
+typedef struct mirisdr_scan_status
+{
+	int      running;
+	uint32_t pass;           /* of the chunk last loaded */
+	uint32_t loaded;         /* chunks loaded */
+	uint32_t restarts;       /* amount of underflows */
+} mirisdr_scan_status_t;
+
+/* Tune cfg with nothing held, read back what the tuner found and fill cfg->override
+   with all of it held.
+   Leaves the receiver tuned there, does not apply the holds. */
+MIRISDR_API int mirisdr_tune_learn (mirisdr_dev_t *p, int tuner, mirisdr_tune_config_t *cfg); /* extra */
+
+MIRISDR_API int mirisdr_scan_compile (mirisdr_dev_t *p, int tuner, const mirisdr_tune_config_t *hops,
+                                      uint32_t n, uint16_t dwell, mirisdr_scan_t **scan); /* extra */
+MIRISDR_API void mirisdr_scan_free (mirisdr_scan_t *scan); /* extra */
+MIRISDR_API uint32_t mirisdr_scan_chunks (const mirisdr_scan_t *scan); /* extra */
+MIRISDR_API int mirisdr_scan_chunk (const mirisdr_scan_t *scan, uint32_t chunk,
+                                    const mirisdr_list_entry_t **e); /* extra, returns the count */
+MIRISDR_API int mirisdr_scan_hop (const mirisdr_scan_t *scan, uint32_t hop, mirisdr_scan_hop_t *info); /* extra */
+
+MIRISDR_API int mirisdr_scan_start (mirisdr_dev_t *p, const mirisdr_scan_t *scan, uint32_t passes,
+                                    mirisdr_scan_cb_t cb, void *ctx); /* extra, passes 0 = forever */
+MIRISDR_API int mirisdr_scan_feed (mirisdr_dev_t *p); /* extra: 1 running, 0 done, -1 failed */
+MIRISDR_API int mirisdr_get_scan_status (mirisdr_dev_t *p, mirisdr_scan_status_t *st); /* extra */
+MIRISDR_API int mirisdr_scan_stop (mirisdr_dev_t *p); /* extra */
 
 /* Every packet header carries the gain the tuner is running and three bits that
  * toggle when a gain word, a synthesizer word or a sample rate write takes effect.

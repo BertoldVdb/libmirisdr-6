@@ -58,6 +58,9 @@ int mirisdr_get_tuner_status (mirisdr_dev_t *p, int tuner, mirisdr_tuner_status_
     /* the tuner port is wired somewhere else, or nowhere */
     if (p->external_tuner) goto failed;
 
+    /* the null device, or a scan being compiled */
+    if (!p->dh) goto failed;
+
     /* clock with the register 0 word the tuner already has, so nothing before the first tune */
     if (!(p->tuner_valid & 1)) goto failed;
 

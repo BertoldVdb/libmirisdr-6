@@ -63,6 +63,7 @@
 #include "hard.c"
 #include "streaming.c"
 #include "soft.c"
+#include "scan.c"
 #include "sync.c"
 #include "null.c"
 
@@ -109,26 +110,10 @@ int mirisdr_setup (mirisdr_dev_t **out_dev, mirisdr_dev_t *dev) {
     mirisdr_adc_stop(dev);
 
     /* inicializace tuneru */
-    mirisdr_tune_config_default(&dev->tune);
-    dev->freq = DEFAULT_FREQ;
+    mirisdr_tuner_defaults(dev);
     dev->rate = DEFAULT_RATE;
-    dev->gain = DEFAULT_GAIN;
-    dev->band = MIRISDR_BAND_VHF; // matches always the default frequency of 90 MHz
-
-    dev->gain_reduction_lna = 0;
-    dev->gain_reduction_mixer = 0;
-    dev->gain_reduction_baseband = 43;
-    dev->if_freq = MIRISDR_IF_ZERO;
     dev->format_auto = MIRISDR_FORMAT_AUTO_ON;
     dev->decimation_bypass = MIRISDR_DECIMATION_BYPASS_AUTO;
-    dev->bandwidth = MIRISDR_BW_8MHZ;
-    dev->xtal = MIRISDR_XTAL_24M;
-    dev->bias = 0;
-    dev->dc_mode = MIRISDR_DC_PERIODIC2;
-    dev->dc_speedup = 0;
-    dev->dc_track = 0x1f;
-    dev->dc_period = 0x800;
-    dev->filter_cal = -1;
 
     if (dev->hw_flavour == MIRISDR_HW_AUTO) dev->hw_flavour = mirisdr_flavour_of(dev->dh);
     dev->exp_valid = 0;

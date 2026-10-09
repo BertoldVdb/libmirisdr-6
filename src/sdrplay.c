@@ -77,7 +77,7 @@ static int mirisdr_rsp1b_frontend (mirisdr_dev_t *p, uint16_t word)
 
     if (p->bias) w &= (uint16_t) ~RSP1B_A1;
 
-    if (!first && (p->exp_iodir == w)) return 0;
+    if (!first && !p->exp_stale && (p->exp_iodir == w)) return 0;
 
     if (first)
     {
@@ -89,11 +89,14 @@ static int mirisdr_rsp1b_frontend (mirisdr_dev_t *p, uint16_t word)
         r |= mirisdr_sdrplay_xfer(p, r8, RSP1B_CS, EXP_OLATB, 0);
     }
 
-    if (first || ((p->exp_iodir ^ w) & 0x00FF)) r |= mirisdr_sdrplay_xfer(p, r8, RSP1B_CS, EXP_IODIRA, (uint8_t) w);
-    if (first || ((p->exp_iodir ^ w) & 0xFF00)) r |= mirisdr_sdrplay_xfer(p, r8, RSP1B_CS, EXP_IODIRB, (uint8_t) (w >> 8));
+    if (first || p->exp_stale || ((p->exp_iodir ^ w) & 0x00FF))
+        r |= mirisdr_sdrplay_xfer(p, r8, RSP1B_CS, EXP_IODIRA, (uint8_t) w);
+    if (first || p->exp_stale || ((p->exp_iodir ^ w) & 0xFF00))
+        r |= mirisdr_sdrplay_xfer(p, r8, RSP1B_CS, EXP_IODIRB, (uint8_t) (w >> 8));
 
     p->exp_iodir = w;
     p->exp_valid = !r;
+    p->exp_stale = 0;
 
     return r;
 }

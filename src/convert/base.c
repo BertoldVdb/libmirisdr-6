@@ -94,7 +94,7 @@ static void mirisdr_addr_next (mirisdr_dev_t *p, const uint8_t *hdr, uint32_t st
         p->stats.index = p->stats.samples + p->stats.lost;
     }
 
-    mirisdr_events_latch(p, hdr, p->stats.samples, p->stats.samples + p->stats.lost);
+    mirisdr_events_latch(p, hdr, p->stats.samples, p->stats.samples + p->stats.lost, step);
 
     p->stats.samples+= step;
     p->addr = addr + step;

@@ -2979,6 +2979,287 @@ static tres_t t_stream_api (void)
     return T_PASS;
 }
 
+/* Hops from lo to hi in steps, every band's synthesizer threshold as given */
+static uint32_t scan_hops (mirisdr_tune_config_t *h, uint32_t max, uint32_t lo, uint32_t hi, uint32_t step,
+                           uint32_t thresh)
+{
+    uint32_t n = 0, f;
+
+    for (f = lo; (f <= hi) && (n < max); f += step, n++)
+    {
+        mirisdr_tune_config_default(&h[n]);
+        h[n].frequency = f;
+        h[n].synth_thresh = thresh;
+    }
+
+    return n;
+}
+
+static tres_t t_plan_scan (void)
+{
+    static mirisdr_tune_config_t h[300];
+    mirisdr_dev_t *n;
+    mirisdr_tune_config_t c;
+    mirisdr_tune_result_t r;
+    mirisdr_scan_t *s;
+    mirisdr_scan_hop_t hi;
+    const mirisdr_list_entry_t *e;
+    uint32_t nh, k, ch, two = 0, total = 0, biggest = 0;
+    int ne;
+
+    plan_bad = 0;
+
+    if (mirisdr_open_null(&n, "252_S16") < 0) { say("no null device"); return T_FAIL; }
+    mirisdr_set_hw_flavour(n, MIRISDR_HW_RSP1B);
+
+    /* the grid: 3 MHz / 6 in VHF */
+    mirisdr_tune_config_default(&c);
+    c.frequency = 100300000; c.synth_thresh = 6;
+    plan_tune(n, "VHF on a 500 kHz grid", &c, 1, &r);
+    if (r.lo != 100500000) { plan_bad++; say("grid LO %u, not 100500000", r.lo); }
+    plan_near(r.offset, -200000, 0, "grid offset");
+    c.synth_thresh = 4096;
+    plan_tune(n, "threshold 4096", &c, 0, &r);
+
+    /* 52 MHz to 948 MHz in 8 MHz hops */
+    nh = scan_hops(h, 300, 52000000, 948000000, 8000000, 6);
+    if (mirisdr_scan_compile(n, 0, h, nh, 4, &s) < 0) { mirisdr_close(n); say("compile refused"); return T_FAIL; }
+
+    for (ch = 0; ch < mirisdr_scan_chunks(s); ch++)
+    {
+        ne = mirisdr_scan_chunk(s, ch, &e);
+        total += (uint32_t) ne;
+        if (ne < 2 || ne > 62) { plan_bad++; say("chunk %u has %d entries", ch, ne); }
+        else if (e[0].reg != 0x10) { plan_bad++; say("chunk %u starts with %02x, not the marker", ch, e[0].reg); }
+        else if (e[ne - 1].reg != MIRISDR_LIST_WAIT_IRQ) { plan_bad++; say("chunk %u does not end on a wait", ch); }
+    }
+
+    for (k = 0, ch = 0; k < nh; k++)
+    {
+        mirisdr_scan_hop(s, k, &hi);
+        if (hi.entries == 2) two++;
+        if (hi.entries > biggest) biggest = hi.entries;
+        if (hi.chunk != ch && hi.chunk != ch + 1) { plan_bad++; say("hop %u in chunk %u after %u", k, hi.chunk, ch); }
+        ch = hi.chunk;
+    }
+
+    mirisdr_scan_hop(s, 0, &hi);
+    note("%u hops in %u chunks, %u entries; %u hops of 2 entries, the first %u (register 2 after %u words), "
+         "the biggest %u", nh, mirisdr_scan_chunks(s), total, two, hi.entries, hi.pre_words, biggest);
+    if (two + 12 < nh) { plan_bad++; say("only %u of %u hops are register 2 and the wait", two, nh); }
+    mirisdr_scan_free(s);
+
+    /* L band needs the LNA code held */
+    nh = scan_hops(h, 300, 1200000000, 1240000000, 8000000, 48);
+    if (mirisdr_scan_compile(n, 0, h, nh, 4, &s) == 0) { plan_bad++; say("L band without a held LNA code compiled"); mirisdr_scan_free(s); }
+    for (k = 0; k < nh; k++) { h[k].override.hold_lna = 1; h[k].override.lna_cal = 8; }
+    if (mirisdr_scan_compile(n, 0, h, nh, 4, &s) < 0) { plan_bad++; say("L band with the LNA code held refused"); }
+    else mirisdr_scan_free(s);
+
+    mirisdr_close(n);
+
+    if (plan_bad) return T_FAIL;
+
+    say("grid tunes, chunks led by the marker and ending on a wait, hops of 2 entries in a band, "
+        "L band needs its LNA code");
+
+    return T_PASS;
+}
+
+/* Learned codes come back when replayed */
+static tres_t t_scan_learn (void)
+{
+    static const uint32_t f[] = { 100000000, 433000000, 1300000000 };
+    mirisdr_tune_config_t c;
+    mirisdr_tuner_status_t st;
+    unsigned i;
+
+    pump_stop();
+
+    for (i = 0; i < sizeof f / sizeof f[0]; i++)
+    {
+        mirisdr_tune_config_default(&c);
+        c.frequency = f[i];
+        if (mirisdr_tune_learn(dev, 0, &c) < 0) { say("%u Hz: could not learn", f[i]); return T_FAIL; }
+
+        /* somewhere else, then back with the holds */
+        mirisdr_set_center_freq(dev, 200000000);
+        usleep(10000);
+        if (mirisdr_tune(dev, 0, &c, NULL) < 0) { say("%u Hz: replay refused", f[i]); return T_FAIL; }
+        usleep(10000);
+        if (mirisdr_get_tuner_status(dev, 0, &st) < 0) { say("%u Hz: no readback", f[i]); return T_FAIL; }
+
+        note("%10u Hz: learned coarse %u fine %2u unknown %2u upconv %2u lna %2u filter %2u, read %d %2u - %2u %2u %2u",
+             f[i], c.override.coarse, c.override.fine, c.override.unknown, c.override.upconv,
+             c.override.lna_cal, c.override.filter, st.coarse, st.fine, st.upconv, st.lna_cal, st.filter);
+
+        if (st.coarse != c.override.coarse || st.fine != c.override.fine || st.upconv != c.override.upconv ||
+            st.lna_cal != c.override.lna_cal)
+        { say("%u Hz: replayed codes differ", f[i]); mirisdr_set_tuner_override(dev, 0, NULL); return T_FAIL; }
+    }
+
+    mirisdr_set_tuner_override(dev, 0, NULL);
+    mirisdr_set_center_freq(dev, 100000000);
+
+    say("three bands learned and replayed to the same codes");
+
+    return T_PASS;
+}
+
+/* What the scan reports, from the stream thread */
+#define SCAN_LOG_MAX    4096
+
+static mirisdr_scan_report_t scan_log[SCAN_LOG_MAX];
+static volatile uint32_t scan_logged;
+
+static void scan_cb (const mirisdr_scan_report_t *r, void *ctx)
+{
+    (void) ctx;
+    if (scan_logged < SCAN_LOG_MAX) scan_log[scan_logged] = *r;
+    scan_logged++;
+}
+
+static tres_t t_scan_run (void)
+{
+    static mirisdr_tune_config_t h[300];
+    mirisdr_stream_config_t sc;
+    mirisdr_tune_result_t r;
+    mirisdr_scan_t *s;
+    mirisdr_scan_status_t st;
+    uint32_t nh, k, passes = 2, learned = 0, bad = 0, flagged = 0, pkt, late = 0, shorted = 0;
+    int64_t shortest = INT64_MAX, longest = 0;
+    int fr = 1, loops = 0;
+    tres_t res = T_PASS;
+
+    pump_stop();
+
+    mirisdr_stream_config_default(&sc);
+    sc.transfer = "BULK";
+    sc.rate = 8000000;
+    if (mirisdr_set_stream(dev, &sc, NULL) < 0) { say("8 Msps bulk refused"); return T_FAIL; }
+
+    /* 52 MHz to 1948 MHz in 8 MHz hops, L band learned */
+    nh = scan_hops(h, 300, 52000000, 1948000000, 8000000, 6);
+    for (k = 0; k < nh; k++)
+    {
+        if (mirisdr_tune_check(dev, 0, &h[k], &r) < 0) { say("%u Hz refused", h[k].frequency); return T_FAIL; }
+        if (r.band != MIRISDR_BAND_L) continue;
+        if (mirisdr_tune_learn(dev, 0, &h[k]) < 0) { say("%u Hz: could not learn", h[k].frequency); return T_FAIL; }
+        learned++;
+    }
+
+    if (mirisdr_scan_compile(dev, 0, h, nh, 8, &s) < 0) { say("compile refused"); return T_FAIL; }
+
+    scan_logged = 0;
+    if (pump_start() < 0) { mirisdr_scan_free(s); say("stream did not start"); return T_FAIL; }
+    if (mirisdr_scan_start(dev, s, passes, scan_cb, NULL) < 0)
+    { pump_stop(); mirisdr_scan_free(s); say("scan did not start"); return T_FAIL; }
+
+    while ((fr = mirisdr_scan_feed(dev)) == 1 && loops++ < 20000) usleep(500);
+    mirisdr_get_scan_status(dev, &st);
+    usleep(50000);
+    mirisdr_scan_stop(dev);
+    pump_stop();
+
+    note("%u hops (%u L band learned) in %u chunks, %u passes: %u reports, %u restarts, feed %d",
+         nh, learned, mirisdr_scan_chunks(s), passes, scan_logged, st.restarts, fr);
+
+    /* every hop gets its dwell: the next one starts no earlier than the interrupt
+       period its own register 2 fell in allows, give or take a packet of toggle jitter */
+    pkt = scan_log[0].length / (8 * 4);
+    for (k = 0; k < scan_logged && k < SCAN_LOG_MAX; k++)
+    {
+        const mirisdr_scan_report_t *a = &scan_log[k];
+        int64_t len;
+
+        if (a->flags) flagged++;
+        if (a->hop != k % nh || a->pass != k / nh) bad++;
+        if (!k || (k == nh) || (k + 1 >= scan_logged)) continue;
+
+        len = (int64_t) (scan_log[k + 1].index - a->index) / (int64_t) pkt;
+        if (len < shortest) shortest = len;
+        if (len > longest) longest = len;
+        if (len < 8 * 4 - 4 - 1) shorted++;
+        if (len > 8 * 4 + 1) late++;
+    }
+
+    note("hops %lld to %lld packets long for a dwell of 32; %u longer", (long long) shortest,
+         (long long) longest, late);
+
+    mirisdr_scan_free(s);
+    mirisdr_stream_config_default(&sc);
+    sc.transfer = "BULK";
+    mirisdr_set_stream(dev, &sc, NULL);
+
+    if (fr != 0) { say("the feed ended with %d", fr); res = T_FAIL; }
+    else if (scan_logged != nh * passes) { say("%u reports for %u hops", scan_logged, nh * passes); res = T_FAIL; }
+    else if (bad) { say("%u reports out of order", bad); res = T_FAIL; }
+    else if (flagged) { say("%u reports flagged", flagged); res = T_FAIL; }
+    else if (shorted) { say("%u hops shorter than their dwell allows", shorted); res = T_FAIL; }
+    else say("%u hops x %u passes reported in order, %lld to %lld packets for a dwell of 32, %u restarts",
+             nh, passes, (long long) shortest, (long long) longest, st.restarts);
+
+    return res;
+}
+
+/* A feeder far too slow: the list runs dry, starts again with the next chunk, and the
+   reports still come in order, the restarts flagged */
+static tres_t t_scan_dry (void)
+{
+    static mirisdr_tune_config_t h[300];
+    mirisdr_stream_config_t sc;
+    mirisdr_scan_t *s;
+    mirisdr_scan_status_t st;
+    uint32_t nh, k, bad = 0, restarted = 0, lost = 0;
+    int fr = 1, loops = 0;
+    tres_t res = T_PASS;
+
+    pump_stop();
+
+    mirisdr_stream_config_default(&sc);
+    sc.transfer = "BULK";
+    sc.rate = 8000000;
+    if (mirisdr_set_stream(dev, &sc, NULL) < 0) { say("8 Msps bulk refused"); return T_FAIL; }
+
+    /* VHF and band III only, 8 interrupts (~1.3 ms) a hop: a chunk lasts ~40 ms */
+    nh = scan_hops(h, 300, 52000000, 248000000, 2000000, 6);
+    if (mirisdr_scan_compile(dev, 0, h, nh, 8, &s) < 0) { say("compile refused"); return T_FAIL; }
+
+    scan_logged = 0;
+    if (pump_start() < 0) { mirisdr_scan_free(s); say("stream did not start"); return T_FAIL; }
+    if (mirisdr_scan_start(dev, s, 1, scan_cb, NULL) < 0)
+    { pump_stop(); mirisdr_scan_free(s); say("scan did not start"); return T_FAIL; }
+
+    while ((fr = mirisdr_scan_feed(dev)) == 1 && loops++ < 200) usleep(100000);
+    mirisdr_get_scan_status(dev, &st);
+    usleep(50000);
+    mirisdr_scan_stop(dev);
+    pump_stop();
+
+    for (k = 0; k < scan_logged && k < SCAN_LOG_MAX; k++)
+    {
+        if (scan_log[k].hop != k) bad++;
+        if (scan_log[k].flags & MIRISDR_SCAN_RESTART) restarted++;
+        if (scan_log[k].flags & MIRISDR_SCAN_LOST) lost++;
+    }
+
+    note("%u hops in %u chunks: %u reports, %u restarts, %u reports flagged restarted, feed %d",
+         nh, mirisdr_scan_chunks(s), scan_logged, st.restarts, restarted, fr);
+    mirisdr_scan_free(s);
+
+    mirisdr_stream_config_default(&sc);
+    sc.transfer = "BULK";
+    mirisdr_set_stream(dev, &sc, NULL);
+
+    if (fr != 0) { say("the feed ended with %d", fr); res = T_FAIL; }
+    else if (scan_logged != nh || bad) { say("%u reports for %u hops, %u out of order", scan_logged, nh, bad); res = T_FAIL; }
+    else if (!st.restarts) { say("the list never ran dry"); res = T_FAIL; }
+    else if (restarted != st.restarts || lost) { say("%u restarts, %u flagged, %u lost", st.restarts, restarted, lost); res = T_FAIL; }
+    else say("ran dry %u times, every hop reported in order, each restart flagged", st.restarts);
+
+    return res;
+}
+
 static const struct {
     const char *group;
     const char *name;
@@ -2991,6 +3272,7 @@ static const struct {
     { "plan",     "tune config rules",          t_plan_tune           },
     { "plan",     "stream config rules",        t_plan_stream         },
     { "plan",     "stream following the tune",  t_plan_follow         },
+    { "plan",     "scan lists",                 t_plan_scan           },
 
     { "identity", "device enumerates",          t_enumerate           },
     { "identity", "usb descriptors",            t_usb_strings         },
@@ -3044,6 +3326,10 @@ static const struct {
     { "tuner",    "tune config",                t_tune_api            },
     { "tuner",    "VCO limits (--characterise)", t_vco_limits         },
     { "tuner",    "gpio inputs",                t_gpio_read           },
+
+    { "scan",     "learn and replay",           t_scan_learn          },
+    { "scan",     "scan list run",              t_scan_run            },
+    { "scan",     "scan list run dry",          t_scan_dry            },
 
     { "extras",   "eeprom size probe",          t_eeprom_probe        },
     { "extras",   "eeprom read",                t_eeprom_read         },

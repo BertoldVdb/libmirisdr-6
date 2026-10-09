@@ -146,6 +146,7 @@ struct mirisdr_dev {
     uint8_t             dc_n;           /* DC calibration divider N of the XTALSEL tuned, 0 before */
     uint16_t            exp_iodir;      /* RSP1B expander direction word sent, 0 bits pulled low */
     int                 exp_valid;      /* the expander holds exp_iodir */
+    int                 exp_stale;      /* a list wrote it: send both bytes again, no setup */
     int                 notch;          /* MIRISDR_NOTCH_* asked for */
     int                 fw_ours;
     uint8_t             fw_pps_at;      /* status blocks, from the firmware block: internal RAM, */
@@ -191,6 +192,23 @@ struct mirisdr_dev {
     uint16_t            ev_last;        /* the previous packet's header bytes 4-5 */
     uint8_t             ev_valid;       /* ev_last holds a packet of this stream */
     uint8_t             ev_missed;      /* packets were lost since ev_last */
+
+    /* scan lists, see scan.c */
+    mirisdr_list_entry_t *rec;          /* compiling: register writes are kept here instead */
+    uint32_t            rec_n;
+    uint32_t            rec_max;
+    const struct mirisdr_scan *scan;    /* running */
+    volatile int        scan_on;        /* the stream side follows it */
+    uint32_t            scan_total;     /* chunks to load, 0 forever */
+    uint32_t            scan_loaded;    /* chunks loaded so far */
+    volatile uint32_t   scan_restarts;  /* the list ran dry and was loaded again */
+    uint32_t            scan_restarts_seen;
+    uint32_t            scan_burst;     /* packets per stream interrupt */
+    uint32_t            scan_g;         /* stream side: chunks seen, counting the marks */
+    uint32_t            scan_in;        /* tune events seen in the chunk */
+    uint8_t             scan_flags;     /* for the next report */
+    mirisdr_scan_cb_t   scan_cb;
+    void                *scan_ctx;
 
     uint8_t             *samples;
     int                 samples_size;

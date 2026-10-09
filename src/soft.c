@@ -143,7 +143,7 @@ typedef struct mirisdr_tune_words
 } mirisdr_tune_words_t;
 
 static void mirisdr_tune_words (mirisdr_dev_t *p, uint32_t lo, uint32_t rx, int ifm, int bw, int iq,
-                                int cal, mirisdr_tune_words_t *w)
+                                int cal, uint32_t fixed, mirisdr_tune_words_t *w)
 {
     uint32_t reg0 = 0, reg2 = 0, reg5 = 0, reg3 = 0, regd = 0, xsel;
     uint64_t n, thresh, frac, lo_div = 0, fvco = 0, rfvco = 0, offset = 0, afc = 0, a, b, c, flo, synth;
@@ -208,27 +208,42 @@ static void mirisdr_tune_words (mirisdr_dev_t *p, uint32_t lo, uint32_t rx, int 
 
     /* N, then the fraction over a threshold reduced to fit 12 bits */
     n = fvco / 96000000UL;
-    thresh = 96000000UL / lo_div;
-    frac = (fvco % 96000000UL) / lo_div;
 
-    for (a = thresh, b = frac; a != 0;)
+    if (fixed)
     {
-        c = a;
-        a = b % a;
-        b = c;
+        /* the nearest point of the grid, no AFC: only register 2 differs between them */
+        thresh = fixed;
+        frac = ((fvco % 96000000UL) * thresh + 48000000UL) / 96000000UL;
+        if (frac == thresh)
+        {
+            n++;
+            frac = 0;
+        }
     }
+    else
+    {
+        thresh = 96000000UL / lo_div;
+        frac = (fvco % 96000000UL) / lo_div;
 
-    thresh /= b;
-    frac /= b;
+        for (a = thresh, b = frac; a != 0;)
+        {
+            c = a;
+            a = b % a;
+            b = c;
+        }
 
-    a = (thresh + 4094) / 4095;
-    thresh = (thresh + (a / 2)) / a;
-    frac = (frac + (a / 2)) / a;
+        thresh /= b;
+        frac /= b;
 
-    rfvco = (96000000UL * (n * thresh * 4096UL + (frac * 4096UL))) / (thresh * 4096UL * lo_div);
-    if (flo < rfvco) frac--;
-    rfvco = (96000000UL * (n * thresh * 4096UL + (frac * 4096UL + afc))) / (thresh * 4096UL * lo_div);
-    afc = ((flo - rfvco) * thresh * 4096UL * lo_div) / 96000000UL;
+        a = (thresh + 4094) / 4095;
+        thresh = (thresh + (a / 2)) / a;
+        frac = (frac + (a / 2)) / a;
+
+        rfvco = (96000000UL * (n * thresh * 4096UL + (frac * 4096UL))) / (thresh * 4096UL * lo_div);
+        if (flo < rfvco) frac--;
+        rfvco = (96000000UL * (n * thresh * 4096UL + (frac * 4096UL + afc))) / (thresh * 4096UL * lo_div);
+        afc = ((flo - rfvco) * thresh * 4096UL * lo_div) / 96000000UL;
+    }
 
     reg3 |= (afc & 4095);
     reg5 |= (0xFFF & thresh);
@@ -333,7 +348,7 @@ static int mirisdr_lna_calibrate (mirisdr_dev_t *p, const hw_switch_freq_plan_t 
     if ((p->tuner_valid & 1) && p->lna_cal_mhz && abs(mhz - p->lna_cal_mhz) <= 50) return 0;
 
     cal = (uint32_t) mirisdr_lna_cal_tune(mhz) * 1000000;
-    mirisdr_tune_words(p, cal, cal, ifm, bw, iq, 1, &w);
+    mirisdr_tune_words(p, cal, cal, ifm, bw, iq, 1, 0, &w);
     r = mirisdr_tune_send(p, &w);
 
     /* it needs the synthesizer settled, which can take ~400 us; 20 us sufficed in tests */
@@ -453,6 +468,12 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
         return -1;
     }
 
+    if (c->synth_thresh > 4095)
+    {
+        fprintf(stderr, "unsupported synthesizer threshold: %u\n", c->synth_thresh);
+        return -1;
+    }
+
     if (mirisdr_override_words(&c->override, &pl->ovr13, &pl->ovr14) < 0)
     {
         fprintf(stderr, "tuner override code out of range\n");
@@ -476,7 +497,7 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
 
     pl->lo = (uint32_t) lo;
 
-    mirisdr_tune_words(p, pl->lo, c->frequency, pl->ifm, pl->bw, pl->iq, 0, &pl->w);
+    mirisdr_tune_words(p, pl->lo, c->frequency, pl->ifm, pl->bw, pl->iq, 0, c->synth_thresh, &pl->w);
 
     return 0;
 }
@@ -563,6 +584,28 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
                                     pl.cfg.bandwidth, p->band, mirisdr_get_tuner_gain(p), res);
 
     return r;
+}
+
+/* The tuner side of a fresh device, the null one included */
+static void mirisdr_tuner_defaults (mirisdr_dev_t *p)
+{
+    mirisdr_tune_config_default(&p->tune);
+    p->freq = DEFAULT_FREQ;
+    p->gain = DEFAULT_GAIN;
+    p->band = MIRISDR_BAND_VHF; // matches always the default frequency of 90 MHz
+
+    p->gain_reduction_lna = 0;
+    p->gain_reduction_mixer = 0;
+    p->gain_reduction_baseband = 43;
+    p->if_freq = MIRISDR_IF_ZERO;
+    p->bandwidth = MIRISDR_BW_8MHZ;
+    p->xtal = MIRISDR_XTAL_24M;
+    p->bias = 0;
+    p->dc_mode = MIRISDR_DC_PERIODIC2;
+    p->dc_speedup = 0;
+    p->dc_track = 0x1f;
+    p->dc_period = 0x800;
+    p->filter_cal = -1;
 }
 
 /* the stored tune again, for what changes the front end or the stream's view of it */

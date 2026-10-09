@@ -42,6 +42,7 @@ int mirisdr_open_null (mirisdr_dev_t **out, const char *format) {
     p->fw_ours = 1;             /* stamped blocks */
     p->fake = 1;                /* the configs can be applied, and read back */
     p->gap_track = 1;
+    mirisdr_tuner_defaults(p);   /* so tunes and scan lists come out as on a device */
 
     *out = p;
 

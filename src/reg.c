@@ -186,7 +186,23 @@ int mirisdr_write_reg (mirisdr_dev_t *p, uint8_t reg, uint32_t val) {
     fprintf( stderr, "write reg: 0x%02x, val 0x%08x\n", reg, val);
 #endif
 
-    if (p->batch_depth && p->fw_ours)
+    if (p->rec)
+    {
+        /* a scan being compiled: the entry is kept, nothing goes out */
+        if (p->rec_n == p->rec_max)
+        {
+            mirisdr_list_entry_t *e = realloc(p->rec, (p->rec_max * 2 + 64) * sizeof *e);
+
+            if (!e) goto failed;
+            p->rec = e;
+            p->rec_max = p->rec_max * 2 + 64;
+        }
+
+        p->rec[p->rec_n].reg = reg;
+        p->rec[p->rec_n++].val = val;
+        r = 0;
+    }
+    else if (p->batch_depth && p->fw_ours)
     {
         uint8_t *e = p->batch + 4 * p->batch_n;
 

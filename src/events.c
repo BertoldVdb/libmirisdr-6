@@ -38,12 +38,16 @@
 #define MIRISDR_MARK_REG        0x10
 #define MIRISDR_MARK_BIT        (1UL << 21)
 
+static void mirisdr_scan_latch (mirisdr_dev_t *p, uint16_t w, uint16_t x, uint64_t sample, uint64_t index,
+                                uint32_t step);
+
 /* once per packet, before its samples are counted */
-static void mirisdr_events_latch (mirisdr_dev_t *p, const uint8_t *hdr, uint64_t sample, uint64_t index) {
+static void mirisdr_events_latch (mirisdr_dev_t *p, const uint8_t *hdr, uint64_t sample, uint64_t index,
+                                  uint32_t step) {
     mirisdr_stream_event_t e;
     uint16_t w = hdr[4] | hdr[5] << 8, x;
 
-    if (!p->ev_cb) return;
+    if (!p->ev_cb && !p->scan_on) return;
 
     if (!p->ev_valid) {
         p->ev_valid = 1;
@@ -54,6 +58,12 @@ static void mirisdr_events_latch (mirisdr_dev_t *p, const uint8_t *hdr, uint64_t
 
     x = w ^ p->ev_last;
     p->ev_last = w;
+
+    if (p->scan_on) mirisdr_scan_latch(p, w, x, sample, index, step);
+    if (!p->ev_cb) {
+        p->ev_missed = 0;
+        return;
+    }
 
     memset(&e, 0, sizeof e);
     if (x & MIRISDR_HDR_GAIN) e.events |= MIRISDR_EVENT_GAIN;
