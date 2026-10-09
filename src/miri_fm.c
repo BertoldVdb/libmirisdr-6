@@ -236,7 +236,7 @@ void usage(void)
 		"\t    dc:     enable dc blocking filter\n"
 		"\t    deemp:  enable de-emphasis filter\n"
 		"\t    direct: enable direct sampling\n"
-		"\t    offset: enable offset tuning\n"
+		"\t    offset: not supported, has no effect\n"
 		"\tfilename ('-' means stdout)\n"
 		"\t    omitting the filename also uses stdout\n\n"
 		"Experimental options:\n"
@@ -1251,7 +1251,7 @@ int main(int argc, char **argv)
 			if (strcmp("direct",  optarg) == 0) {
 				dongle.direct_sampling = 1;}
 			if (strcmp("offset",  optarg) == 0) {
-				dongle.offset_tuning = 1;}
+				fprintf(stderr, "Warning: -E offset is not supported and has no effect.\n");}
 			break;
 		case 'F':
 			demod.downsample_passes = 1;  /* truthy placeholder */
