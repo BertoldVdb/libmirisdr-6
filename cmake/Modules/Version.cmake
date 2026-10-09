@@ -55,7 +55,7 @@ if(GIT_FOUND)
         endif()
     endif()
 else()
-    set(GIT_DESCRIBE "v${MAJOR_VERSION}.${MINOR_VERSION}.x-xxx-xunknown")
+    set(GIT_DESCRIBE "${MAJOR_VERSION}.${MINOR_VERSION}git")
 endif()
 
 ########################################################################
