@@ -182,33 +182,119 @@ static int mirisdr_max_gain(mirisdr_dev_t *p)
     return mirisdr_max_gain_of(p->band);
 }
 
-static void mirisdr_gain_split(mirisdr_dev_t *p)
+/* Gain reductions as the tuner takes them */
+typedef struct mirisdr_gr
 {
-    int front = mirisdr_front_gain(p), gain = p->gain;
+    int lna, mixbuffer, mixer, baseband;
+} mirisdr_gr_t;
 
-    if (gain > mirisdr_max_gain(p)) gain = mirisdr_max_gain(p);
+/* A total split for a band: the front end first, so noise figure and IIP3 stay low */
+static void mirisdr_split_of(mirisdr_band_t band, int gain, mirisdr_gr_t *r)
+{
+    int front = mirisdr_front_gain_of(band);
+
+    if (gain > mirisdr_max_gain_of(band)) gain = mirisdr_max_gain_of(band);
+    if (gain < 0) gain = 0;
 
     if (gain >= front + 19)
     {
-        p->gain_reduction_lna = 0;
-        p->gain_reduction_mixbuffer = 0;
-        p->gain_reduction_mixer = 0;
-        p->gain_reduction_baseband = 59 - (gain - front - 19);
+        r->lna = 0;
+        r->mixbuffer = 0;
+        r->mixer = 0;
+        r->baseband = 59 - (gain - front - 19);
     }
     else if (gain >= 19)
     {
-        p->gain_reduction_lna = 1;
-        p->gain_reduction_mixbuffer = 3;
-        p->gain_reduction_mixer = 0;
-        p->gain_reduction_baseband = 59 - (gain - 19);
+        r->lna = 1;
+        r->mixbuffer = 3;
+        r->mixer = 0;
+        r->baseband = 59 - (gain - 19);
     }
     else
     {
-        p->gain_reduction_lna = 1;
-        p->gain_reduction_mixbuffer = 3;
-        p->gain_reduction_mixer = 1;
-        p->gain_reduction_baseband = 59 - gain;
+        r->lna = 1;
+        r->mixbuffer = 3;
+        r->mixer = 1;
+        r->baseband = 59 - gain;
     }
+}
+
+static int mirisdr_mixbuffer_of(mirisdr_band_t band, const mirisdr_gr_t *r)
+{
+    if (band == MIRISDR_BAND_AM2) return r->mixbuffer ? 0 : 24;
+
+    return 18 - 6 * r->mixbuffer;
+}
+
+static int mirisdr_lna_of(mirisdr_band_t band, const mirisdr_gr_t *r)
+{
+    if (r->lna) return 0;
+    if (band == MIRISDR_BAND_45) return 7;
+    if (band == MIRISDR_BAND_L) return 4;   /* mean of measured values, with LNA cal */
+
+    return 24;
+}
+
+/* What the stages add up to in a band, and each of them */
+static void mirisdr_stages_of(mirisdr_band_t band, const mirisdr_gr_t *r, mirisdr_gain_config_t *g)
+{
+    int am = (band == MIRISDR_BAND_AM1) || (band == MIRISDR_BAND_AM2);
+
+    memset(g, 0, sizeof *g);
+    g->mode = MIRISDR_GAIN_STAGES;
+    g->lna = !r->lna;
+    g->mixer = !r->mixer;
+    g->mixbuffer = mirisdr_mixbuffer_of(band, r);
+    g->baseband = 59 - r->baseband;
+    g->total = g->baseband + (g->mixer ? 19 : 0) + (am ? g->mixbuffer : mirisdr_lna_of(band, r));
+}
+
+static void mirisdr_gr_get(const mirisdr_dev_t *p, mirisdr_gr_t *r)
+{
+    r->lna = p->gain_reduction_lna;
+    r->mixbuffer = p->gain_reduction_mixbuffer;
+    r->mixer = p->gain_reduction_mixer;
+    r->baseband = p->gain_reduction_baseband;
+}
+
+static void mirisdr_gr_set(mirisdr_dev_t *p, const mirisdr_gr_t *r)
+{
+    p->gain_reduction_lna = r->lna;
+    p->gain_reduction_mixbuffer = r->mixbuffer;
+    p->gain_reduction_mixer = r->mixer;
+    p->gain_reduction_baseband = r->baseband;
+}
+
+/* Stages asked for as reductions; dB values the band cannot do are refused */
+static int mirisdr_gr_of_stages(mirisdr_band_t band, const mirisdr_gain_config_t *g, mirisdr_gr_t *r)
+{
+    if ((g->lna & ~1) || (g->mixer & ~1) || (g->baseband < 0) || (g->baseband > 59)) return -1;
+
+    r->lna = !g->lna;
+    r->mixer = !g->mixer;
+    r->baseband = 59 - g->baseband;
+
+    if (band == MIRISDR_BAND_AM2)
+    {
+        if ((g->mixbuffer != 0) && (g->mixbuffer != 24)) return -1;
+        r->mixbuffer = g->mixbuffer ? 0 : 3;
+    }
+    else if (band == MIRISDR_BAND_AM1)
+    {
+        if ((g->mixbuffer < 0) || (g->mixbuffer > 18) || (g->mixbuffer % 6)) return -1;
+        r->mixbuffer = 3 - g->mixbuffer / 6;
+    }
+    else r->mixbuffer = 3;      /* no such stage */
+
+    return 0;
+}
+
+static void mirisdr_gain_split(mirisdr_dev_t *p)
+{
+    mirisdr_gr_t r;
+
+    mirisdr_split_of(p->band, p->gain, &r);
+    mirisdr_gr_set(p, &r);
 }
 
 static void mirisdr_gain_retune (mirisdr_dev_t *p)
@@ -270,30 +356,19 @@ int mirisdr_set_tuner_gain(mirisdr_dev_t *p, int gain)
 /* gain 0 corresponds to the maximal attenuated RF input */
 int mirisdr_get_tuner_gain(mirisdr_dev_t *p)
 {
-    int gain = 0;
+    mirisdr_gain_config_t g;
+    mirisdr_gr_t r;
 
     if (p->gain < 0)
         goto gain_auto;
 
-    gain += 59 - p->gain_reduction_baseband;
-
-    if ((p->band == MIRISDR_BAND_AM1) || (p->band == MIRISDR_BAND_AM2))
-    {
-        gain += mirisdr_get_mixbuffer_gain(p);
-    }
-    else
-    {
-        gain += mirisdr_get_lna_gain(p);
-    }
-
-    if (!p->gain_reduction_mixer) {
-        gain += 19;
-    }
+    mirisdr_gr_get(p, &r);
+    mirisdr_stages_of(p->band, &r, &g);
 
 #if MIRISDR_DEBUG >= 3
-    fprintf(stderr, "mirisdr_get_tuner_gain: %d dB (band: %d)\n", gain, p->band);
+    fprintf(stderr, "mirisdr_get_tuner_gain: %d dB (band: %d)\n", g.total, p->band);
 #endif
-    return gain;
+    return g.total;
 
     gain_auto:
 #if MIRISDR_DEBUG >= 3

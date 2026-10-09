@@ -292,7 +292,23 @@ MIRISDR_API mirisdr_band_t mirisdr_get_band (mirisdr_dev_t *p);         /* extra
 #define MIRISDR_IQ_ONLY_I       1
 #define MIRISDR_IQ_ONLY_Q       2
 
-#define MIRISDR_GAIN_KEEP       (-1)
+/* The gain with a tune. TOTAL is split as mirisdr_set_tuner_gain() does, the front end
+ * first so noise figure and IIP3 stay low, again for each band. Above the band's
+ * maximum is clamped. STAGES sets each stage and keeps them through retunes, as the
+ * single stage setters do. A tune result reports both. */
+#define MIRISDR_GAIN_KEEP       0       /* do not change */
+#define MIRISDR_GAIN_TOTAL      1
+#define MIRISDR_GAIN_STAGES     2
+
+typedef struct mirisdr_gain_config
+{
+	int      mode;          /* MIRISDR_GAIN_* */
+	int      total;         /* dB */
+	int      lna;           /* on or off: 24 dB, 7 in band IV/V, ~4 in L; the AM ports don't have it */
+	int      mixer;         /* on or off: 19 dB */
+	int      mixbuffer;     /* dB, the AM ports only: 0, 6, 12 or 18 on AM1, 0 or 24 on AM2 */
+	int      baseband;      /* dB, 0-59 */
+} mirisdr_gain_config_t;
 
 /* Force specific tuner calibration codes instead of autodetection.
  * A held code is kept across retunes, so clear the holds when adjusting the frequency a lot.
@@ -324,7 +340,7 @@ typedef struct mirisdr_tune_config
 	int32_t  lo_offset;     /* Hz to move the LO by, on top of low_if_auto */
 	int      low_if_auto;   /* low IF: put the LO if_freq above frequency */
 	int      iq;            /* MIRISDR_IQ_*: low IF only, the output not requested is switched off */
-	int      gain;          /* dB as mirisdr_set_tuner_gain(), or MIRISDR_GAIN_KEEP */
+	mirisdr_gain_config_t gain;
 	mirisdr_tuner_override_t override; /* all holds off by default */
 	uint32_t synth_thresh;  /* 0: the LO set to ~1 Hz. 1-4095: the synthesizer's fraction denominator
 	                           fixed at this and no AFC, so the LO lands on a grid of 3 MHz (VHF),
@@ -341,7 +357,7 @@ typedef struct mirisdr_tune_result
 	int      inverted;      /* single output: frequency up is IF down */
 	int      iq;            /* the outputs running, MIRISDR_IQ_* */
 	uint32_t bandwidth;     /* Hz in force */
-	int      gain;          /* dB in force */
+	mirisdr_gain_config_t gain; /* in force: each stage and the total */
 	mirisdr_band_t band;
 } mirisdr_tune_result_t;
 

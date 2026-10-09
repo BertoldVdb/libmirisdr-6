@@ -401,6 +401,7 @@ typedef struct mirisdr_tune_plan
     int ifm, bw, iq;
     uint32_t lo, ovr13, ovr14;
     mirisdr_tune_words_t w;
+    mirisdr_gr_t gr;            /* the gain reductions it ends up with */
 } mirisdr_tune_plan_t;
 
 static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, int flags,
@@ -480,9 +481,10 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
         return -1;
     }
 
-    if ((c->gain < 0) && (c->gain != MIRISDR_GAIN_KEEP))
+    if ((c->gain.mode < MIRISDR_GAIN_KEEP) || (c->gain.mode > MIRISDR_GAIN_STAGES) ||
+        ((c->gain.mode == MIRISDR_GAIN_TOTAL) && (c->gain.total < 0)))
     {
-        fprintf(stderr, "unsupported gain: %d\n", c->gain);
+        fprintf(stderr, "unsupported gain: mode %d, %d dB\n", c->gain.mode, c->gain.total);
         return -1;
     }
 
@@ -499,12 +501,26 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
 
     mirisdr_tune_words(p, pl->lo, c->frequency, pl->ifm, pl->bw, pl->iq, 0, c->synth_thresh, &pl->w);
 
+    /* the gain in that band */
+    if (c->gain.mode == MIRISDR_GAIN_STAGES)
+    {
+        if (mirisdr_gr_of_stages(pl->w.band, &c->gain, &pl->gr) < 0)
+        {
+            fprintf(stderr, "unsupported gain stages for the band: lna %d mixer %d mixbuffer %d baseband %d\n",
+                    c->gain.lna, c->gain.mixer, c->gain.mixbuffer, c->gain.baseband);
+            return -1;
+        }
+    }
+    else if (c->gain.mode == MIRISDR_GAIN_TOTAL) mirisdr_split_of(pl->w.band, c->gain.total, &pl->gr);
+    else if (p->gain_stages_set) mirisdr_gr_get(p, &pl->gr);
+    else mirisdr_split_of(pl->w.band, p->gain, &pl->gr);
+
     return 0;
 }
 
 /* Where the received frequency lands, given what the stream captures */
 static void mirisdr_tune_result_of (int adc, uint32_t rx, uint32_t lo, int iq, uint32_t bw,
-                                    mirisdr_band_t band, int gain, mirisdr_tune_result_t *res)
+                                    mirisdr_band_t band, const mirisdr_gr_t *gr, mirisdr_tune_result_t *res)
 {
     int64_t off = (int64_t) rx - lo;
     int real = (iq != MIRISDR_IQ_BOTH) || (adc != MIRISDR_IQ_BOTH);
@@ -513,7 +529,7 @@ static void mirisdr_tune_result_of (int adc, uint32_t rx, uint32_t lo, int iq, u
     res->iq = iq;
     res->bandwidth = bw;
     res->band = band;
-    res->gain = gain;
+    mirisdr_stages_of(band, gr, &res->gain);
 
     /* a real signal shows only the size of the offset, mirrored when below the LO */
     res->offset = (int32_t) (real && off < 0 ? -off : off);
@@ -560,14 +576,20 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
     p->bandwidth = pl.bw;
     p->tune = pl.cfg;
     p->tune.iq = pl.iq;
-    p->tune.gain = MIRISDR_GAIN_KEEP;   /* the gain lives on in p->gain, which a tune can only replace */
+    p->tune.gain.mode = MIRISDR_GAIN_KEEP;  /* the gain lives on in the stages, which a tune replaces */
     p->tune_lo = pl.w.lo_real;
     p->tune_iq = pl.iq;
 
-    if (c->gain >= 0)
+    if (c->gain.mode == MIRISDR_GAIN_TOTAL)
     {
-        p->gain = c->gain;
+        p->gain = c->gain.total;
         p->gain_stages_set = 0;
+    }
+    else if (c->gain.mode == MIRISDR_GAIN_STAGES)
+    {
+        mirisdr_gr_set(p, &pl.gr);
+        if (p->gain < 0) p->gain = DEFAULT_GAIN;
+        p->gain_stages_set = 1;
     }
 
     mirisdr_gain_retune(p);
@@ -580,8 +602,14 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
         if (streaming && (mirisdr_start_async(p) < 0)) r = -1;
     }
 
-    if (res) mirisdr_tune_result_of(mirisdr_stream_adc(p), c->frequency, p->tune_lo, p->tune_iq,
-                                    pl.cfg.bandwidth, p->band, mirisdr_get_tuner_gain(p), res);
+    if (res)
+    {
+        mirisdr_gr_t gr;
+
+        mirisdr_gr_get(p, &gr);
+        mirisdr_tune_result_of(mirisdr_stream_adc(p), c->frequency, p->tune_lo, p->tune_iq,
+                               pl.cfg.bandwidth, p->band, &gr, res);
+    }
 
     return r;
 }
@@ -621,7 +649,7 @@ void mirisdr_tune_config_default (mirisdr_tune_config_t *cfg)
     memset(cfg, 0, sizeof *cfg);
     cfg->frequency = DEFAULT_FREQ;
     cfg->iq = MIRISDR_IQ_BOTH;
-    cfg->gain = MIRISDR_GAIN_KEEP;
+    cfg->gain.mode = MIRISDR_GAIN_KEEP;
 }
 
 int mirisdr_tune (mirisdr_dev_t *p, int tuner, const mirisdr_tune_config_t *cfg, mirisdr_tune_result_t *res)
@@ -634,27 +662,26 @@ int mirisdr_tune (mirisdr_dev_t *p, int tuner, const mirisdr_tune_config_t *cfg,
 int mirisdr_tune_check (mirisdr_dev_t *p, int tuner, const mirisdr_tune_config_t *cfg, mirisdr_tune_result_t *res)
 {
     mirisdr_tune_plan_t pl;
-    int gain;
 
     if (!p || !cfg || (tuner < 0) || (tuner >= MIRISDR_TUNERS)) return -1;
     if (mirisdr_tune_plan(p, cfg, 0, &pl) < 0) return -1;
 
-    gain = (cfg->gain >= 0) ? cfg->gain : p->gain;
-    if (gain > mirisdr_max_gain_of(pl.w.band)) gain = mirisdr_max_gain_of(pl.w.band);
-
     if (res) mirisdr_tune_result_of(mirisdr_tune_adc(p, pl.iq), cfg->frequency, pl.w.lo_real, pl.iq,
-                                    pl.cfg.bandwidth, pl.w.band, gain, res);
+                                    pl.cfg.bandwidth, pl.w.band, &pl.gr, res);
 
     return 0;
 }
 
 int mirisdr_get_tune (mirisdr_dev_t *p, int tuner, mirisdr_tune_config_t *cfg, mirisdr_tune_result_t *res)
 {
+    mirisdr_gr_t gr;
+
     if (!p || (tuner < 0) || (tuner >= MIRISDR_TUNERS)) return -1;
 
+    mirisdr_gr_get(p, &gr);
     if (cfg) *cfg = p->tune;
     if (res) mirisdr_tune_result_of(mirisdr_stream_adc(p), p->tune.frequency, p->tune_lo, p->tune_iq,
-                                    p->tune.bandwidth, p->band, mirisdr_get_tuner_gain(p), res);
+                                    p->tune.bandwidth, p->band, &gr, res);
 
     return 0;
 }

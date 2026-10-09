@@ -2545,14 +2545,36 @@ static tres_t t_plan_tune (void)
     c.lo_offset = 0;
     c.frequency = 2500000000U;
     plan_tune(n, "2.5 GHz", &c, 0, &r);
-    c.frequency = 1500000000; c.gain = 200;
+    c.frequency = 1500000000; c.gain.mode = MIRISDR_GAIN_TOTAL; c.gain.total = 200;
     plan_tune(n, "1.5 GHz, gain 200", &c, 1, &r);
-    if (r.gain != 82) { plan_bad++; say("L band gain %d, not 82", r.gain); }
+    if (r.gain.total != 82) { plan_bad++; say("L band gain %d, not 82", r.gain.total); }
     c.frequency = 100000000;
     plan_tune(n, "100 MHz, gain 200", &c, 1, &r);
-    if (r.gain != 102) { plan_bad++; say("VHF gain %d, not 102", r.gain); }
-    c.gain = -5;
+    if (r.gain.total != 102) { plan_bad++; say("VHF gain %d, not 102", r.gain.total); }
+    c.gain.total = -5;
     plan_tune(n, "a negative gain", &c, 0, &r);
+
+    /* a total splits front end first, stages are checked against the band */
+    mirisdr_tune_config_default(&c);
+    c.frequency = 100000000; c.gain.mode = MIRISDR_GAIN_TOTAL; c.gain.total = 60;
+    plan_tune(n, "VHF, 60 dB in total", &c, 1, &r);
+    if (r.gain.total != 60 || !r.gain.lna || !r.gain.mixer || r.gain.baseband != 17)
+    { plan_bad++; say("60 dB split to %d: lna %d mixer %d baseband %d", r.gain.total, r.gain.lna, r.gain.mixer, r.gain.baseband); }
+    c.gain.mode = MIRISDR_GAIN_STAGES; c.gain.lna = 0; c.gain.mixer = 1; c.gain.mixbuffer = 0; c.gain.baseband = 30;
+    plan_tune(n, "VHF, stages", &c, 1, &r);
+    if (r.gain.total != 49) { plan_bad++; say("stages without the LNA give %d, not 49", r.gain.total); }
+    c.gain.baseband = 60;
+    plan_tune(n, "baseband 60 dB", &c, 0, &r);
+    c.gain.baseband = 30; c.gain.lna = 2;
+    plan_tune(n, "LNA 2", &c, 0, &r);
+    /* every plan takes HF through AM2: its mixbuffer is 0 or 24 dB */
+    c.gain.lna = 1; c.frequency = 1000000; c.gain.mixbuffer = 12;
+    plan_tune(n, "AM2, mixbuffer 12", &c, 0, &r);
+    c.gain.mixbuffer = 24;
+    plan_tune(n, "AM2, mixbuffer 24", &c, 1, &r);
+    if (r.gain.total != 30 + 19 + 24) { plan_bad++; say("AM2 stages give %d, not 73", r.gain.total); }
+    c.gain.mode = 3;
+    plan_tune(n, "gain mode 3", &c, 0, &r);
 
     /* the LO the synthesizer reaches, across the bands */
     mirisdr_tune_config_default(&c);
@@ -2854,12 +2876,12 @@ static tres_t t_tune_api (void)
     pump_stop();
 
     mirisdr_tune_config_default(&c);
-    c.frequency = 100000000; c.gain = 30;
+    c.frequency = 100000000; c.gain.mode = MIRISDR_GAIN_TOTAL; c.gain.total = 30;
     if (mirisdr_tune(dev, 0, &c, &r) < 0) { say("a plain tune refused"); return T_FAIL; }
     if (mirisdr_get_center_freq(dev) != 100000000 || mirisdr_get_tuner_gain(dev) != 30)
     { say("tuned to %u at %d dB", mirisdr_get_center_freq(dev), mirisdr_get_tuner_gain(dev)); return T_FAIL; }
 
-    c.if_freq = 450000; c.bandwidth = 300000; c.low_if_auto = 1; c.iq = MIRISDR_IQ_ONLY_I; c.gain = MIRISDR_GAIN_KEEP;
+    c.if_freq = 450000; c.bandwidth = 300000; c.low_if_auto = 1; c.iq = MIRISDR_IQ_ONLY_I; c.gain.mode = MIRISDR_GAIN_KEEP;
     if (mirisdr_tune(dev, 0, &c, &r) < 0) { say("a low IF tune refused"); return T_FAIL; }
     if (mirisdr_get_center_freq(dev) != 100450000 || mirisdr_get_if_freq(dev) != 450000 ||
         mirisdr_get_bandwidth(dev) != 300000 || r.iq != MIRISDR_IQ_ONLY_I || r.offset != 450000 || !r.inverted)
@@ -2924,7 +2946,32 @@ static tres_t t_tune_api (void)
     if (mirisdr_tune(dev, 0, &c, NULL) < 0 || mirisdr_set_stream(dev, &s, NULL) < 0)
     { say("could not go back to the defaults"); return T_FAIL; }
 
-    say("tune, low IF auto, single output, holds, refusals leave the state, setters keep the rest");
+    /* stages with the tune, kept through a retune; a total is split again per band */
+    {
+        mirisdr_tune_config_t g;
+
+        mirisdr_tune_config_default(&g);
+        g.frequency = 100000000; g.gain.mode = MIRISDR_GAIN_STAGES; g.gain.mixer = 1; g.gain.baseband = 20;
+        if (mirisdr_tune(dev, 0, &g, &r) < 0) { say("a tune with stages refused"); return T_FAIL; }
+        if (mirisdr_get_lna_gain(dev) != 0 || mirisdr_get_mixer_gain(dev) != 19 || mirisdr_get_baseband_gain(dev) != 20 ||
+            r.gain.total != 39 || mirisdr_get_tuner_gain(dev) != 39)
+        { say("stages: lna %d mixer %d baseband %d, total %d / %d", mirisdr_get_lna_gain(dev), mirisdr_get_mixer_gain(dev),
+              mirisdr_get_baseband_gain(dev), r.gain.total, mirisdr_get_tuner_gain(dev)); return T_FAIL; }
+        g.frequency = 433000000; g.gain.mode = MIRISDR_GAIN_KEEP;
+        if (mirisdr_tune(dev, 0, &g, &r) < 0 || r.gain.lna || r.gain.baseband != 20)
+        { say("stages after a retune: lna %d baseband %d", r.gain.lna, r.gain.baseband); return T_FAIL; }
+        g.gain.mode = MIRISDR_GAIN_TOTAL; g.gain.total = 80;
+        if (mirisdr_tune(dev, 0, &g, &r) < 0 || r.gain.total != 80) { say("80 dB in band IV/V gave %d", r.gain.total); return T_FAIL; }
+        g.frequency = 100000000; g.gain.mode = MIRISDR_GAIN_KEEP;
+        if (mirisdr_tune(dev, 0, &g, &r) < 0 || r.gain.total != 80 || !r.gain.lna)
+        { say("80 dB back in VHF gave %d, lna %d", r.gain.total, r.gain.lna); return T_FAIL; }
+    }
+
+    mirisdr_tune_config_default(&c);
+    c.gain.mode = MIRISDR_GAIN_TOTAL; c.gain.total = 43;    /* the library's default */
+    mirisdr_tune(dev, 0, &c, NULL);
+
+    say("tune, low IF auto, single output, holds, gain stages, refusals leave the state, setters keep the rest");
 
     return T_PASS;
 }
