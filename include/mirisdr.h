@@ -187,7 +187,12 @@ typedef struct mirisdr_buffer_info
 	int      adc;           /* MIRISDR_IQ_BOTH for complex (I/Q pairs),
 	                           MIRISDR_IQ_ONLY_I or _ONLY_Q for real */
 	uint32_t rate;          /* samples per second */
+	int      type;          /* MIRISDR_SAMPLE_* */
 } mirisdr_buffer_info_t;
+
+#define MIRISDR_SAMPLE_S16      0       /* int16, full scale 32768 */
+#define MIRISDR_SAMPLE_S8       1       /* int8, full scale 128 (504_S8) */
+#define MIRISDR_SAMPLE_F32      2       /* float, full scale 1.0 (baseband) */
 
 /* Call from inside the read_async callback only */
 MIRISDR_API int mirisdr_get_buffer_info (mirisdr_dev_t *p, mirisdr_buffer_info_t *info); /* extra */
@@ -210,10 +215,30 @@ MIRISDR_API int mirisdr_set_gap_fill (mirisdr_dev_t *p, int on); /* extra */
  * the tune runs both tuner outputs, format_single on the converter of the one it
  * runs (see mirisdr_tune()). A tune then switches the stream itself, in one restart.
  *
+ * With baseband the callback gets complex float samples (MIRISDR_SAMPLE_F32) with the
+ * tune's frequency at 0 Hz, and rate is that output's rate. At zero IF they are the
+ * samples as they come. With a low IF the LO goes the IF above the frequency (as
+ * low_if_auto) and the converters run at 4 x IF, so the band lies at a quarter of their
+ * rate. Both tuner outputs are then shifted by it, which is a sign swap a sample. A
+ * single output (iq) goes through a real to I/Q converter instead, at half the rate:
+ * half the USB data, with more bits at high rates, for more CPU. The image rejection is
+ * dominated by the tuner (about 37 dB measured). Half-band stages (flat to 0.4 of
+ * their output rate, 61 dB down from 0.6) then halve the rate as often as asked: with
+ * the IF at 450 kHz, 1620 kHz or 2048 kHz, rate is 1.8, 6.48 or 8.192 Msps divided by
+ * a power of 2 up to 256, by 2 at least for one output.
+ * A baseband stream follows the tune as with follow_tune, and a tune that changes the
+ * IF moves the rate to the nearest one that IF has. Buffer infos count in output
+ * samples, their gaps placed to within the filters delay. The stream stats, events,
+ * PPS and scan reports still count the converters' samples, decimation (in the stream
+ * result) of them to an output sample. Gap fill is always on, so the filters see time
+ * pass. swap_iq still mirrors the spectrum with both outputs, as without baseband.
+ * mirisdr_read_sync() does not support baseband output.
+ *
  * Bulk transfers max bandwidth is very host dependent, so only the receiver's own limit
- * (~56 MB/s) is enforced for a fixed format. The automatic choice has to assume a
- * figure: usb_capacity, 24.6 MB/s by default in bulk, or an isochronous mode's
- * reservation.
+ * (~56 MB/s) is enforced there. The automatic choice takes the format with the most
+ * bits that fits a figure: usb_capacity, 32 MB/s by default in bulk, or an isochronous
+ * mode's reservation. In bulk, if above 32MB/s, it takes the densest (8-bit samples,
+ * 768_REAL for a single converter).
  */
 typedef struct mirisdr_stream_config
 {
@@ -227,6 +252,7 @@ typedef struct mirisdr_stream_config
 	const char *format_single;      /* with follow_tune: the real format for one tuner output,
 	                                   NULL for "AUTO_REAL" */
 	uint32_t    usb_capacity;       /* B/s the automatic choice may plan on, 0 for the default */
+	int         baseband;           /* complex float centred on the tune's frequency, see above */
 } mirisdr_stream_config_t;
 
 typedef struct mirisdr_stream_result
@@ -237,7 +263,15 @@ typedef struct mirisdr_stream_result
 	int         decimation_bypassed;
 	uint32_t    usb_bytes;          /* per second */
 	uint32_t    usb_capacity;       /* B/s the automatic choice planned on */
+	int         baseband;           /* MIRISDR_BASEBAND_*: baseband output type */
+	uint32_t    adc_rate;           /* the converters' samples per second */
+	uint32_t    decimation;         /* converter samples per output sample, 1 without baseband */
 } mirisdr_stream_result_t;
+
+#define MIRISDR_BASEBAND_OFF     0      /* raw samples */
+#define MIRISDR_BASEBAND_ZERO_IF 1      /* zero IF, as float */
+#define MIRISDR_BASEBAND_COMPLEX 2      /* low IF, both outputs shifted */
+#define MIRISDR_BASEBAND_REAL    3      /* low IF, one output through the real to I/Q converter */
 
 MIRISDR_API void mirisdr_stream_config_default (mirisdr_stream_config_t *cfg); /* extra */
 MIRISDR_API int mirisdr_set_stream (mirisdr_dev_t *p, const mirisdr_stream_config_t *cfg,
@@ -286,7 +320,7 @@ MIRISDR_API mirisdr_band_t mirisdr_get_band (mirisdr_dev_t *p);         /* extra
  * off the output the stream captures is refused, unless the stream follows the tune
  * (see mirisdr_set_stream()): the tune then switches it, in one restart.
  *
- * mirisdr_get_center_freq() returns the LO, which the result gives too.
+ * mirisdr_get_center_freq() returns the LO.
  * mirisdr_set_center_freq() sets the LO: it clears low_if_auto and lo_offset.
  *
  * tuner is which tuner of the receiver, currently always 0.

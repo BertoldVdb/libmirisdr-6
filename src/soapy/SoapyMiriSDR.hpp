@@ -96,6 +96,9 @@ public:
     void writeSetting(const std::string &key, const std::string &value);
     std::string readSetting(const std::string &key) const;
 
+    /* what a slot's samples are */
+    enum Kind { K_CS16, K_CS8, K_CF32, K_S16 };
+
     /* called from the library's stream thread */
     void rxCallback(unsigned char *buf, uint32_t len);
 
@@ -111,7 +114,8 @@ private:
     {
         std::vector<uint8_t> data;
         size_t   n;         /* samples */
-        int      bytes;     /* per I/Q sample: 2 (S8) or 4 (S16) */
+        int      kind;      /* Kind */
+        int      bytes;     /* a sample takes */
         uint64_t index;     /* of the first sample */
         uint32_t rate;
         bool     dropped;   /* the ring was full before this one */
@@ -133,7 +137,11 @@ private:
     /* settings, applied with each stream or tune */
     mirisdr_stream_config_t streamCfg;
     std::string formatSetting, transferSetting, bypassSetting;
-    uint32_t ifFreq;
+    uint32_t ifFreq;        /* the IF in force */
+    std::string ifMode;     /* "auto": zero IF from rateMin up, a low IF below; or a fixed one */
+    int converters;         /* MIRISDR_IQ_BOTH, _ONLY_I or _ONLY_Q */
+    bool baseband;          /* the band at 0 Hz in complex float, whatever the IF */
+    uint32_t wantRate, wantBw;  /* as asked, wantBw 0 for the widest */
 
     /* ranges found at open */
     double freqMin, freqMax, rateMin, rateMax;
@@ -155,6 +163,9 @@ private:
     uint32_t asyncBuffers;
 
     void applyStream(const mirisdr_stream_config_t &cfg);
+    void configure(uint32_t rate);
+    bool realOut(void) const;
+    std::vector<uint32_t> lowIfRates(uint32_t ifHz) const;
     void applyTune(const mirisdr_tune_config_t &cfg);
     StageRanges stageRanges(void) const;
     std::vector<uint32_t> bandwidthsFor(uint32_t ifHz) const;

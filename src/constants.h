@@ -23,3 +23,6 @@
 
 /* tuners a receiver has, one so far */
 #define MIRISDR_TUNERS          1
+
+/* Hz of each MIRISDR_IF_* mode */
+static const uint32_t mirisdr_if_hz[] = { 0, 450000, 1620000, 2048000 };

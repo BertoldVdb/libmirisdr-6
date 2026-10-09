@@ -21,6 +21,7 @@ static const char *FORMATS[] = { "AUTO", "252_S16", "336_S16", "384_S16", "504_S
 static const char *TRANSFERS[] = { "BULK", "ISOC", "ISOC1", "ISOC2" };
 static const char *BYPASS[] = { "AUTO", "ON", "OFF" };
 static const uint32_t IFS[] = { 0, 450000, 1620000, 2048000 };
+static const char *CONVERTERS[] = { "both", "I", "Q" };
 
 /* every filter the tuner has; which ones an IF takes is asked from the library */
 static const uint32_t BANDWIDTHS[] = { 200000, 300000, 600000, 1536000, 5000000, 6000000,
@@ -32,7 +33,8 @@ static bool isTrue(const std::string &v)
 }
 
 SoapyMiriSDR::SoapyMiriSDR(const SoapySDR::Kwargs &args):
-    dev(nullptr), flavour(MIRISDR_HW_DEFAULT), ifFreq(0),
+    dev(nullptr), flavour(MIRISDR_HW_DEFAULT), ifFreq(0), ifMode("auto"), converters(MIRISDR_IQ_BOTH),
+    baseband(true), wantRate(2048000), wantBw(0),
     freqMin(0), freqMax(0), rateMin(0), rateMax(0),
     stopping(false), rxDone(true), rxResult(0), outFormat(0),
     ringHead(0), ringTail(0), ringCount(0), dropPending(false), slotPos(0), gapPos(0),
@@ -51,9 +53,17 @@ SoapyMiriSDR::SoapyMiriSDR(const SoapySDR::Kwargs &args):
     flavour = mirisdr_get_hw_flavour(dev);
     if (mirisdr_get_usb_strings(dev, manufact, product, ser) == 0) serial = ser;
 
-    /* the library's defaults, the widest filter and a known gain */
+    /* the IF settings may come with the device, for programs that only take a string */
+    if (args.count("if_freq")) ifMode = args.at("if_freq");
+    if (args.count("converters"))
+        converters = args.at("converters") == "I" ? MIRISDR_IQ_ONLY_I :
+                     args.at("converters") == "Q" ? MIRISDR_IQ_ONLY_Q : MIRISDR_IQ_BOTH;
+    if (args.count("baseband")) baseband = isTrue(args.at("baseband"));
+
+    /* the library's defaults, the widest filter and a known gain, the ranges at zero IF */
     mirisdr_get_stream(dev, &streamCfg, NULL);
     streamCfg.rate = 2048000;
+    streamCfg.baseband = 0;
     applyStream(streamCfg);
 
     mirisdr_get_tune(dev, 0, &tc, NULL);
@@ -65,6 +75,7 @@ SoapyMiriSDR::SoapyMiriSDR(const SoapySDR::Kwargs &args):
     applyTune(tc);
 
     probeRanges();
+    configure(wantRate);
 
     SoapySDR_logf(SOAPY_SDR_INFO, "mirisdr: opened %s", serial.c_str());
 }
@@ -88,7 +99,8 @@ void SoapyMiriSDR::applyStream(const mirisdr_stream_config_t &cfg)
     c.format = formatSetting.empty() ? NULL : formatSetting.c_str();
     c.transfer = transferSetting.empty() ? NULL : transferSetting.c_str();
     c.decimation_bypass = bypassSetting.empty() ? NULL : bypassSetting.c_str();
-    c.follow_tune = 0;
+    /* raw, a single converter gives real samples */
+    c.follow_tune = !c.baseband;
 
     if (mirisdr_set_stream(dev, &c, NULL) < 0)
     {
@@ -136,6 +148,8 @@ void SoapyMiriSDR::probeRanges(void)
     freqMax = lo;
 
     mirisdr_get_stream(dev, &sc, NULL);
+    sc.baseband = 0;
+    sc.follow_tune = 0;
     lo = 1; hi = 4e6;
     for (i = 0; i < 40; i++)
     {
@@ -152,6 +166,82 @@ void SoapyMiriSDR::probeRanges(void)
         if (mirisdr_stream_check(dev, &sc, NULL) == 0) lo = mid; else hi = mid;
     }
     rateMax = lo;
+}
+
+/*******************************************************************
+ * The IF and the rate. Baseband (the default) delivers the band at 0 Hz
+ * whatever the IF. "auto" keeps zero IF from rateMin up, as without
+ * baseband, and below it takes the low IF rate nearest to the one asked.
+ * A fixed low IF has its own rates: the converters at 4 x IF, divided
+ * by a power of 2, by 2 at least for a single converter
+ ******************************************************************/
+
+std::vector<uint32_t> SoapyMiriSDR::lowIfRates(uint32_t ifHz) const
+{
+    std::vector<uint32_t> rates;
+    int one = converters != MIRISDR_IQ_BOTH, k;
+    uint64_t base = (uint64_t) 4 * ifHz / (one ? 2 : 1);
+
+    for (k = 0; k <= 8 - one && !(base % ((uint64_t) 1 << k)); k++) rates.push_back((uint32_t) (base >> k));
+    return rates;
+}
+
+bool SoapyMiriSDR::realOut(void) const
+{
+    return !baseband && ifFreq && converters != MIRISDR_IQ_BOTH;
+}
+
+static double ratio(double a, double b)
+{
+    return a > b ? a / b : b / a;
+}
+
+void SoapyMiriSDR::configure(uint32_t rate)
+{
+    std::lock_guard<std::recursive_mutex> lock(devMutex);
+    mirisdr_tune_config_t tc;
+    mirisdr_stream_config_t c = streamCfg;
+    uint32_t ifHz = 0, out = rate, pick = 0;
+    double best = 0;
+
+    if (ifMode != "auto") ifHz = (uint32_t) std::stoul(ifMode);
+
+    if (baseband && ifMode == "auto" && rate < rateMin)
+    {
+        /* below the converters own minimum only a low IF gets there */
+        for (uint32_t f : IFS)
+            for (uint32_t r : lowIfRates(f))
+                if (f && r < rateMin && (!pick || ratio(r, rate) < best)) { pick = r; best = ratio(r, rate); ifHz = f; }
+        out = pick;
+    }
+    else if (baseband && ifHz)
+    {
+        for (uint32_t r : lowIfRates(ifHz))
+            if (!pick || ratio(r, rate) < best) { pick = r; best = ratio(r, rate); }
+        out = pick;
+    }
+
+    /* the tune: the IF, one converter or both, the filter nearest to what was asked */
+    mirisdr_get_tune(dev, 0, &tc, NULL);
+    tc.if_freq = ifHz;
+    tc.iq = ifHz ? converters : MIRISDR_IQ_BOTH;
+    tc.low_if_auto = 0;
+    tc.lo_offset = 0;
+    tc.bandwidth = 0;
+    for (uint32_t b : bandwidthsFor(ifHz))
+        if (wantBw && b >= wantBw) { tc.bandwidth = b; break; }
+    tc.gain.mode = MIRISDR_GAIN_KEEP;
+    if (mirisdr_tune(dev, 0, &tc, NULL) < 0)
+    {
+        SoapySDR_logf(SOAPY_SDR_ERROR, "mirisdr: IF %u refused", ifHz);
+        return;
+    }
+    ifFreq = ifHz;
+
+    c.rate = out;
+    c.baseband = baseband;
+    applyStream(c);
+    if (out != rate) SoapySDR_logf(SOAPY_SDR_INFO, "mirisdr: %u S/s, the nearest to %u with a %u Hz IF", out, rate, ifHz);
 }
 
 /*******************************************************************
@@ -406,8 +496,11 @@ double SoapyMiriSDR::getFrequency(const int direction, const size_t channel, con
     std::lock_guard<std::recursive_mutex> lock(devMutex);
     mirisdr_tune_result_t r;
 
-    if (name != "RF" || mirisdr_get_tune(dev, 0, NULL, &r) < 0) return 0;
-    return r.lo;
+    mirisdr_tune_config_t c;
+
+    if (name != "RF" || mirisdr_get_tune(dev, 0, &c, &r) < 0) return 0;
+    /* baseband: the band asked for is the centre; raw, the LO is */
+    return baseband ? c.frequency : r.lo;
 }
 
 std::vector<std::string> SoapyMiriSDR::listFrequencies(const int direction, const size_t channel) const
@@ -433,10 +526,9 @@ SoapySDR::RangeList SoapyMiriSDR::getFrequencyRange(const int direction, const s
 void SoapyMiriSDR::setSampleRate(const int direction, const size_t channel, const double rate)
 {
     std::lock_guard<std::recursive_mutex> lock(devMutex);
-    mirisdr_stream_config_t c = streamCfg;
 
-    c.rate = (uint32_t) std::llround(rate);
-    applyStream(c);
+    wantRate = (uint32_t) std::llround(rate);
+    configure(wantRate);
 }
 
 double SoapyMiriSDR::getSampleRate(const int direction, const size_t channel) const
@@ -448,20 +540,45 @@ double SoapyMiriSDR::getSampleRate(const int direction, const size_t channel) co
     return r.rate;
 }
 
+/* the low IF rates a setting allows: below rateMin with "auto", all of a fixed IF's */
+static void addLowIf(std::vector<double> &v, const std::vector<uint32_t> &rates, double below)
+{
+    for (uint32_t r : rates)
+        if (r < below && r >= 25000 && std::find(v.begin(), v.end(), (double) r) == v.end()) v.push_back(r);
+}
+
 std::vector<double> SoapyMiriSDR::listSampleRates(const int direction, const size_t channel) const
 {
-    static const double common[] = { 1e6, 1.536e6, 2e6, 2.048e6, 2.4e6, 3e6, 4e6, 5e6, 6e6, 7e6,
+    static const double common[] = { 1.536e6, 2e6, 2.048e6, 2.4e6, 3e6, 4e6, 5e6, 6e6, 7e6,
                                      8e6, 9e6, 10e6, 12e6, 14e6 };
     std::vector<double> rates;
+    uint32_t fixed = ifMode == "auto" ? 0 : (uint32_t) std::stoul(ifMode);
 
-    for (double r : common)
-        if (r >= rateMin && r <= rateMax) rates.push_back(r);
+    if (baseband && fixed) addLowIf(rates, lowIfRates(fixed), 1e12);
+    else
+    {
+        if (baseband)
+            for (uint32_t f : IFS) if (f) addLowIf(rates, lowIfRates(f), rateMin);
+        for (double r : common)
+            if (r >= rateMin && r <= rateMax) rates.push_back(r);
+    }
+    std::sort(rates.begin(), rates.end());
     return rates;
 }
 
 SoapySDR::RangeList SoapyMiriSDR::getSampleRateRange(const int direction, const size_t channel) const
 {
-    return { SoapySDR::Range(rateMin, rateMax) };
+    SoapySDR::RangeList out;
+    std::vector<double> low;
+    uint32_t fixed = ifMode == "auto" ? 0 : (uint32_t) std::stoul(ifMode);
+
+    if (baseband && fixed) addLowIf(low, lowIfRates(fixed), 1e12);
+    else if (baseband)
+        for (uint32_t f : IFS) if (f) addLowIf(low, lowIfRates(f), rateMin);
+    std::sort(low.begin(), low.end());
+    for (double r : low) out.push_back(SoapySDR::Range(r, r));
+    if (!(baseband && fixed)) out.push_back(SoapySDR::Range(rateMin, rateMax));
+    return out;
 }
 
 std::vector<uint32_t> SoapyMiriSDR::bandwidthsFor(uint32_t ifHz) const
@@ -489,8 +606,10 @@ void SoapyMiriSDR::setBandwidth(const int direction, const size_t channel, const
     mirisdr_tune_config_t tc;
     uint32_t pick = 0;
 
+    /* remembered, so a change of IF takes the nearest it has */
+    wantBw = bw > 0 ? (uint32_t) bw : 0;
     for (uint32_t b : bws)
-        if (bw > 0 && b >= bw) { pick = b; break; }
+        if (wantBw && b >= wantBw) { pick = b; break; }
 
     mirisdr_get_tune(dev, 0, &tc, NULL);
     tc.bandwidth = pick;
@@ -535,11 +654,32 @@ SoapySDR::ArgInfoList SoapyMiriSDR::getSettingInfo(void) const
     a = SoapySDR::ArgInfo();
     a.key = "if_freq";
     a.name = "IF";
-    a.description = "Tuner IF in Hz. With a low IF the band received lies this far below the centre.";
+    a.description = "Tuner IF in Hz. auto: zero IF from 1.3 Msps up, a low IF below. A low IF has its own "
+                    "sample rates and filters.";
     a.type = SoapySDR::ArgInfo::STRING;
-    a.value = "0";
+    a.value = "auto";
+    a.options.push_back("auto");
     for (uint32_t f : IFS) a.options.push_back(std::to_string(f));
-    a.optionNames = { "Zero IF", "450 kHz", "1620 kHz", "2048 kHz" };
+    a.optionNames = { "Auto", "Zero IF", "450 kHz", "1620 kHz", "2048 kHz" };
+    list.push_back(a);
+
+    a = SoapySDR::ArgInfo();
+    a.key = "converters";
+    a.name = "Converters";
+    a.description = "With a low IF: both, or one (I or Q), which halves the USB data and keeps more bits "
+                    "at high rates, using more CPU.";
+    a.type = SoapySDR::ArgInfo::STRING;
+    a.value = "both";
+    for (const char *c : CONVERTERS) a.options.push_back(c);
+    list.push_back(a);
+
+    a = SoapySDR::ArgInfo();
+    a.key = "baseband";
+    a.name = "Baseband";
+    a.description = "The frequency set at the centre of the stream at any IF. Off: the stream "
+                    "unmodified, the LO at the centre, real samples from a single converter.";
+    a.type = SoapySDR::ArgInfo::BOOL;
+    a.value = "true";
     list.push_back(a);
 
     a = SoapySDR::ArgInfo();
@@ -615,15 +755,24 @@ void SoapyMiriSDR::writeSetting(const std::string &key, const std::string &value
 
     if (key == "if_freq")
     {
-        uint32_t f = (uint32_t) std::stoul(value);
-
-        mirisdr_get_tune(dev, 0, &tc, NULL);
-        tc.if_freq = f;
-        tc.bandwidth = 0;
-        tc.gain.mode = MIRISDR_GAIN_KEEP;
-        if (mirisdr_tune(dev, 0, &tc, NULL) < 0)
-            SoapySDR_logf(SOAPY_SDR_ERROR, "mirisdr: IF %s refused", value.c_str());
-        else ifFreq = f;
+        if (value != "auto" && std::find(std::begin(IFS), std::end(IFS), (uint32_t) std::strtoul(value.c_str(), NULL, 10))
+                               == std::end(IFS))
+        {
+            SoapySDR_logf(SOAPY_SDR_ERROR, "mirisdr: no IF %s", value.c_str());
+            return;
+        }
+        ifMode = value;
+        configure(wantRate);
+    }
+    else if (key == "converters")
+    {
+        converters = value == "I" ? MIRISDR_IQ_ONLY_I : value == "Q" ? MIRISDR_IQ_ONLY_Q : MIRISDR_IQ_BOTH;
+        configure(wantRate);
+    }
+    else if (key == "baseband")
+    {
+        baseband = isTrue(value);
+        configure(wantRate);
     }
     else if (key == "format" || key == "transfer" || key == "decimation_bypass")
     {
@@ -641,6 +790,7 @@ void SoapyMiriSDR::writeSetting(const std::string &key, const std::string &value
 
         /* the rates a format and transfer reach differ */
         probeRanges();
+        configure(wantRate);
     }
     else if (key == "gap_fill")
     {
@@ -672,7 +822,9 @@ std::string SoapyMiriSDR::readSetting(const std::string &key) const
     mirisdr_stream_config_t c;
     int n;
 
-    if (key == "if_freq") return std::to_string(ifFreq);
+    if (key == "if_freq") return ifMode;
+    if (key == "converters") return converters == MIRISDR_IQ_ONLY_I ? "I" : converters == MIRISDR_IQ_ONLY_Q ? "Q" : "both";
+    if (key == "baseband") return baseband ? "true" : "false";
     if (key == "format") return formatSetting.empty() ? "AUTO" : formatSetting;
     if (key == "transfer")
     {

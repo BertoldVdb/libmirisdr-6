@@ -69,11 +69,20 @@ static int probe(Dev *d, soapy_say_t say, soapy_say_t note)
     if (d->getDriverKey() != "mirisdr") { say("driver %s", d->getDriverKey().c_str()); bad++; }
     if (d->getNumChannels(SOAPY_SDR_RX) != 1 || d->getNumChannels(SOAPY_SDR_TX) != 0) { say("channels wrong"); bad++; }
     if (!has(f, SOAPY_SDR_CS16) || !has(f, SOAPY_SDR_CF32) || !has(f, SOAPY_SDR_CS8)) { say("formats missing"); bad++; }
-    if (d->getNativeStreamFormat(SOAPY_SDR_RX, 0, full) != SOAPY_SDR_CS16 || full != 32768) { say("native format wrong"); bad++; }
+    if (d->getNativeStreamFormat(SOAPY_SDR_RX, 0, full) != SOAPY_SDR_CF32 || full != 1.0) { say("native format not CF32 in baseband"); bad++; }
     if (fr.empty() || fr[0].minimum() > 1e6 || fr[0].maximum() < 2e9) { say("frequency range wrong"); bad++; }
-    if (rr.empty() || rr[0].minimum() > 2e6 || rr[0].maximum() < 8e6) { say("rate range wrong"); bad++; }
-    note("frequency %.3f-%.0f MHz, rate %.2f-%.2f Msps", fr[0].minimum() / 1e6, fr[0].maximum() / 1e6,
-         rr[0].minimum() / 1e6, rr[0].maximum() / 1e6);
+    /* the low IF rates below the zero IF range, which comes last */
+    if (rr.size() < 2 || rr.back().minimum() > 2e6 || rr.back().maximum() < 8e6) { say("rate range wrong"); bad++; }
+    else {
+        bool has900 = false, has256 = false;
+        for (auto &r : rr) {
+            if (r.minimum() == 900000 && r.maximum() == 900000) has900 = true;
+            if (r.minimum() == 256000 && r.maximum() == 256000) has256 = true;
+        }
+        if (!has900 || !has256) { say("no low IF rates 900k and 256k listed"); bad++; }
+        note("frequency %.3f-%.0f MHz, %zu low IF rates from %.0f sps, then %.2f-%.2f Msps", fr[0].minimum() / 1e6,
+             fr[0].maximum() / 1e6, rr.size() - 1, rr[0].minimum(), rr.back().minimum() / 1e6, rr.back().maximum() / 1e6);
+    }
 
     g = d->listGains(SOAPY_SDR_RX, 0);
     if (g.size() != 4 || !has(g, "LNA") || !has(g, "MIX") || !has(g, "MIXBUF") || !has(g, "BB")) { say("gain stages wrong"); bad++; }
@@ -111,23 +120,55 @@ static int probe(Dev *d, soapy_say_t say, soapy_say_t note)
     d->writeSetting("if_freq", "450000");
     bw = d->listBandwidths(SOAPY_SDR_RX, 0);
     if (bw.size() != 3 || bw[0] != 200e3 || bw[2] != 600e3) { say("low IF filters wrong"); bad++; }
-    d->writeSetting("if_freq", "0");
+    d->writeSetting("if_freq", "auto");
 
     /* refused: logged, and the rate stays */
     d->setSampleRate(SOAPY_SDR_RX, 0, 2e6);
     d->setSampleRate(SOAPY_SDR_RX, 0, 100e6);
     if (d->getSampleRate(SOAPY_SDR_RX, 0) != 2e6) { say("a refused rate changed it"); bad++; }
 
-    if (!bad) say("ranges, gain stages per band, filters per IF, refusals keep the state");
+    /* a low rate takes a low IF, the frequency still the centre */
+    d->setFrequency(SOAPY_SDR_RX, 0, 433.5e6);
+    d->setSampleRate(SOAPY_SDR_RX, 0, 900000);
+    bw = d->listBandwidths(SOAPY_SDR_RX, 0);
+    if (d->getSampleRate(SOAPY_SDR_RX, 0) != 900000 || d->getFrequency(SOAPY_SDR_RX, 0) != 433.5e6 || bw.back() != 600e3)
+    { say("900 ksps: %.0f sps at %.0f Hz, widest filter %.0f", d->getSampleRate(SOAPY_SDR_RX, 0),
+          d->getFrequency(SOAPY_SDR_RX, 0), bw.back()); bad++; }
+    d->setSampleRate(SOAPY_SDR_RX, 0, 250000);
+    if (d->getSampleRate(SOAPY_SDR_RX, 0) != 256000) { say("250 ksps gave %.0f, not 256000", d->getSampleRate(SOAPY_SDR_RX, 0)); bad++; }
+
+    /* a fixed IF has its own rates; one converter halves the top one */
+    d->writeSetting("if_freq", "2048000");
+    d->setSampleRate(SOAPY_SDR_RX, 0, 8192000);
+    if (d->getSampleRate(SOAPY_SDR_RX, 0) != 8192000) { say("both converters at 2048 kHz: %.0f", d->getSampleRate(SOAPY_SDR_RX, 0)); bad++; }
+    d->writeSetting("converters", "I");
+    if (d->getSampleRate(SOAPY_SDR_RX, 0) != 4096000) { say("one converter at 2048 kHz: %.0f", d->getSampleRate(SOAPY_SDR_RX, 0)); bad++; }
+
+    /* raw: one converter gives real samples, the LO at the centre */
+    d->writeSetting("baseband", "false");
+    f = d->getStreamFormats(SOAPY_SDR_RX, 0);
+    if (d->getNativeStreamFormat(SOAPY_SDR_RX, 0, full) != SOAPY_SDR_S16 || !has(f, SOAPY_SDR_F32) || has(f, SOAPY_SDR_CF32) ||
+        d->getFrequency(SOAPY_SDR_RX, 0) != 433.5e6)
+    { say("raw with one converter: native %s, LO %.0f", d->getNativeStreamFormat(SOAPY_SDR_RX, 0, full).c_str(),
+          d->getFrequency(SOAPY_SDR_RX, 0)); bad++; }
+    d->writeSetting("converters", "both");
+    d->writeSetting("if_freq", "auto");
+    if (d->getNativeStreamFormat(SOAPY_SDR_RX, 0, full) != SOAPY_SDR_CS16 || full != 32768) { say("raw native not CS16"); bad++; }
+    d->writeSetting("baseband", "true");
+    d->setSampleRate(SOAPY_SDR_RX, 0, 2e6);
+
+    if (!bad) say("ranges, gain stages, filters, a low IF below 1.3 Msps, fixed IFs, one converter, raw");
     return bad ? SOAPY_T_FAIL : SOAPY_T_PASS;
 }
 
 /* each format at 2 Msps, and 8 Msps over 8 bit USB samples: rate, time stamps, data */
 static int stream(Dev *d, soapy_say_t say, soapy_say_t note)
 {
-    struct Case { const char *fmt; double rate; const char *usb; };
-    const Case cases[] = { { SOAPY_SDR_CS16, 2e6, "AUTO" }, { SOAPY_SDR_CF32, 2e6, "AUTO" },
-                           { SOAPY_SDR_CS8, 2e6, "AUTO" }, { SOAPY_SDR_CS16, 8e6, "504_S8" } };
+    struct Case { const char *fmt; double rate; const char *usb; const char *conv; };
+    const Case cases[] = { { SOAPY_SDR_CS16, 2e6, "AUTO", "both" }, { SOAPY_SDR_CF32, 2e6, "AUTO", "both" },
+                           { SOAPY_SDR_CS8, 2e6, "AUTO", "both" }, { SOAPY_SDR_CS16, 8e6, "504_S8", "both" },
+                           { SOAPY_SDR_CF32, 900000, "AUTO", "both" }, { SOAPY_SDR_CS16, 256000, "AUTO", "both" },
+                           { SOAPY_SDR_CF32, 1024000, "AUTO", "I" } };
     int bad = 0;
 
     d->setFrequency(SOAPY_SDR_RX, 0, 100e6);
@@ -136,6 +177,7 @@ static int stream(Dev *d, soapy_say_t say, soapy_say_t note)
     for (const Case &c : cases)
     {
         d->writeSetting("format", c.usb);
+        d->writeSetting("converters", c.conv);
         d->setSampleRate(SOAPY_SDR_RX, 0, c.rate);
 
         SoapySDR::Stream *s = d->setupStream(SOAPY_SDR_RX, c.fmt);
@@ -174,8 +216,8 @@ static int stream(Dev *d, soapy_say_t say, soapy_say_t note)
         d->closeStream(s);
 
         double sps = total / dt, rms = std::sqrt(sum / (total / 32.0 + 1));
-        note("%s at %.0f Msps over %s: %.0f sps, rms %.4f, %lld overflows, %lld time jumps",
-             c.fmt, c.rate / 1e6, c.usb, sps, rms, ovf, jumps);
+        note("%s at %.3f Msps over %s, %s converters: %.0f sps, rms %.4f, %lld overflows, %lld time jumps",
+             c.fmt, c.rate / 1e6, c.usb, c.conv, sps, rms, ovf, jumps);
         if (err || ovf || jumps || notime || std::fabs(sps / c.rate - 1) > 0.05 || rms < 1e-4)
         {
             say("%s at %.0f Msps: %.0f sps, rms %.5f, %lld overflows, %lld jumps, error %lld",
@@ -184,8 +226,10 @@ static int stream(Dev *d, soapy_say_t say, soapy_say_t note)
         }
     }
     d->writeSetting("format", "AUTO");
+    d->writeSetting("converters", "both");
 
-    if (!bad) say("CS16, CF32, CS8 at 2 Msps and 8 Msps over 8 bit USB: full rate, time stamps continuous");
+    if (!bad) say("CS16, CF32, CS8 at 2 and 8 Msps, low IF at 900k, 256k and one converter at 1024k: full rate, "
+                  "time stamps continuous");
     return bad ? SOAPY_T_FAIL : SOAPY_T_PASS;
 }
 
@@ -216,8 +260,8 @@ static int cycles(Dev *d, soapy_say_t say, soapy_say_t note)
     return slow ? SOAPY_T_FAIL : SOAPY_T_PASS;
 }
 
-/* retunes while streaming: no overflow, time stamps continuous; then rate changes:
- * the stream restarts and still flows at the new rate */
+/* retunes while streaming: no overflow, time stamps continuous; then rate changes
+ * between zero IF and low IF ones: the stream restarts and flows at the last rate */
 static int retune(Dev *d, soapy_say_t say, soapy_say_t note)
 {
     double t0, last = 0, rate;
@@ -252,7 +296,9 @@ static int retune(Dev *d, soapy_say_t say, soapy_say_t note)
                 if (!phase) { d->setFrequency(SOAPY_SDR_RX, 0, 90e6 + (tunes % 20) * 1e6); tunes++; }
                 else if ((ticks++ % 4) == 0)
                 {
-                    d->setSampleRate(SOAPY_SDR_RX, 0, (rates % 2) ? 2e6 : 8e6);
+                    /* through zero IF and low IF rates, which switch the IF while streaming */
+                    static const double cyc[] = { 8e6, 900000, 2e6, 256000 };
+                    d->setSampleRate(SOAPY_SDR_RX, 0, cyc[rates % 4]);
                     rates++;
                     next = -1;
                 }

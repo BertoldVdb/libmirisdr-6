@@ -21,19 +21,31 @@
 #include <cstring>
 #include <stdexcept>
 
+#include <algorithm>
+#include <cmath>
+
 #define OUT_CS16 0
 #define OUT_CF32 1
 #define OUT_CS8  2
+#define OUT_S16  3      /* real, a single converter without baseband */
+#define OUT_F32  4
 
+/* complex, or real when one converter runs without baseband */
 std::vector<std::string> SoapyMiriSDR::getStreamFormats(const int direction, const size_t channel) const
 {
-    return { SOAPY_SDR_CS16, SOAPY_SDR_CF32, SOAPY_SDR_CS8 };
+    if (realOut()) return { SOAPY_SDR_S16, SOAPY_SDR_F32 };
+    return { SOAPY_SDR_CF32, SOAPY_SDR_CS16, SOAPY_SDR_CS8 };
 }
 
 std::string SoapyMiriSDR::getNativeStreamFormat(const int direction, const size_t channel, double &fullScale) const
 {
+    if (baseband)
+    {
+        fullScale = 1.0;
+        return SOAPY_SDR_CF32;
+    }
     fullScale = 32768;
-    return SOAPY_SDR_CS16;
+    return realOut() ? SOAPY_SDR_S16 : SOAPY_SDR_CS16;
 }
 
 SoapySDR::ArgInfoList SoapyMiriSDR::getStreamArgsInfo(const int direction, const size_t channel) const
@@ -72,7 +84,10 @@ SoapySDR::Stream *SoapyMiriSDR::setupStream(const int direction, const std::stri
     if (format == SOAPY_SDR_CS16) outFormat = OUT_CS16;
     else if (format == SOAPY_SDR_CF32) outFormat = OUT_CF32;
     else if (format == SOAPY_SDR_CS8) outFormat = OUT_CS8;
-    else throw std::runtime_error("mirisdr: format " + format + " not supported, use CS16, CF32 or CS8");
+    else if (format == SOAPY_SDR_S16) outFormat = OUT_S16;
+    else if (format == SOAPY_SDR_F32) outFormat = OUT_F32;
+    else throw std::runtime_error("mirisdr: format " + format + " not supported, use CF32, CS16 or CS8 (S16 or F32 "
+                                  "real, from one converter without baseband)");
 
     if (args.count("buffers")) slots = std::max(4, std::stoi(args.at("buffers")));
     asyncBuffers = args.count("transfers") ? (uint32_t) std::max(0, std::stoi(args.at("transfers"))) : 0;
@@ -87,6 +102,66 @@ void SoapyMiriSDR::closeStream(SoapySDR::Stream *stream)
 {
     deactivateStream(stream, 0, 0);
     ring.clear();
+}
+
+static inline int16_t clip16(float v)
+{
+    v = v * 32768.0f;
+    return (int16_t) (v >= 32767.0f ? 32767 : v <= -32768.0f ? -32768 : std::lrint(v));
+}
+
+static inline int8_t clip8(float v)
+{
+    v = v * 128.0f;
+    return (int8_t) (v >= 127.0f ? 127 : v <= -128.0f ? -128 : std::lrint(v));
+}
+
+/* n samples of a slot's kind into the stream format. A slot of the other kind (real
+   or complex) than the format, after a setting changed the stream, gives zeros for
+   the part it has not */
+static void convert(int kind, const uint8_t *src, int out, void *dst, size_t n)
+{
+    size_t k;
+
+    switch (kind)
+    {
+    case SoapyMiriSDR::K_CF32: {
+        const float *in = (const float *) src;
+        if (out == OUT_CF32) std::memcpy(dst, in, n * 8);
+        else if (out == OUT_CS16) for (k = 0; k < 2 * n; k++) ((int16_t *) dst)[k] = clip16(in[k]);
+        else if (out == OUT_CS8) for (k = 0; k < 2 * n; k++) ((int8_t *) dst)[k] = clip8(in[k]);
+        else if (out == OUT_S16) for (k = 0; k < n; k++) ((int16_t *) dst)[k] = clip16(in[2 * k]);
+        else for (k = 0; k < n; k++) ((float *) dst)[k] = in[2 * k];
+        break;
+    }
+    case SoapyMiriSDR::K_CS16: {
+        const int16_t *in = (const int16_t *) src;
+        if (out == OUT_CS16) std::memcpy(dst, in, n * 4);
+        else if (out == OUT_CF32) for (k = 0; k < 2 * n; k++) ((float *) dst)[k] = in[k] * (1.0f / 32768.0f);
+        else if (out == OUT_CS8) for (k = 0; k < 2 * n; k++) ((int8_t *) dst)[k] = (int8_t) (in[k] >> 8);
+        else if (out == OUT_S16) for (k = 0; k < n; k++) ((int16_t *) dst)[k] = in[2 * k];
+        else for (k = 0; k < n; k++) ((float *) dst)[k] = in[2 * k] * (1.0f / 32768.0f);
+        break;
+    }
+    case SoapyMiriSDR::K_CS8: {
+        const int8_t *in = (const int8_t *) src;
+        if (out == OUT_CS8) std::memcpy(dst, in, n * 2);
+        else if (out == OUT_CF32) for (k = 0; k < 2 * n; k++) ((float *) dst)[k] = in[k] * (1.0f / 128.0f);
+        else if (out == OUT_CS16) for (k = 0; k < 2 * n; k++) ((int16_t *) dst)[k] = (int16_t) (in[k] * 256);
+        else if (out == OUT_S16) for (k = 0; k < n; k++) ((int16_t *) dst)[k] = (int16_t) (in[2 * k] * 256);
+        else for (k = 0; k < n; k++) ((float *) dst)[k] = in[2 * k] * (1.0f / 128.0f);
+        break;
+    }
+    default: {
+        const int16_t *in = (const int16_t *) src;
+        if (out == OUT_S16) std::memcpy(dst, in, n * 2);
+        else if (out == OUT_F32) for (k = 0; k < n; k++) ((float *) dst)[k] = in[k] * (1.0f / 32768.0f);
+        else if (out == OUT_CF32) for (k = 0; k < n; k++) { ((float *) dst)[2 * k] = in[k] * (1.0f / 32768.0f); ((float *) dst)[2 * k + 1] = 0; }
+        else if (out == OUT_CS16) for (k = 0; k < n; k++) { ((int16_t *) dst)[2 * k] = in[k]; ((int16_t *) dst)[2 * k + 1] = 0; }
+        else for (k = 0; k < n; k++) { ((int8_t *) dst)[2 * k] = (int8_t) (in[k] >> 8); ((int8_t *) dst)[2 * k + 1] = 0; }
+        break;
+    }
+    }
 }
 
 /* a typical buffer from the library: one transfer of up to 24 blocks */
@@ -145,9 +220,8 @@ int SoapyMiriSDR::deactivateStream(SoapySDR::Stream *stream, const int flags, co
 void SoapyMiriSDR::rxCallback(unsigned char *buf, uint32_t len)
 {
     mirisdr_buffer_info_t info;
-    const char *fmt;
     uint32_t i;
-    int bytes;
+    int bytes, kind;
 
     if (stopping)
     {
@@ -155,10 +229,13 @@ void SoapyMiriSDR::rxCallback(unsigned char *buf, uint32_t len)
         return;
     }
 
-    if (mirisdr_get_buffer_info(dev, &info) < 0 || info.adc != MIRISDR_IQ_BOTH) return;
+    if (mirisdr_get_buffer_info(dev, &info) < 0) return;
 
-    fmt = mirisdr_get_sample_format_selected(dev);
-    bytes = (fmt && strstr(fmt, "S8")) ? 2 : 4;
+    /* what the library hands over: baseband float, or as it comes */
+    if (info.type == MIRISDR_SAMPLE_F32) { kind = K_CF32; bytes = 8; }
+    else if (info.adc != MIRISDR_IQ_BOTH) { kind = K_S16; bytes = 2; }
+    else if (info.type == MIRISDR_SAMPLE_S8) { kind = K_CS8; bytes = 2; }
+    else { kind = K_CS16; bytes = 4; }
 
     {
         std::lock_guard<std::mutex> rl(ringMutex);
@@ -172,6 +249,7 @@ void SoapyMiriSDR::rxCallback(unsigned char *buf, uint32_t len)
         Slot &s = ring[ringTail];
         s.data.assign(buf, buf + len);
         s.n = len / bytes;
+        s.kind = kind;
         s.bytes = bytes;
         s.index = info.index;
         s.rate = info.rate;
@@ -250,39 +328,7 @@ int SoapyMiriSDR::readStream(SoapySDR::Stream *stream, void * const *buffs, cons
     lastIndex = (long long) (index + n);
     lastRate = s.rate;
 
-    const uint8_t *src = s.data.data() + slotPos * s.bytes;
-    if (s.bytes == 4)
-    {
-        const int16_t *in = (const int16_t *) src;
-
-        if (outFormat == OUT_CS16) std::memcpy(buffs[0], in, n * 4);
-        else if (outFormat == OUT_CF32)
-        {
-            float *out = (float *) buffs[0];
-            for (k = 0; k < 2 * n; k++) out[k] = in[k] * (1.0f / 32768.0f);
-        }
-        else
-        {
-            int8_t *out = (int8_t *) buffs[0];
-            for (k = 0; k < 2 * n; k++) out[k] = (int8_t) (in[k] >> 8);
-        }
-    }
-    else
-    {
-        const int8_t *in = (const int8_t *) src;
-
-        if (outFormat == OUT_CS8) std::memcpy(buffs[0], in, n * 2);
-        else if (outFormat == OUT_CF32)
-        {
-            float *out = (float *) buffs[0];
-            for (k = 0; k < 2 * n; k++) out[k] = in[k] * (1.0f / 128.0f);
-        }
-        else
-        {
-            int16_t *out = (int16_t *) buffs[0];
-            for (k = 0; k < 2 * n; k++) out[k] = (int16_t) (in[k] * 256);
-        }
-    }
+    convert(s.kind, s.data.data() + slotPos * s.bytes, outFormat, buffs[0], n);
 
     slotPos += n;
     if (slotPos >= s.n)

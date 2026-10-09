@@ -108,6 +108,12 @@ struct mirisdr_dev {
     volatile int        async_starting; /* read_async entered, transfers not yet running */
     volatile int        cancel_pending; /* a cancel came while starting */
     int                 checking;       /* in a *_check(): refusals are not printed */
+
+    /* the down-converter in front of the callback (baseband.c): NULL without baseband */
+    struct mirisdr_bb   *bb;
+    int                 bb_path;        /* MIRISDR_BASEBAND_* the stream runs */
+    int                 bb_stages;      /* half-band stages after the shift or the converter */
+    uint32_t            bb_rate;        /* output samples per second */
     mirisdr_read_async_cb_t cb;
     void                *cb_ctx;
     size_t              xfer_buf_num;
@@ -118,7 +124,8 @@ struct mirisdr_dev {
     int                 xfer_buf_devmem;
     int                 xfer_buf_slow;  /* reading from USB buffers is slow */
     size_t              xfer_buf_size;
-    size_t              xfer_out_len;
+    size_t              xfer_out_len;   /* 0 under baseband, which keeps its own */
+    size_t              user_out_len;   /* the callback's buffer size as asked */
     size_t              xfer_out_pos;
     unsigned char       *xfer_out;
     uint32_t            addr;

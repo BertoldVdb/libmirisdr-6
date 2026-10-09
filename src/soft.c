@@ -382,7 +382,6 @@ static int mirisdr_if_mode (uint32_t hz)
     return -1;
 }
 
-static const uint32_t mirisdr_if_hz[] = { 0, 450000, 1620000, 2048000 };
 
 /* which filters each IF allows, by bit MIRISDR_BW_*: table 12 notes 3 and table 13 */
 static const uint16_t mirisdr_if_bws[] = {
@@ -461,8 +460,9 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
         pl->iq = MIRISDR_IQ_BOTH;
     }
 
-    /* the stream capturing the output switched off would go dead, unless it follows */
-    if (!adjust && !p->stream.follow_tune && (pl->iq != MIRISDR_IQ_BOTH) &&
+    /* the stream capturing the output switched off would go dead, unless it follows (as
+       a baseband one does) */
+    if (!adjust && !p->stream.follow_tune && !p->stream.baseband && (pl->iq != MIRISDR_IQ_BOTH) &&
         (mirisdr_stream_adc(p) != MIRISDR_IQ_BOTH) && (mirisdr_stream_adc(p) != pl->iq))
     {
         mirisdr_refuse(p, "the stream captures the tuner output this tune switches off\n");
@@ -489,7 +489,8 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
     }
 
     lo = (int64_t) c->frequency + c->lo_offset;
-    if (c->low_if_auto) lo += mirisdr_if_hz[pl->ifm];
+    /* a baseband stream wants the band the IF below the LO, as low_if_auto */
+    if (c->low_if_auto || (p->stream.baseband && (pl->ifm != MIRISDR_IF_ZERO))) lo += mirisdr_if_hz[pl->ifm];
 
     if ((lo < 0) || (lo > (int64_t) UINT32_MAX) || (!adjust && (lo >= mirisdr_plan_end(p))))
     {
@@ -536,6 +537,16 @@ static void mirisdr_tune_result_of (int adc, uint32_t rx, uint32_t lo, int iq, u
     res->inverted = real && off < 0;
 }
 
+/* Baseband: where frequency lands is what the callback gets, the band shifted to 0 */
+static void mirisdr_tune_result_bb (int bb_path, uint32_t if_hz, uint32_t rx, uint32_t lo,
+                                    mirisdr_tune_result_t *res)
+{
+    if (bb_path == MIRISDR_BASEBAND_OFF) return;
+
+    res->offset = (int32_t) ((int64_t) rx - lo + (bb_path >= MIRISDR_BASEBAND_COMPLEX ? if_hz : 0));
+    res->inverted = 0;
+}
+
 static int mirisdr_tune_adc (mirisdr_dev_t *p, int iq)
 {
     return p->stream.follow_tune ? iq : mirisdr_stream_adc(p);
@@ -551,13 +562,16 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
     if (!p || !c) return -1;
     if (mirisdr_tune_plan(p, c, flags, &pl) < 0) return -1;
 
-    /* a stream following the tune changes kind or converter with it, in one restart */
-    if (p->stream.follow_tune)
+    /* a stream following the tune changes kind or converter with it, in one restart; a
+       baseband one its rate too, to the nearest the new IF has */
+    if (p->stream.follow_tune || p->stream.baseband)
     {
-        if (mirisdr_stream_plan(p, &p->stream, flags & MIRISDR_TUNE_ADJUST ? MIRISDR_STREAM_ADJUST : 0,
-                                pl.iq, &spl) < 0) return -1;
+        if (mirisdr_stream_plan(p, &p->stream, ((flags & MIRISDR_TUNE_ADJUST) || p->stream.baseband) ?
+                                MIRISDR_STREAM_ADJUST : 0, pl.iq, mirisdr_if_hz[pl.ifm], &spl) < 0) return -1;
 
-        restream = (spl.format != (int) p->format) || (spl.swap != p->swap_iq);
+        restream = (spl.format != (int) p->format) || (spl.swap != p->swap_iq) || (spl.rate != p->rate) ||
+                   (spl.decim != p->decim_on) || (spl.bb_path != p->bb_path) ||
+                   (spl.bb_stages != p->bb_stages) || (spl.bb_rate != p->bb_rate);
         if (restream && ((streaming = mirisdr_stream_pause(p)) < 0)) return -1;
     }
 
@@ -609,6 +623,7 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
         mirisdr_gr_get(p, &gr);
         mirisdr_tune_result_of(mirisdr_stream_adc(p), c->frequency, p->tune_lo, p->tune_iq,
                                pl.cfg.bandwidth, p->band, &gr, res);
+        mirisdr_tune_result_bb(p->bb_path, mirisdr_if_hz[pl.ifm], c->frequency, p->tune_lo, res);
     }
 
     return r;
@@ -670,8 +685,15 @@ int mirisdr_tune_check (mirisdr_dev_t *p, int tuner, const mirisdr_tune_config_t
     p->checking = 0;
     if (r < 0) return -1;
 
-    if (res) mirisdr_tune_result_of(mirisdr_tune_adc(p, pl.iq), cfg->frequency, pl.w.lo_real, pl.iq,
-                                    pl.cfg.bandwidth, pl.w.band, &pl.gr, res);
+    if (res) {
+        int bb = !p->stream.baseband ? MIRISDR_BASEBAND_OFF : (pl.ifm == MIRISDR_IF_ZERO) ?
+                 MIRISDR_BASEBAND_ZERO_IF : (pl.iq == MIRISDR_IQ_BOTH) ? MIRISDR_BASEBAND_COMPLEX :
+                 MIRISDR_BASEBAND_REAL;
+
+        mirisdr_tune_result_of(mirisdr_tune_adc(p, pl.iq), cfg->frequency, pl.w.lo_real, pl.iq,
+                               pl.cfg.bandwidth, pl.w.band, &pl.gr, res);
+        mirisdr_tune_result_bb(bb, mirisdr_if_hz[pl.ifm], cfg->frequency, pl.w.lo_real, res);
+    }
 
     return 0;
 }
@@ -684,8 +706,11 @@ int mirisdr_get_tune (mirisdr_dev_t *p, int tuner, mirisdr_tune_config_t *cfg, m
 
     mirisdr_gr_get(p, &gr);
     if (cfg) *cfg = p->tune;
-    if (res) mirisdr_tune_result_of(mirisdr_stream_adc(p), p->tune.frequency, p->tune_lo, p->tune_iq,
-                                    p->tune.bandwidth, p->band, &gr, res);
+    if (res) {
+        mirisdr_tune_result_of(mirisdr_stream_adc(p), p->tune.frequency, p->tune_lo, p->tune_iq,
+                               p->tune.bandwidth, p->band, &gr, res);
+        mirisdr_tune_result_bb(p->bb_path, mirisdr_if_hz[p->if_freq], p->tune.frequency, p->tune_lo, res);
+    }
 
     return 0;
 }

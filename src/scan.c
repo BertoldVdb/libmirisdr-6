@@ -131,10 +131,11 @@ static int mirisdr_scan_hop_words (mirisdr_dev_t *sh, mirisdr_dev_t *p, const mi
     }
 
     /* a list cannot restart the stream */
-    if (p->stream.follow_tune)
+    if (p->stream.follow_tune || p->stream.baseband)
     {
-        if (mirisdr_stream_plan(p, &p->stream, 0, pl.iq, &spl) < 0) goto refused;
-        if ((spl.format != (int) p->format) || (spl.swap != p->swap_iq))
+        if (mirisdr_stream_plan(p, &p->stream, 0, pl.iq, mirisdr_if_hz[pl.ifm], &spl) < 0) goto refused;
+        if ((spl.format != (int) p->format) || (spl.swap != p->swap_iq) || (spl.rate != p->rate) ||
+            (spl.bb_path != p->bb_path) || (spl.bb_stages != p->bb_stages))
         {
             fprintf(stderr, "hop %u: the stream following it would change format\n", k);
             return -1;
@@ -215,6 +216,7 @@ int mirisdr_scan_compile (mirisdr_dev_t *p, int tuner, const mirisdr_tune_config
     sh->fake = 1;
     sh->fw_list_at = 1;             /* SPI writes wait in the list */
     sh->stream.follow_tune = 0;
+    sh->bb = NULL;              /* the device's filters are not the shadow's */
     sh->batch_depth = 0;
     sh->batch_n = 0;
     sh->batch_running = 0;
@@ -263,6 +265,7 @@ int mirisdr_scan_compile (mirisdr_dev_t *p, int tuner, const mirisdr_tune_config
     s->chunk_at[c] = at;
     s->chunk_hop[c] = n;
 
+    mirisdr_bb_free(sh);
     free(sh->rec);
     free(sh);
     *out = s;
@@ -270,7 +273,10 @@ int mirisdr_scan_compile (mirisdr_dev_t *p, int tuner, const mirisdr_tune_config
     return 0;
 
 failed:
-    if (sh) free(sh->rec);
+    if (sh) {
+        mirisdr_bb_free(sh);
+        free(sh->rec);
+    }
     free(sh);
     mirisdr_scan_free(s);
 

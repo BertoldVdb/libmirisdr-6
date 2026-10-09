@@ -67,6 +67,7 @@ static void mirisdr_refuse (mirisdr_dev_t *p, const char *fmt, ...)
 #include "events.c"
 #include "adc.c"
 #include "convert/base.c"
+#include "baseband.c"
 #include "async.c"
 #include "devices.c"
 #include "firmware_pps.c"
@@ -320,6 +321,7 @@ int mirisdr_close (mirisdr_dev_t *p) {
 
     if (p->samples) free(p->samples);
     if (p->xfer_out) free(p->xfer_out);
+    mirisdr_bb_free(p);
     if (p->sync_in) free(p->sync_in);
     if (p->sync_out) free(p->sync_out);
 

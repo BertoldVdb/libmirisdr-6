@@ -787,6 +787,94 @@ static tres_t t_stall_clear_then_cancel (void)
     return (clean == 5 && within(sps, 4000000, 0.05)) ? T_PASS : T_FAIL;
 }
 
+/* Baseband on the receiver: each path at its rates, float buffers in order, then a
+   tune to another IF while streaming moves the rate */
+static struct { uint64_t pairs, want; int bad, calls; uint32_t rate; } bbd;
+
+static void bbd_cb (unsigned char *buf, uint32_t len, void *ctx)
+{
+    mirisdr_buffer_info_t in;
+
+    (void) buf; (void) ctx;
+    if (mirisdr_get_buffer_info(dev, &in) < 0 || in.type != MIRISDR_SAMPLE_F32 || in.adc != MIRISDR_IQ_BOTH)
+        bbd.bad++;
+    bbd.rate = in.rate;
+    bbd.pairs += len / 8;
+    bbd.calls++;
+}
+
+static void *bbd_main (void *arg)
+{
+    (void) arg;
+    pump_result = mirisdr_read_async(dev, bbd_cb, NULL, 0, 0);
+    return NULL;
+}
+
+static tres_t t_bb_device (void)
+{
+    static const struct { uint32_t ifhz; int iq; uint32_t rate; } cases[] = {
+        { 0, MIRISDR_IQ_BOTH, 2000000 }, { 450000, MIRISDR_IQ_BOTH, 900000 }, { 450000, MIRISDR_IQ_ONLY_Q, 225000 },
+        { 1620000, MIRISDR_IQ_ONLY_I, 1620000 }, { 2048000, MIRISDR_IQ_BOTH, 2048000 },
+        { 2048000, MIRISDR_IQ_ONLY_I, 4096000 }, { 2048000, MIRISDR_IQ_BOTH, 256000 } };
+    mirisdr_tune_config_t tc;
+    mirisdr_stream_config_t sc;
+    mirisdr_stream_result_t sr;
+    unsigned i;
+    int bad = 0;
+    double t0, sps;
+
+    pump_stop();
+    for (i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        mirisdr_get_tune(dev, 0, &tc, NULL);
+        tc.frequency = 144000000; tc.if_freq = cases[i].ifhz; tc.iq = cases[i].iq; tc.bandwidth = 0;
+        tc.low_if_auto = 0; tc.gain.mode = MIRISDR_GAIN_KEEP;
+        if (mirisdr_tune(dev, 0, &tc, NULL) < 0) { say("IF %u refused", cases[i].ifhz); bad++; continue; }
+        mirisdr_get_stream(dev, &sc, NULL);
+        sc.baseband = 1; sc.rate = cases[i].rate; sc.format = NULL; sc.format_single = NULL;
+        if (mirisdr_set_stream(dev, &sc, &sr) < 0) { say("IF %u at %u refused", cases[i].ifhz, cases[i].rate); bad++; continue; }
+
+        memset(&bbd, 0, sizeof bbd);
+        if (mirisdr_reset_buffer(dev) < 0 || pthread_create(&pump_thread, NULL, bbd_main, NULL)) return T_FAIL;
+        pump_running = 1;
+        usleep(300000);
+        bbd.pairs = 0;
+        t0 = now();
+        usleep(700000);
+        sps = bbd.pairs / (now() - t0);
+
+        /* a tune to the 450 kHz IF while it runs: the rate moves to the nearest that has */
+        if (i == sizeof cases / sizeof cases[0] - 1) {
+            tc.if_freq = 450000;
+            if (mirisdr_tune(dev, 0, &tc, NULL) < 0) { say("the tune to 450 kHz refused"); bad++; }
+            usleep(300000);
+            bbd.pairs = 0;
+            t0 = now();
+            usleep(500000);
+            mirisdr_get_stream(dev, &sc, &sr);
+            if (sr.rate != 225000 || !within(bbd.pairs / (now() - t0), 225000, 0.03) || bbd.rate != 225000)
+            { say("after the tune to 450 kHz: %u planned, %u in the infos, %.0f sps", sr.rate, bbd.rate,
+                  bbd.pairs / (now() - t0)); bad++; }
+        }
+        pump_stop();
+
+        note("IF %u, %s, %u sps: %.0f sps out of %u buffers, adc %u, %s", cases[i].ifhz,
+             cases[i].iq == MIRISDR_IQ_BOTH ? "both" : "one", cases[i].rate, sps, bbd.calls, sr.adc_rate, sr.format);
+        if (bbd.bad || !within(sps, cases[i].rate, 0.03))
+        { say("IF %u at %u: %.0f sps, %d bad infos", cases[i].ifhz, cases[i].rate, sps, bbd.bad); bad++; }
+    }
+
+    /* back to how the other tests expect it */
+    mirisdr_get_tune(dev, 0, &tc, NULL);
+    tc.if_freq = 0; tc.iq = MIRISDR_IQ_BOTH; tc.bandwidth = 0;
+    mirisdr_tune(dev, 0, &tc, NULL);
+    mirisdr_get_stream(dev, &sc, NULL);
+    sc.baseband = 0; sc.rate = 2000000;
+    mirisdr_set_stream(dev, &sc, NULL);
+
+    if (!bad) say("7 paths at their rates, float buffers, a tune to another IF moving the rate while streaming");
+    return bad ? T_FAIL : T_PASS;
+}
+
 /* A cancel while read_async starts up is kept: before, one that came before the
  * transfers ran was dropped and the stream ran on */
 static volatile int start_entering, start_done;
@@ -2723,9 +2811,15 @@ static tres_t t_plan_stream (void)
     if (strcmp(r.format, "384_S16")) { plan_bad++; say("ISOC1 3 Msps picked %s", r.format); }
     c.transfer = "BULK"; c.rate = 12000000;
     plan_stream(n, "BULK, 12 Msps automatic", &c, 1, &r);
-    if (strcmp(r.format, "504_S16")) { plan_bad++; say("BULK 12 Msps picked %s", r.format); }
+    if (strcmp(r.format, "384_S16")) { plan_bad++; say("BULK 12 Msps picked %s", r.format); }
+    /* past 32 MB/s bulk takes the 8-bit format rather than refusing */
     c.rate = 20000000;
-    plan_stream(n, "BULK, 20 Msps", &c, 0, &r);
+    plan_stream(n, "BULK, 20 Msps", &c, 1, &r);
+    if (strcmp(r.format, "504_S16") || !r.decimation_bypassed) { plan_bad++; say("BULK 20 Msps: %s", r.format); }
+    c.rate = 30000000;
+    plan_stream(n, "BULK, 30 Msps, over the receiver", &c, 0, &r);
+    c.transfer = "ISOC"; c.rate = 13000000;
+    plan_stream(n, "ISOC, 13 Msps, over the reservation", &c, 0, &r);
 
     /* the rate range and the decimator */
     mirisdr_stream_config_default(&c);
@@ -2839,7 +2933,7 @@ static tres_t t_plan_follow (void)
     mirisdr_stream_config_default(&s);
     s.transfer = "BULK"; s.rate = 12000000;
     plan_stream(n, "BULK 12 Msps, default capacity", &s, 1, &sr);
-    if (strcmp(sr.format, "504_S16")) { plan_bad++; say("default capacity picked %s", sr.format); }
+    if (strcmp(sr.format, "384_S16")) { plan_bad++; say("default capacity picked %s", sr.format); }
     s.usb_capacity = 50000000;
     plan_stream(n, "BULK 12 Msps, 50 MB/s capacity", &s, 1, &sr);
     if (strcmp(sr.format, "252_S16")) { plan_bad++; say("50 MB/s capacity picked %s", sr.format); }
@@ -3363,6 +3457,393 @@ static tres_t t_scan_dry (void)
     return res;
 }
 
+/* ------------------------------------------------------------------ */
+/* baseband: the down-converter, offline on the null device            */
+/* ------------------------------------------------------------------ */
+
+/* Synthetic streams as the tuner would give them with the LO the IF above
+   100 MHz: a tone at RF 100 MHz + delta lies at -IF + delta in the complex
+   stream, an image tone at +IF + img. Blocks are 252_S16 (both outputs) or
+   504_REAL_S16 (the I output), stamped, their counter the first sample's index. */
+static struct {
+    float    *x;            /* the output pairs */
+    size_t   n, cap;
+    uint64_t want_sample;
+    uint32_t rate, len;
+    int      bad_info, calls;
+    uint64_t gaps, gap_samples, gap_filled, last_index_jump;
+    mirisdr_dev_t *d;
+} bbo;
+
+static void bb_cb (unsigned char *buf, uint32_t len, void *ctx)
+{
+    mirisdr_buffer_info_t in;
+    uint32_t k;
+
+    (void) ctx;
+    bbo.calls++;
+    if (mirisdr_get_buffer_info(bbo.d, &in) < 0 || in.type != MIRISDR_SAMPLE_F32 || in.rate != bbo.rate ||
+        in.adc != MIRISDR_IQ_BOTH || in.sample != bbo.want_sample || (bbo.len && len != bbo.len))
+        bbo.bad_info++;
+    for (k = 0; k < in.gaps_len; k++) {
+        bbo.gaps++;
+        bbo.gap_samples += in.gaps[k].samples;
+        bbo.gap_filled += in.gaps[k].filled;
+    }
+    if (in.index > in.sample) bbo.last_index_jump = in.index - in.sample;
+    bbo.want_sample += len / 8;
+
+    if (bbo.n + len / 4 > bbo.cap) {
+        bbo.cap = (bbo.n + len / 4) * 2;
+        bbo.x = realloc(bbo.x, bbo.cap * sizeof(float));
+    }
+    memcpy(bbo.x + bbo.n, buf, len);
+    bbo.n += len / 4;
+}
+
+static int bb_swap;      /* I and Q swapped by the receiver: the band at +IF */
+
+static void bb_put14 (uint8_t *b, double v)
+{
+    int w = (int) lrint(v * 8191.0) & 0x3fff;
+
+    b[0] = (uint8_t) w;
+    b[1] = (uint8_t) (w >> 8);
+}
+
+/* blocks of a tone at -IF + delta (amplitude a) and one at +IF + img (amplitude ai);
+   'skip' blocks from block 'skip_at' go missing */
+static uint8_t *bb_gen (int real, double fs, double ifhz, double delta, double a, double img, double ai,
+                        int blocks, int skip_at, int skip, uint32_t *len)
+{
+    int spb = real ? 504 : 252, k, i, o = 0;
+    uint8_t *data = calloc((size_t) blocks, 1024);
+    uint64_t idx = 0;
+
+    for (k = 0; k < blocks; k++) {
+        if (k == skip_at) idx += (uint64_t) skip * spb;
+        uint8_t *h = data + 1024 * o++;
+        h[0] = (uint8_t) idx; h[1] = (uint8_t) (idx >> 8); h[2] = (uint8_t) (idx >> 16); h[3] = (uint8_t) (idx >> 24);
+        memcpy(h + 8, "BVDB", 4);
+        for (i = 0; i < spb; i++) {
+            double n = (double) (idx + (uint64_t) i);
+            double p1 = 2 * M_PI * (-ifhz + delta) * n / fs, p2 = 2 * M_PI * (ifhz + img) * n / fs;
+            double re = a * cos(p1) + ai * cos(p2), im = a * sin(p1) + ai * sin(p2);
+
+            /* swapped, the receiver hands Q as I: the spectrum mirrored */
+            if (bb_swap) { double t = re; re = im; im = t; }
+
+            if (real) bb_put14(h + 16 + 2 * i, re);
+            else {
+                bb_put14(h + 16 + 4 * i, re);
+                bb_put14(h + 18 + 4 * i, im);
+            }
+        }
+        idx += (uint64_t) spb;
+    }
+    *len = (uint32_t) o * 1024;
+    return data;
+}
+
+/* a tone's amplitude in the output, Hann window, f in Hz at rate fs */
+static double bb_tone (const float *x, size_t n, double f, double fs)
+{
+    double re = 0, im = 0, w, c, s;
+    size_t k;
+
+    for (k = 0; k < n; k++) {
+        w = 0.5 - 0.5 * cos(2 * M_PI * k / n);
+        c = cos(2 * M_PI * f * k / fs);
+        s = -sin(2 * M_PI * f * k / fs);
+        re += w * (x[2 * k] * c - x[2 * k + 1] * s);
+        im += w * (x[2 * k] * s + x[2 * k + 1] * c);
+    }
+    return sqrt(re * re + im * im) / (n / 2.0);
+}
+
+/* A null device tuned to 100 MHz with this IF and output, baseband at rate */
+static int bb_open (int real, uint32_t ifhz, uint32_t rate, mirisdr_stream_result_t *sr)
+{
+    mirisdr_tune_config_t tc;
+    mirisdr_stream_config_t sc;
+
+    if (mirisdr_open_null(&bbo.d, real ? "504_REAL_S16" : "252_S16") < 0) return -1;
+    mirisdr_get_tune(bbo.d, 0, &tc, NULL);
+    tc.frequency = 100000000;
+    tc.if_freq = ifhz;
+    tc.bandwidth = 0;
+    tc.iq = real ? MIRISDR_IQ_ONLY_I : MIRISDR_IQ_BOTH;
+    if (mirisdr_tune(bbo.d, 0, &tc, NULL) < 0) return -1;
+    mirisdr_get_stream(bbo.d, &sc, NULL);
+    sc.baseband = 1;
+    sc.rate = rate;
+    sc.transfer = "BULK";
+    sc.format = "252_S16";
+    sc.format_single = "504_REAL_S16";
+    sc.swap_iq = bb_swap;
+    if (mirisdr_set_stream(bbo.d, &sc, sr) < 0) return -1;
+
+    free(bbo.x);
+    memset(&bbo, 0, sizeof bbo - sizeof bbo.d);
+    bbo.rate = sr->rate;
+    return 0;
+}
+
+static void bb_feed_cb (const uint8_t *data, uint32_t len, uint32_t buf, mirisdr_read_async_cb_t cb)
+{
+    uint32_t at, t;
+
+    for (at = 0; at < len; at += t) {
+        t = 1024 * (1 + (uint32_t) rand() % 24);
+        if (t > len - at) t = len - at;
+        mirisdr_feed_bulk(bbo.d, cb, NULL, buf, data + at, t);
+    }
+}
+
+static void bb_feed (const uint8_t *data, uint32_t len, uint32_t buf)
+{
+    bb_feed_cb(data, len, buf, bb_cb);
+}
+
+static void dec_cb_count (unsigned char *buf, uint32_t len, void *ctx)
+{
+    (void) buf; (void) ctx;
+    bbo.n += len / 4;
+}
+
+static tres_t t_bb_plan (void)
+{
+    mirisdr_dev_t *n;
+    mirisdr_tune_config_t c;
+    mirisdr_stream_config_t s;
+    mirisdr_stream_result_t sr;
+    mirisdr_tune_result_t tr;
+    static const struct { uint32_t ifhz; int real; uint32_t rate; uint32_t adc; uint32_t decim; } ok[] = {
+        { 450000, 0, 1800000, 1800000, 1 }, { 450000, 0, 900000, 1800000, 2 }, { 450000, 0, 28125, 1800000, 64 },
+        { 450000, 1, 900000, 1800000, 2 },  { 450000, 1, 225000, 1800000, 8 },
+        { 1620000, 0, 6480000, 6480000, 1 }, { 1620000, 0, 810000, 6480000, 8 }, { 1620000, 1, 3240000, 6480000, 2 },
+        { 2048000, 0, 8192000, 8192000, 1 }, { 2048000, 0, 2048000, 8192000, 4 }, { 2048000, 0, 32000, 8192000, 256 },
+        { 2048000, 1, 4096000, 8192000, 2 }, { 2048000, 1, 1024000, 8192000, 8 } };
+    unsigned i;
+    int bad = 0;
+
+    if (mirisdr_open_null(&n, "252_S16") < 0) { say("no null device"); return T_FAIL; }
+
+    for (i = 0; i < sizeof ok / sizeof ok[0]; i++) {
+        mirisdr_get_tune(n, 0, &c, NULL);
+        c.frequency = 100000000; c.if_freq = ok[i].ifhz; c.bandwidth = 0;
+        c.iq = ok[i].real ? MIRISDR_IQ_ONLY_I : MIRISDR_IQ_BOTH;
+        if (mirisdr_tune(n, 0, &c, NULL) < 0) { say("%u Hz IF refused", ok[i].ifhz); bad++; continue; }
+        mirisdr_get_stream(n, &s, NULL);
+        s.baseband = 1; s.rate = ok[i].rate; s.transfer = "BULK"; s.format = NULL; s.format_single = NULL;
+        if (mirisdr_set_stream(n, &s, &sr) < 0 || sr.rate != ok[i].rate || sr.adc_rate != ok[i].adc ||
+            sr.decimation != ok[i].decim || sr.baseband != (ok[i].real ? MIRISDR_BASEBAND_REAL : MIRISDR_BASEBAND_COMPLEX))
+        { say("IF %u %s %u: rate %u adc %u decimation %u", ok[i].ifhz, ok[i].real ? "one" : "both", ok[i].rate,
+              sr.rate, sr.adc_rate, sr.decimation); bad++; continue; }
+        mirisdr_get_tune(n, 0, NULL, &tr);
+        if (tr.lo != 100000000 + ok[i].ifhz || tr.offset || tr.inverted)
+        { say("IF %u: LO %u, offset %d", ok[i].ifhz, tr.lo, tr.offset); bad++; }
+    }
+
+    /* refused: not a power of 2 down, too far down, one output at the full rate */
+    s.rate = 1000000;
+    if (mirisdr_set_stream(n, &s, NULL) == 0) { say("1 MHz from a 2048 kHz IF accepted"); bad++; }
+    s.rate = 16000;
+    if (mirisdr_set_stream(n, &s, NULL) == 0) { say("1/512 accepted"); bad++; }
+    s.rate = 8192000;
+    if (mirisdr_set_stream(n, &s, NULL) == 0) { say("one output at 8192 ksps accepted"); bad++; }
+
+    /* a tune to another IF takes the stream's rate to the nearest it has */
+    mirisdr_get_tune(n, 0, &c, NULL);
+    c.iq = MIRISDR_IQ_BOTH; c.if_freq = 2048000; c.bandwidth = 0;
+    mirisdr_tune(n, 0, &c, NULL);
+    s.rate = 1024000;
+    mirisdr_set_stream(n, &s, NULL);
+    c.if_freq = 450000; c.bandwidth = 0;
+    if (mirisdr_tune(n, 0, &c, NULL) < 0) { say("a tune to 450 kHz refused"); bad++; }
+    mirisdr_get_stream(n, &s, &sr);
+    if (sr.rate != 900000 || sr.adc_rate != 1800000) { say("1024 ksps at 2048 kHz became %u at 450 kHz", sr.rate); bad++; }
+
+    /* zero IF: float as it comes, any rate; the LO on the frequency */
+    c.if_freq = 0; c.bandwidth = 0;
+    mirisdr_tune(n, 0, &c, NULL);
+    s.rate = 3000000;
+    if (mirisdr_set_stream(n, &s, &sr) < 0 || sr.baseband != MIRISDR_BASEBAND_ZERO_IF || sr.rate != 3000000 ||
+        sr.decimation != 1) { say("zero IF baseband: %d at %u", sr.baseband, sr.rate); bad++; }
+    mirisdr_get_tune(n, 0, NULL, &tr);
+    if (tr.lo != 100000000) { say("zero IF LO %u", tr.lo); bad++; }
+
+    /* baseband off with a low IF puts the LO back on the frequency */
+    c.if_freq = 450000; c.bandwidth = 0;
+    mirisdr_tune(n, 0, &c, NULL);
+    s.baseband = 0; s.rate = 2000000;
+    if (mirisdr_set_stream(n, &s, &sr) < 0 || sr.baseband) { say("baseband would not go off"); bad++; }
+    mirisdr_get_tune(n, 0, NULL, &tr);
+    if (tr.lo != 100000000) { say("without baseband the LO is at %u", tr.lo); bad++; }
+
+    mirisdr_close(n);
+    if (!bad) say("rates for each IF and output, refusals, a tune moving the rate, zero IF, the LO");
+    return bad ? T_FAIL : T_PASS;
+}
+
+/* each IF and output: the tone at +delta at its level, the mirror and the image down */
+static tres_t t_bb_tone (void)
+{
+    static const struct { uint32_t ifhz; int real; uint32_t rate; double delta, img; } cases[] = {
+        { 450000, 0, 1800000, 50000, 0 },   { 450000, 0, 900000, 50000, 120000 }, { 450000, 0, 225000, 20000, 30000 },
+        { 450000, 1, 900000, 50000, 0 },    { 450000, 1, 112500, -20000, 0 },
+        { 1620000, 0, 1620000, -300000, 400000 }, { 1620000, 1, 3240000, 600000, 0 },
+        { 2048000, 0, 2048000, 300000, 500000 },  { 2048000, 1, 2048000, -700000, 0 },
+        { 2048000, 1, 256000, 60000, 0 }, { 450000, 0, 900000, 70000, 0 }, { 2048000, 0, 2048000, -400000, 0 } };
+    mirisdr_stream_result_t sr;
+    unsigned i;
+    int bad = 0;
+    double worst_mirror = 1e9, worst_image = 1e9;
+
+    for (i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        uint32_t len;
+        uint8_t *data;
+        size_t m, s0;
+        double a, mir, img = 0, fs = 4.0 * cases[i].ifhz;
+
+        /* the last two with I and Q swapped */
+        bb_swap = i >= sizeof cases / sizeof cases[0] - 2;
+        if (bb_open(cases[i].real, cases[i].ifhz, cases[i].rate, &sr) < 0) { say("case %u: no stream", i); return T_FAIL; }
+        data = bb_gen(cases[i].real, fs, cases[i].ifhz, cases[i].delta, 0.5, cases[i].img, cases[i].img ? 0.5 : 0,
+                      (int) (0.2 * fs / (cases[i].real ? 504 : 252)) + 64, -1, 0, &len);
+        bb_feed(data, len, 0);
+        free(data);
+        mirisdr_close(bbo.d);
+
+        /* swapped, the spectrum comes out mirrored, as without baseband */
+        m = bbo.n / 2 / 2;
+        s0 = bbo.n / 2 - m;
+        a = bb_tone(bbo.x + 2 * s0, m, bb_swap ? -cases[i].delta : cases[i].delta, sr.rate);
+        mir = 20 * log10(a / (bb_tone(bbo.x + 2 * s0, m, bb_swap ? cases[i].delta : -cases[i].delta, sr.rate) + 1e-12));
+        if (cases[i].img && sr.decimation > 1)
+            img = 20 * log10(a / (bb_tone(bbo.x + 2 * s0, m, cases[i].img, sr.rate) + 1e-12));
+
+        if (bb_swap) note("swapped, so the tone is looked for mirrored:");
+        if (img) note("IF %u, %s output, %u sps: tone at %+.0f Hz %.2f dBFS, mirror %.1f dB down, image %.1f dB down",
+                      cases[i].ifhz, cases[i].real ? "one" : "both", sr.rate, cases[i].delta, 20 * log10(a), mir, img);
+        else note("IF %u, %s output, %u sps: tone at %+.0f Hz %.2f dBFS, mirror %.1f dB down", cases[i].ifhz,
+                  cases[i].real ? "one" : "both", sr.rate, cases[i].delta, 20 * log10(a), mir);
+
+        if (fabs(20 * log10(a) + 6.02) > 0.3 || mir < (cases[i].real ? 60 : 90) || (img && img < 58) || bbo.bad_info)
+        { say("IF %u %s %u: %.2f dBFS, mirror %.1f dB, image %.1f dB, %d bad infos", cases[i].ifhz,
+              cases[i].real ? "one" : "both", sr.rate, 20 * log10(a), mir, img, bbo.bad_info); bad++; }
+        if (mir < worst_mirror) worst_mirror = mir;
+        if (img && img < worst_image) worst_image = img;
+    }
+
+    bb_swap = 0;
+    if (!bad) say("12 cases, 2 with I/Q swapped: each tone at its offset within 0.3 dB, mirrors >= %.0f dB down, images >= %.0f dB",
+                  worst_mirror, worst_image);
+    return bad ? T_FAIL : T_PASS;
+}
+
+/* sample counts, fixed-length buffers, a gap: where it lands and what fills it */
+static tres_t t_bb_timing (void)
+{
+    mirisdr_stream_result_t sr;
+    uint32_t len;
+    uint8_t *data;
+    int bad = 0, real;
+
+    for (real = 0; real < 2; real++) {
+        int spb = real ? 504 : 252;
+        uint64_t in_samples;
+
+        /* 2000 blocks, 30 missing after block 1000, buffers of 4096 bytes */
+        if (bb_open(real, 450000, 225000, &sr) < 0) { say("no stream"); return T_FAIL; }
+        bbo.len = 4096;
+        data = bb_gen(real, 1800000, 450000, 10000, 0.5, 0, 0, 2000, 1000, 30, &len);
+        bb_feed(data, len, 4096);
+        free(data);
+        mirisdr_close(bbo.d);
+
+        /* 16 of the 30 blocks are filled, the rest a jump in the index. The fill can
+           reach the callback over several buffers, so one gap may come as several */
+        in_samples = (uint64_t) (2000 + 16) * spb;
+        if (bbo.bad_info) { say("%s: %d buffers with a wrong info", real ? "one" : "both", bbo.bad_info); bad++; }
+        if (bbo.n / 2 > in_samples / sr.decimation + 2 || bbo.n / 2 + 512 + 64 < in_samples / sr.decimation)
+        { say("%s: %zu pairs out of %llu in, decimation %u", real ? "one" : "both", bbo.n / 2,
+              (unsigned long long) in_samples, sr.decimation); bad++; }
+        if (!bbo.gaps || bbo.gap_samples != (uint64_t) (30 * spb + sr.decimation - 1) / sr.decimation ||
+            bbo.gap_filled != (uint64_t) 16 * spb / sr.decimation)
+        { say("%s: %llu gaps, %llu missing %llu filled", real ? "one" : "both", (unsigned long long) bbo.gaps,
+              (unsigned long long) bbo.gap_samples, (unsigned long long) bbo.gap_filled); bad++; }
+        if (bbo.last_index_jump < (uint64_t) 14 * spb / sr.decimation - 1 || bbo.last_index_jump > (uint64_t) 14 * spb / sr.decimation + 1)
+        { say("%s: the index ran %llu ahead, not %u", real ? "one" : "both", (unsigned long long) bbo.last_index_jump,
+              14 * spb / sr.decimation); bad++; }
+        note("%s output: %zu pairs in %d buffers of 512, gap of %llu in %llu parts with %llu filled, index +%llu after it",
+             real ? "one" : "both", bbo.n / 2, bbo.calls, (unsigned long long) bbo.gap_samples,
+             (unsigned long long) bbo.gaps,
+             (unsigned long long) bbo.gap_filled, (unsigned long long) bbo.last_index_jump);
+    }
+
+    if (!bad) say("4096 byte buffers counted in output samples; a 30 block gap: 16 filled, the rest in the index");
+    return bad ? T_FAIL : T_PASS;
+}
+
+/* how fast each path runs here, against what it has to keep up with */
+static tres_t t_bb_speed (void)
+{
+    static const struct { uint32_t ifhz; int real; uint32_t rate; } cases[] = {
+        { 2048000, 0, 8192000 }, { 2048000, 0, 2048000 }, { 2048000, 0, 256000 },
+        { 2048000, 1, 4096000 }, { 2048000, 1, 2048000 }, { 450000, 1, 112500 } };
+    mirisdr_stream_result_t sr;
+    unsigned i;
+    int slow = 0;
+    char line[256] = "";
+
+    for (i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        uint32_t len, blocks = 16000;
+        uint8_t *data;
+        double t0, dt, msps;
+
+        if (bb_open(cases[i].real, cases[i].ifhz, cases[i].rate, &sr) < 0) { say("no stream"); return T_FAIL; }
+        data = bb_gen(cases[i].real, 4.0 * cases[i].ifhz, cases[i].ifhz, 1000, 0.5, 0, 0, (int) blocks, -1, 0, &len);
+        bb_feed_cb(data, len / 8, 0, dec_cb_count);     /* warm up: caches, clock */
+        t0 = now();
+        bb_feed_cb(data + len / 8, len - len / 8, 0, dec_cb_count);
+        dt = now() - t0;
+        blocks -= blocks / 8;
+        free(data);
+        mirisdr_close(bbo.d);
+
+        /* converter samples a second, the 14-bit unpacking included */
+        msps = (double) blocks * (cases[i].real ? 504 : 252) / dt / 1e6;
+        note("IF %u, %s output, %u sps out: %.1f Msps of %.3f needed (%.0fx)", cases[i].ifhz,
+             cases[i].real ? "one" : "both", cases[i].rate, msps, sr.adc_rate / 1e6, msps * 1e6 / sr.adc_rate);
+        snprintf(line + strlen(line), sizeof line - strlen(line), "%s%.0fx", i ? ", " : "", msps * 1e6 / sr.adc_rate);
+        if (msps * 1e6 < 1.5 * sr.adc_rate) slow++;
+    }
+
+    /* the same blocks without baseband: the unpacking every stream has */
+    {
+        mirisdr_dev_t *d;
+        uint32_t len, blocks = 16000;
+        uint8_t *data = bb_gen(0, 8192000, 2048000, 1000, 0.5, 0, 0, (int) blocks, -1, 0, &len);
+        double t0, dt;
+
+        if (mirisdr_open_null(&d, "252_S16") == 0) {
+            bbo.d = d;
+            bbo.rate = 0;
+            t0 = now();
+            for (uint32_t at = 0; at < len; at += 16384)
+                mirisdr_feed_bulk(d, dec_cb_count, NULL, 0, data + at, len - at < 16384 ? len - at : 16384);
+            dt = now() - t0;
+            mirisdr_close(d);
+            note("unpacking 252_S16 alone, no baseband: %.1f Msps", (double) blocks * 252 / dt / 1e6);
+        }
+        free(data);
+    }
+
+    say("real time x %s (both 8192k, 2048k, 256k; one 4096k, 2048k; 112k)", line);
+    return slow ? T_FAIL : T_PASS;
+}
+
 #ifdef MIRI_TEST_SOAPY
 /* ------------------------------------------------------------------ */
 /* the SoapySDR module, loaded and used as an application would        */
@@ -3421,6 +3902,11 @@ static const struct {
     { "plan",     "stream following the tune",  t_plan_follow         },
     { "plan",     "scan lists",                 t_plan_scan           },
 
+    { "baseband", "rates, IF moves and the LO",  t_bb_plan             },
+    { "baseband", "tone, mirror and image",     t_bb_tone             },
+    { "baseband", "counts, buffers and gaps",   t_bb_timing           },
+    { "baseband", "speed against real time",    t_bb_speed            },
+
     { "identity", "device enumerates",          t_enumerate           },
     { "identity", "usb descriptors",            t_usb_strings         },
     { "identity", "open by serial",             t_open_by_serial      },
@@ -3441,6 +3927,7 @@ static const struct {
     { "stream",   "automatic format choice",    t_format_auto         },
     { "stream",   "stream config",              t_stream_api          },
     { "stream",   "stream following the tune",  t_stream_follow       },
+    { "stream",   "baseband on the receiver",   t_bb_device           },
 
     { "fixes",    "rate changes keep the stream", t_rate_changes      },
     { "fixes",    "repeated stop and start",    t_stop_start          },
@@ -3513,7 +4000,7 @@ static void usage (const char *me)
            "  --eeprom-write   allow the eeprom write back test (implies --eeprom)\n"
            "  --pps            run the pps test, needs a 1PPS on GPIO_0\n"
            "  --list           list the tests and exit\n"
-           "\ngroups: decode identity stream fixes device tuner extras"
+           "\ngroups: decode plan baseband identity stream fixes device tuner extras"
 #ifdef MIRI_TEST_SOAPY
            " soapy"
 #endif
@@ -3571,7 +4058,7 @@ int main (int argc, char **argv)
     }
 
     /* the decode and plan groups need no device */
-    if (opt_only && (!strcmp(opt_only, "decode") || !strcmp(opt_only, "plan"))) goto run;
+    if (opt_only && (!strcmp(opt_only, "decode") || !strcmp(opt_only, "plan") || !strcmp(opt_only, "baseband"))) goto run;
 
     if ((opt_rom ? device_reopen() : device_open()) < 0) {
         fprintf(stderr, "cannot open the device\n");

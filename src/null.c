@@ -59,8 +59,10 @@ int mirisdr_feed_bulk (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx, 
     /* the callback's buffer size is fixed by the first call, as read_async's is */
     if (!p->cb) {
         p->cb = cb;
-        p->xfer_out_len = buf_len;
+        p->user_out_len = buf_len;
+        p->xfer_out_len = p->bb ? 0 : buf_len;
         if (buf_len && !(p->xfer_out = malloc(buf_len))) return -1;
+        mirisdr_bb_start(p);
     }
     p->cb_ctx = ctx;
 

@@ -22,6 +22,10 @@ int mirisdr_read_sync (mirisdr_dev_t *p, void *buf, int len, int *n_read) {
     int got = 0, n, r, k, phase;
 
     if (!p || !buf || len < 0) goto failed;
+    if (p->bb) {
+        fprintf(stderr, "mirisdr_read_sync() does not do baseband, use mirisdr_read_async()\n");
+        goto failed;
+    }
     if (n_read) *n_read = 0;
 
     if (!p->sync_in && !(p->sync_in = malloc(DEFAULT_BULK_BUFFER))) goto failed;

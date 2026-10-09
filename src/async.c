@@ -28,6 +28,7 @@ static void mirisdr_cb_call (mirisdr_dev_t *p, unsigned char *buf, uint32_t len)
     in->sample = p->cb_base + start / ub;
     in->adc = mirisdr_stream_adc(p);
     in->rate = p->rate;
+    in->type = (p->format == MIRISDR_FORMAT_504_S8) ? MIRISDR_SAMPLE_S8 : MIRISDR_SAMPLE_S16;
 
     /* the queue's gaps up to this buffer's end, in order */
     while (k < p->gapq_n && p->gapq[k].at < end) {
@@ -64,7 +65,8 @@ static void mirisdr_cb_call (mirisdr_dev_t *p, unsigned char *buf, uint32_t len)
 
     in->index = in->sample + p->cb_lost;
 
-    p->cb(buf, len, p->cb_ctx);
+    if (p->bb) mirisdr_bb_feed(p, buf, len);
+    else p->cb(buf, len, p->cb_ctx);
 
     p->cb_lost += later;
     p->cb_bytes = end;
@@ -769,8 +771,8 @@ static int mirisdr_async_alloc (mirisdr_dev_t *p) {
     }
 
     if ((!p->xfer_out) &&
-        (p->xfer_out_len)) {
-        if (!(p->xfer_out = malloc(p->xfer_out_len * sizeof(*p->xfer_out)))) goto failed;
+        (p->user_out_len)) {
+        if (!(p->xfer_out = malloc(p->user_out_len * sizeof(*p->xfer_out)))) goto failed;
     }
 
     return 0;
@@ -851,8 +853,10 @@ static int mirisdr_read_async_run (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb,
     p->cb_ctx = ctx;
 
     p->xfer_buf_num = (num == 0) ? DEFAULT_BUF_NUMBER : num;
-    /* jde o fixní velikost výstupního bufferu */
-    p->xfer_out_len = (len == 0) ? 0 : len;
+    /* jde o fixní velikost výstupního bufferu; baseband keeps its own */
+    p->user_out_len = len;
+    p->xfer_out_len = p->bb ? 0 : len;
+    mirisdr_bb_start(p);
     p->xfer_out_pos = 0;
 #if MIRISDR_DEBUG >= 1
     fprintf( stderr, "async read on device %u, buffers: %lu, output size: ",
@@ -1051,6 +1055,7 @@ int mirisdr_start_async (mirisdr_dev_t *p) {
 
     if (p->async_status != MIRISDR_ASYNC_PAUSED) goto failed;
 
+    mirisdr_bb_restart(p);
     mirisdr_iso_settle(p);
     mirisdr_streaming_start(p);
 
