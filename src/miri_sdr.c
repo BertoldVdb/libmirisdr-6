@@ -87,6 +87,9 @@ void usage(void)
 		"\t  14000000: 14MHz, zero IF, no filter\n"
 		"\t    a combination the tuner cannot do is refused\n"
 		"\t[-s samplerate (default: 2048000 Hz)]\n"
+		"\t[-B baseband: complex float (cf32), -f at 0 Hz at any IF]\n"
+		"\t    a low IF gives 4 x IF halved 0 to 8 times, for example\n"
+		"\t    -i 2048000 -s 256000, and a real -m uses one converter\n"
 		"\t[-D decimation bypass (default: auto)]\n"
 		"\t    auto:   bypass above 14.5 Msps, where the PLL runs out\n"
 		"\t    on:     always bypass, 2.6 - 30 Msps\n"
@@ -101,10 +104,10 @@ void usage(void)
         "\t    LNA: 0, 1\n"
         "\t    mixbuffer: 0, 6, 12, 18, 24\n"
         "\t    baseband: 0 - 59\n"
-		"\t[-b output_block_size (default: 16 * 16384)]\n"
+		"\t[-b output_block_size (default: 16 * 16384, with -B as they come)]\n"
 		"\t[-q swap I/Q (default: off)]\n"
 		"\t    in the real modes this chooses which converter is digitised\n"
-		"\t[-S force sync output (default: async)]\n"
+		"\t[-S force sync output (default: async), not with -B]\n"
 		"\tfilename (a '-' dumps samples to stdout)\n\n");
 #endif
 	exit(1);
@@ -174,6 +177,8 @@ int main(int argc, char **argv)
     int gain_mixer = 0, gain_lna = 0, gain_mb = 0, gain_bb = 0;
     int gain_one = 1;
 	int sync_mode = 0;
+	int baseband = 0;
+	int block_given = 0;
 	int swap_iq = 0;
 	FILE *file;
 	uint8_t *buffer;
@@ -202,10 +207,14 @@ int main(int argc, char **argv)
 	int intval;
 
 #if !defined (_WIN32) || defined(__MINGW32__)
-	while ((opt = getopt(argc, argv, "b:d:D:T:e:f:g:G:i:m:qs:w:S::")) != -1) {
+	while ((opt = getopt(argc, argv, "b:Bd:D:T:e:f:g:G:i:m:qs:w:S::")) != -1) {
 		switch (opt) {
 		case 'b':
 			out_block_size = (uint32_t)atof(optarg);
+			block_given = 1;
+			break;
+		case 'B':
+			baseband = 1;
 			break;
 		case 'd':
 			dev_index = atoi(optarg);
@@ -325,6 +334,11 @@ int main(int argc, char **argv)
 		out_block_size = DEFAULT_BUF_LENGTH;
 	}
 
+	if (baseband && sync_mode) {
+		fprintf(stderr, "Baseband is async only, -B and -S do not go together.\n");
+		exit(1);
+	}
+
 	buffer = malloc(out_block_size * sizeof(uint8_t));
 
 	device_count = mirisdr_get_device_count();
@@ -375,34 +389,18 @@ int main(int argc, char **argv)
 	else
 		fprintf(stderr, "%s, %s: SN: %s\n", vendor, product, serial);
 
-	/* The stream in one call: an invalid combination is refused, not adjusted. The
-	   real modes digitise one converter, so swap_iq picks which one; in the complex
-	   modes it swaps I and Q. */
-	mirisdr_get_stream(dev, &sc, NULL);
-	sc.rate = samp_rate;
-	sc.format = format_names[format];
-	sc.transfer = transfer_name;
-	sc.decimation_bypass = decimation;
-	sc.swap_iq = swap_iq;
-	if (mirisdr_set_stream(dev, &sc, &sr) < 0) {
-		fprintf(stderr, "Failed to set up the stream.\n");
-		exit(1);
-	}
-	samp_rate = sr.rate;
-	fprintf(stderr, "Sample rate is set to %u Hz.\n", samp_rate);
-	fprintf(stderr, "I/Q swap is %s.\n", sc.swap_iq ? "on" : "off");
-	fprintf(stderr, "Transfer mode is %s.\n", mirisdr_get_transfer(dev));
-	fprintf(stderr, "Sample format is %s", mirisdr_get_sample_format(dev));
-	if (strncmp(mirisdr_get_sample_format(dev), "AUTO", 4) == 0)
-		fprintf(stderr, " (%s)", sr.format);
-	fprintf(stderr, ".\n");
-
-	/* The tune in one call, the gain with it: -g as a total the library splits,
+	/* The tune first, as its IF sets the rates a baseband stream can have. In one
+	   call, the gain with it: -g as a total the library splits,
 	   -G stage by stage; there is no automatic gain, so -g 0 keeps what is set */
 	mirisdr_get_tune(dev, 0, &tc, NULL);
 	tc.frequency = frequency;
 	tc.if_freq = if_mode;
 	tc.bandwidth = bw;
+	/* baseband: the LO goes the IF above -f, as the stream will want. With a real
+	   format one converter, -q picks Q */
+	tc.low_if_auto = baseband;
+	if (baseband && format >= 5)
+		tc.iq = swap_iq ? MIRISDR_IQ_ONLY_Q : MIRISDR_IQ_ONLY_I;
 	if (!gain_one) {
 		tc.gain.mode = MIRISDR_GAIN_STAGES;
 		tc.gain.mixer = gain_mixer;
@@ -422,6 +420,43 @@ int main(int argc, char **argv)
 	fprintf(stderr, "Tuned to %u Hz (LO %u Hz), bandwidth %u Hz.\n", frequency, tr.lo, tr.bandwidth);
 	fprintf(stderr, "Tuner gain %d dB: LNA %s, mixer %s, mixbuffer %d dB, baseband %d dB.\n", tr.gain.total,
 	        tr.gain.lna ? "on" : "off", tr.gain.mixer ? "on" : "off", tr.gain.mixbuffer, tr.gain.baseband);
+
+	/* The stream in one call: an invalid combination is refused, not adjusted. The
+	   real modes digitise one converter, so swap_iq picks which one; in the complex
+	   modes it swaps I and Q. */
+	mirisdr_get_stream(dev, &sc, NULL);
+	sc.rate = samp_rate;
+	sc.format = format_names[format];
+	/* baseband: the tune's converters decide, a real format is the one for a single
+	   converter, and -q mirrors the spectrum with both */
+	sc.baseband = baseband;
+	if (baseband && format >= 5) {
+		sc.format = NULL;
+		sc.format_single = format_names[format];
+		swap_iq = 0;
+	}
+	sc.transfer = transfer_name;
+	sc.decimation_bypass = decimation;
+	sc.swap_iq = swap_iq;
+	if (mirisdr_set_stream(dev, &sc, &sr) < 0) {
+		fprintf(stderr, "Failed to set up the stream.\n");
+		exit(1);
+	}
+	samp_rate = sr.rate;
+	fprintf(stderr, "Sample rate is set to %u Hz.\n", samp_rate);
+	if (baseband) {
+		mirisdr_get_tune(dev, 0, NULL, &tr);
+		fprintf(stderr, "Baseband, complex float: %s, converters at %u Hz, LO %u Hz.\n",
+		        sr.baseband == MIRISDR_BASEBAND_REAL ? "one converter" :
+		        sr.baseband == MIRISDR_BASEBAND_COMPLEX ? "both converters" : "zero IF",
+		        sr.adc_rate, tr.lo);
+	}
+	fprintf(stderr, "I/Q swap is %s.\n", sc.swap_iq ? "on" : "off");
+	fprintf(stderr, "Transfer mode is %s.\n", mirisdr_get_transfer(dev));
+	fprintf(stderr, "Sample format is %s", mirisdr_get_sample_format(dev));
+	if (strncmp(mirisdr_get_sample_format(dev), "AUTO", 4) == 0)
+		fprintf(stderr, " (%s)", sr.format);
+	fprintf(stderr, ".\n");
 
 	if(strcmp(filename, "-") == 0) { /* Write samples to stdout */
 		file = stdout;
@@ -459,8 +494,9 @@ int main(int argc, char **argv)
 		}
 	} else {
 		fprintf(stderr, "Reading samples in async mode...\n");
-		r = mirisdr_read_async(dev, mirisdr_callback, (void *)file,
-				      DEFAULT_ASYNC_BUF_NUMBER, out_block_size);
+		/* baseband rates can be low: without -b the buffers go out as they come */
+		r = mirisdr_read_async(dev, mirisdr_callback, (void *)file, DEFAULT_ASYNC_BUF_NUMBER,
+				      (baseband && !block_given) ? 0 : out_block_size);
 	}
 
 	if (do_exit)
