@@ -285,6 +285,7 @@ MIRISDR_API mirisdr_band_t mirisdr_get_band (mirisdr_dev_t *p);         /* extra
  * (see mirisdr_set_stream()): the tune then switches it, in one restart.
  *
  * mirisdr_get_center_freq() returns the LO, which the result gives too.
+ * mirisdr_set_center_freq() sets the LO: it clears low_if_auto and lo_offset.
  *
  * tuner is which tuner of the receiver, currently always 0.
  */

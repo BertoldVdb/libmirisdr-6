@@ -2897,9 +2897,12 @@ static tres_t t_tune_api (void)
     if (mirisdr_tune(dev, 0, &c, NULL) == 0) { say("zero IF with I only accepted"); return T_FAIL; }
     if (mirisdr_get_center_freq(dev) != 100450000) { say("a refused tune moved the LO"); return T_FAIL; }
 
-    /* the single setters keep the rest of the tune */
-    if (mirisdr_set_center_freq(dev, 200000000) < 0 || mirisdr_get_center_freq(dev) != 200450000)
-    { say("set_center_freq gave LO %u", mirisdr_get_center_freq(dev)); return T_FAIL; }
+    /* the single setters keep the rest of the tune; set_center_freq always sets the LO */
+    if (mirisdr_set_center_freq(dev, 200000000) < 0 || mirisdr_get_center_freq(dev) != 200000000 ||
+        mirisdr_get_if_freq(dev) != 450000)
+    { say("set_center_freq gave LO %u, IF %u", mirisdr_get_center_freq(dev), mirisdr_get_if_freq(dev)); return T_FAIL; }
+    mirisdr_get_tune(dev, 0, &got, NULL);
+    if (got.low_if_auto || got.lo_offset) { say("set_center_freq kept low_if_auto or lo_offset"); return T_FAIL; }
 
     /* the stream's converter and the tuner's output: refused both ways */
     mirisdr_get_stream(dev, &s, NULL);

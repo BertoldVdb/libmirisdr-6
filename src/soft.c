@@ -709,8 +709,11 @@ int mirisdr_set_center_freq(mirisdr_dev_t *p, uint32_t freq)
 
     if (!p) return -1;
 
+    /* always the LO, whatever a tune set before */
     c = p->tune;
     c.frequency = freq;
+    c.low_if_auto = 0;
+    c.lo_offset = 0;
 
     return mirisdr_tune_apply(p, &c, MIRISDR_TUNE_ADJUST, NULL);
 }
