@@ -350,6 +350,18 @@ static uint32_t mirisdr_burst(mirisdr_dev_t *p)
 	return mirisdr_alt_burst(p->alt_setting);
 }
 
+/* The host polls an isochronous endpoint only a few hundred us after the transfers
+   are submitted. A stream started before then overflows the device's at 7-8 Msps
+   and it skips samples, so wait a bit with starting :) */
+static void mirisdr_iso_settle (mirisdr_dev_t *p) {
+    if (p->transfer != MIRISDR_TRANSFER_ISOC) return;
+#if defined (_WIN32) && !defined(__MINGW32__)
+    Sleep(1);
+#else
+    usleep(1000);
+#endif
+}
+
 static int mirisdr_async_drain (mirisdr_dev_t *p, int rounds) {
     size_t i;
     int r;
@@ -933,6 +945,7 @@ static int mirisdr_read_async_run (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb,
 
     /* spustíme streamování dat */
     p->xfer_draining = 0;
+    mirisdr_iso_settle(p);
     mirisdr_streaming_start(p);
     p->async_status = MIRISDR_ASYNC_RUNNING;
 
@@ -1038,6 +1051,7 @@ int mirisdr_start_async (mirisdr_dev_t *p) {
 
     if (p->async_status != MIRISDR_ASYNC_PAUSED) goto failed;
 
+    mirisdr_iso_settle(p);
     mirisdr_streaming_start(p);
 
     p->async_status = MIRISDR_ASYNC_RUNNING;
