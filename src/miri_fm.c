@@ -274,10 +274,10 @@ sighandler(int signum)
 	return FALSE;
 }
 #else
+/* No output here: with SIGPIPE from stderr it would raise the signal again for ever */
 static void sighandler(int signum)
 {
 (void) signum;
-	fprintf(stderr, "Signal caught, exiting!\n");
 	do_exit = 1;
 	mirisdr_cancel_async(dongle.dev);
 }
@@ -830,7 +830,9 @@ static void mirisdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 	int i;
 	struct dongle_state *s = ctx;
 	char *buf8 = (char*) buf;
+	/* a cancel before the stream ran was lost */
 	if (do_exit) {
+		mirisdr_cancel_async(dongle.dev);
 		return;}
 	if (!ctx) {
 		return;}
