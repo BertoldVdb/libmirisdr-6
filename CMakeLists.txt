@@ -121,6 +121,20 @@ add_subdirectory(include)
 add_subdirectory(src)
 
 ########################################################################
+# SoapySDR module
+########################################################################
+option(ENABLE_SOAPY "Build the SoapySDR module when SoapySDR is found" ON)
+if(ENABLE_SOAPY)
+    find_package(SoapySDR CONFIG QUIET)
+    if(SoapySDR_FOUND)
+        message(STATUS "Building the SoapySDR module")
+        add_subdirectory(src/soapy)
+    else()
+        message(STATUS "SoapySDR not found, not building its module")
+    endif()
+endif()
+
+########################################################################
 # Create Pkg Config File
 ########################################################################
 FOREACH(inc ${LIBUSB_INCLUDE_DIR})

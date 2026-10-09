@@ -246,13 +246,13 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 	{
 		if ((pl->format_auto == MIRISDR_FORMAT_AUTO_REAL) || mirisdr_format_real(pl->format))
 		{
-			fprintf(stderr, "following the tune, format is the complex one\n");
+			mirisdr_refuse(p, "following the tune, format is the complex one\n");
 			return -1;
 		}
 
 		if ((sauto == MIRISDR_FORMAT_AUTO_ON) || !mirisdr_format_real(sformat))
 		{
-			fprintf(stderr, "following the tune, format_single is a real one\n");
+			mirisdr_refuse(p, "following the tune, format_single is a real one\n");
 			return -1;
 		}
 
@@ -273,7 +273,7 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 
 	if (i == sizeof mirisdr_transfers / sizeof mirisdr_transfers[0])
 	{
-		fprintf(stderr, "unsupported transfer type: %s\n", pl->cfg.transfer);
+		mirisdr_refuse(p, "unsupported transfer type: %s\n", pl->cfg.transfer);
 		return -1;
 	}
 
@@ -289,7 +289,7 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 
 		if (i == 3)
 		{
-			fprintf(stderr, "unsupported decimation bypass: %s\n", c->decimation_bypass);
+			mirisdr_refuse(p, "unsupported decimation bypass: %s\n", c->decimation_bypass);
 			return -1;
 		}
 
@@ -313,7 +313,7 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 	{
 		if (!adjust)
 		{
-			fprintf(stderr, "rate %u is outside %u to %u sps\n", pl->rate, rate_min, rate_max);
+			mirisdr_refuse(p, "rate %u is outside %u to %u sps\n", pl->rate, rate_min, rate_max);
 			return -1;
 		}
 
@@ -343,7 +343,7 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 
 		if (i == n)
 		{
-			fprintf(stderr, "rate %u needs %lu B/s, more than the %u B/s this mode supports\n", pl->rate,
+			mirisdr_refuse(p, "rate %u needs %lu B/s, more than the %u B/s this mode supports\n", pl->rate,
 			        (long unsigned) ((uint64_t) pl->rate * 1024 / spp), pl->cap);
 
 			if (!adjust) return -1;
@@ -353,7 +353,7 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 	else if (!adjust && (pl->transfer != MIRISDR_TRANSFER_BULK) &&
 	         ((uint64_t) pl->rate * 1024 / mirisdr_format_spp(pl->format) > pl->cap))
 	{
-		fprintf(stderr, "rate %u in %s needs %lu B/s, more than the %u B/s this mode supports\n", pl->rate,
+		mirisdr_refuse(p, "rate %u in %s needs %lu B/s, more than the %u B/s this mode supports\n", pl->rate,
 		        pl->cfg.format, (long unsigned) ((uint64_t) pl->rate * 1024 / mirisdr_format_spp(pl->format)),
 		        pl->cap);
 		return -1;
@@ -367,10 +367,10 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 
 	if ((uint64_t) pl->rate > most)
 	{
-		fprintf(stderr, "rate %u needs %lu B/s of blocks, more than the engine's %lu", pl->rate,
+		mirisdr_refuse(p, "rate %u needs %lu B/s of blocks, more than the engine's %lu", pl->rate,
 		        (long unsigned) ((uint64_t) pl->rate * 1024 / spp), (long unsigned) MIRISDR_ENGINE_BLOCK_RATE);
-		if (adjust) fprintf(stderr, ", using %lu", (long unsigned) most);
-		fprintf(stderr, "\n");
+		if (adjust) mirisdr_refuse(p, ", using %lu", (long unsigned) most);
+		mirisdr_refuse(p, "\n");
 
 		if (!adjust) return -1;
 
@@ -392,7 +392,7 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 	   rate limits in hard.h) */
 	if (!(pl->ncand = mirisdr_pll_candidates(pl->pll_rate, pl->cand)))
 	{
-		fprintf(stderr, "no PLL divider puts the VCO in range for %u sps\n", pl->rate);
+		mirisdr_refuse(p, "no PLL divider puts the VCO in range for %u sps\n", pl->rate);
 		return -1;
 	}
 
@@ -400,7 +400,7 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 	if (!adjust && !pl->cfg.follow_tune && mirisdr_format_real(pl->format) && (iq != MIRISDR_IQ_BOTH) &&
 	    ((pl->swap ? MIRISDR_IQ_ONLY_Q : MIRISDR_IQ_ONLY_I) != iq))
 	{
-		fprintf(stderr, "the tune switched off the tuner output this would capture\n");
+		mirisdr_refuse(p, "the tune switched off the tuner output this would capture\n");
 		return -1;
 	}
 
@@ -582,9 +582,13 @@ int mirisdr_set_stream (mirisdr_dev_t *p, const mirisdr_stream_config_t *cfg, mi
 int mirisdr_stream_check (mirisdr_dev_t *p, const mirisdr_stream_config_t *cfg, mirisdr_stream_result_t *res)
 {
 	mirisdr_stream_plan_t pl;
+	int r;
 
 	if (!p || !cfg) return -1;
-	if (mirisdr_stream_plan(p, cfg, 0, p->tune_iq, &pl) < 0) return -1;
+	p->checking = 1;
+	r = mirisdr_stream_plan(p, cfg, 0, p->tune_iq, &pl);
+	p->checking = 0;
+	if (r < 0) return -1;
 
 	if (res) mirisdr_stream_result_of(pl.rate, pl.format, pl.swap, pl.decim, pl.cap, res);
 

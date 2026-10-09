@@ -414,7 +414,7 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
 
     if ((pl->ifm = mirisdr_if_mode(c->if_freq)) < 0)
     {
-        fprintf(stderr, "unsupported if frequency: %u Hz\n", c->if_freq);
+        mirisdr_refuse(p, "unsupported if frequency: %u Hz\n", c->if_freq);
         return -1;
     }
 
@@ -426,7 +426,7 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
 
         if (i == (int) (sizeof mirisdr_bw_hz / sizeof mirisdr_bw_hz[0]))
         {
-            fprintf(stderr, "unsupported bandwidth: %u Hz\n", c->bandwidth);
+            mirisdr_refuse(p, "unsupported bandwidth: %u Hz\n", c->bandwidth);
             return -1;
         }
 
@@ -437,13 +437,13 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
 
     if (!adjust && !(mirisdr_if_bws[pl->ifm] & (1 << pl->bw)))
     {
-        fprintf(stderr, "a %u Hz bandwidth is not available with a %u Hz IF\n", pl->cfg.bandwidth, c->if_freq);
+        mirisdr_refuse(p, "a %u Hz bandwidth is not available with a %u Hz IF\n", pl->cfg.bandwidth, c->if_freq);
         return -1;
     }
 
     if ((c->iq < MIRISDR_IQ_BOTH) || (c->iq > MIRISDR_IQ_ONLY_Q))
     {
-        fprintf(stderr, "unsupported iq selection: %d\n", c->iq);
+        mirisdr_refuse(p, "unsupported iq selection: %d\n", c->iq);
         return -1;
     }
 
@@ -454,7 +454,7 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
     {
         if (!adjust)
         {
-            fprintf(stderr, "a single tuner output needs a low IF\n");
+            mirisdr_refuse(p, "a single tuner output needs a low IF\n");
             return -1;
         }
 
@@ -465,26 +465,26 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
     if (!adjust && !p->stream.follow_tune && (pl->iq != MIRISDR_IQ_BOTH) &&
         (mirisdr_stream_adc(p) != MIRISDR_IQ_BOTH) && (mirisdr_stream_adc(p) != pl->iq))
     {
-        fprintf(stderr, "the stream captures the tuner output this tune switches off\n");
+        mirisdr_refuse(p, "the stream captures the tuner output this tune switches off\n");
         return -1;
     }
 
     if (c->synth_thresh > 4095)
     {
-        fprintf(stderr, "unsupported synthesizer threshold: %u\n", c->synth_thresh);
+        mirisdr_refuse(p, "unsupported synthesizer threshold: %u\n", c->synth_thresh);
         return -1;
     }
 
     if (mirisdr_override_words(&c->override, &pl->ovr13, &pl->ovr14) < 0)
     {
-        fprintf(stderr, "tuner override code out of range\n");
+        mirisdr_refuse(p, "tuner override code out of range\n");
         return -1;
     }
 
     if ((c->gain.mode < MIRISDR_GAIN_KEEP) || (c->gain.mode > MIRISDR_GAIN_STAGES) ||
         ((c->gain.mode == MIRISDR_GAIN_TOTAL) && (c->gain.total < 0)))
     {
-        fprintf(stderr, "unsupported gain: mode %d, %d dB\n", c->gain.mode, c->gain.total);
+        mirisdr_refuse(p, "unsupported gain: mode %d, %d dB\n", c->gain.mode, c->gain.total);
         return -1;
     }
 
@@ -493,7 +493,7 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
 
     if ((lo < 0) || (lo > (int64_t) UINT32_MAX) || (!adjust && (lo >= mirisdr_plan_end(p))))
     {
-        fprintf(stderr, "cannot tune the LO to %lld Hz\n", (long long) lo);
+        mirisdr_refuse(p, "cannot tune the LO to %lld Hz\n", (long long) lo);
         return -1;
     }
 
@@ -506,7 +506,7 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
     {
         if (mirisdr_gr_of_stages(pl->w.band, &c->gain, &pl->gr) < 0)
         {
-            fprintf(stderr, "unsupported gain stages for the band: lna %d mixer %d mixbuffer %d baseband %d\n",
+            mirisdr_refuse(p, "unsupported gain stages for the band: lna %d mixer %d mixbuffer %d baseband %d\n",
                     c->gain.lna, c->gain.mixer, c->gain.mixbuffer, c->gain.baseband);
             return -1;
         }
@@ -662,9 +662,13 @@ int mirisdr_tune (mirisdr_dev_t *p, int tuner, const mirisdr_tune_config_t *cfg,
 int mirisdr_tune_check (mirisdr_dev_t *p, int tuner, const mirisdr_tune_config_t *cfg, mirisdr_tune_result_t *res)
 {
     mirisdr_tune_plan_t pl;
+    int r;
 
     if (!p || !cfg || (tuner < 0) || (tuner >= MIRISDR_TUNERS)) return -1;
-    if (mirisdr_tune_plan(p, cfg, 0, &pl) < 0) return -1;
+    p->checking = 1;
+    r = mirisdr_tune_plan(p, cfg, 0, &pl);
+    p->checking = 0;
+    if (r < 0) return -1;
 
     if (res) mirisdr_tune_result_of(mirisdr_tune_adc(p, pl.iq), cfg->frequency, pl.w.lo_real, pl.iq,
                                     pl.cfg.bandwidth, pl.w.band, &pl.gr, res);

@@ -107,6 +107,7 @@ struct mirisdr_dev {
     } async_status;
     volatile int        async_starting; /* read_async entered, transfers not yet running */
     volatile int        cancel_pending; /* a cancel came while starting */
+    int                 checking;       /* in a *_check(): refusals are not printed */
     mirisdr_read_async_cb_t cb;
     void                *cb_ctx;
     size_t              xfer_buf_num;

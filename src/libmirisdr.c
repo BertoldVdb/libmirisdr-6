@@ -18,6 +18,7 @@
 
 /* potřebné funkce */
 #include <errno.h>
+#include <stdarg.h>
 #include <signal.h>
 #include <string.h>
 #include <stdio.h>
@@ -43,6 +44,17 @@
 #include "structs.h"
 
 /* interní funkce - inline */
+/* why a stream or tune is refused, unless only checking */
+static void mirisdr_refuse (mirisdr_dev_t *p, const char *fmt, ...)
+{
+    va_list ap;
+
+    if (p->checking) return;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+}
+
 #include "reg.c"
 #include "debug.c"
 #include "gpio.c"
