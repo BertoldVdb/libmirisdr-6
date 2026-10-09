@@ -18,7 +18,10 @@ static int mirisdr_samples_convert_384_s16 (mirisdr_dev_t *p, unsigned char* buf
     /* dostáváme 1-3 1024 bytů dlouhé bloky, poslední část je 24 bitů, tu nezpracováváme */
     for (i_max = cnt >> 10, i = 0; i < i_max; i++, src+= 24) {
         /* potenciálně ztracená data */
-        mirisdr_addr_next(p, src, p->addr_step);
+        if (mirisdr_addr_next(p, src, p->addr_step)) {
+            src+= 1000;
+            continue;
+        }
 
         /* přeskočíme hlavičku 16 bitů, 6 bloků, poslední 4 bajtový posuvný blok zpracujeme */
         for (src+= 16, j = 0; j < 6; j++, src+= 4) {

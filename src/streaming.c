@@ -23,6 +23,7 @@ int mirisdr_streaming_start (mirisdr_dev_t *p) {
 
     /* Do not report loss on old blocks */
     p->addr_restart = 1;
+    p->addr_dropped = 0;
 
     return 0;
 

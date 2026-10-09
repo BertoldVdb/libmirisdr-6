@@ -20,7 +20,10 @@ static int mirisdr_samples_convert_252_s16 (mirisdr_dev_t *p, unsigned char* buf
     /* dostáváme 1-3 1024 bytů dlouhé bloky - we get 1-3 blocks of 1024 bytes each */
     for (i_max = cnt >> 10, i = 0; i < i_max; i++, src+= 1008) {
         /* potenciálně ztracená data - potentially lost data */
-        mirisdr_addr_next(p, src, p->addr_step);
+        if (mirisdr_addr_next(p, src, p->addr_step)) {
+            src+= 16;
+            continue;
+        }
 
         /* přeskočíme hlavičku 16 bitů, 252 I+Q párů - skip 16 bits of header, do 252 I+Q pairs */
         for (src+= 16, j = 0; j < 1008; j+= 4, ret+= 2) {

@@ -245,6 +245,7 @@ struct mirisdr_dev {
     mirisdr_buffer_info_t cb_info;
     int                 addr_valid;
     int                 addr_restart;  /* stream start since the last block */
+    int                 addr_dropped;  /* blocks dropped since that start */
 
     /* dc offset calibration */
     enum {

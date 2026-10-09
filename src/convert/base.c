@@ -7,6 +7,11 @@
  */
 #define MIRISDR_ADDR_JITTER 4
 
+/* After a start the device can still hold blocks of the stream before, at times
+   with a header cleared or overwritten: up to 4 kB in the sample engine and 2x
+   4 kB in the USB FIFO. Those 12 blocks are dropped and the next starts the count */
+#define MIRISDR_ADDR_DROP 12
+
 /* Output bytes a sample, I/Q pair or real value, takes */
 static uint32_t mirisdr_unit_bytes (mirisdr_dev_t *p) {
     switch (p->format) {
@@ -57,16 +62,27 @@ static uint64_t mirisdr_gap_note (mirisdr_dev_t *p, uint64_t missing) {
 
 /* Called once per 1024 byte block with its header, which carries the sample
    counter and the IR block last completed run (if enabled). */
-static void mirisdr_addr_next (mirisdr_dev_t *p, const uint8_t *hdr, uint32_t step) {
+/* returns 1 for a block to drop */
+static int mirisdr_addr_next (mirisdr_dev_t *p, const uint8_t *hdr, uint32_t step) {
     uint32_t addr = hdr[3] << 24 | hdr[2] << 16 | hdr[1] << 8 | hdr[0] << 0;
-    int32_t d = (int32_t) (addr - p->addr);
+    int32_t d;
+
+    if (p->addr_restart) {
+        if (p->addr_dropped++ < MIRISDR_ADDR_DROP) return 1;
+
+        /* the device counts again from its start */
+        p->addr_restart = 0;
+        if (p->addr_valid) {
+            mirisdr_ir_resync(p);
+            p->ev_valid = 0;
+        }
+        p->addr_valid = 0;
+    }
+
+    d = (int32_t) (addr - p->addr);
 
     if (!p->addr_valid) {
         p->addr_valid = 1;
-    } else if (p->addr_restart && d < -MIRISDR_ADDR_JITTER && addr < 0x10000) {
-        p->addr_restart = 0;
-        mirisdr_ir_resync(p);
-        p->ev_valid = 0;
     } else if ((d > MIRISDR_ADDR_JITTER) || (d < -MIRISDR_ADDR_JITTER)) {
         fprintf(stderr, "%d samples lost, %08x:%08x\n", d, p->addr, addr);
         p->stats.gaps++;
@@ -100,6 +116,8 @@ static void mirisdr_addr_next (mirisdr_dev_t *p, const uint8_t *hdr, uint32_t st
     p->addr = addr + step;
 
     mirisdr_ir_latch(p, hdr[6], addr);
+
+    return 0;
 }
 
 #include "252_s16.c"

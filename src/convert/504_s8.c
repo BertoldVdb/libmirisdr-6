@@ -11,13 +11,14 @@ static int mirisdr_samples_convert_504_s8 (mirisdr_dev_t *p, unsigned char* src,
 
     /* only whole blocks: a transfer cut short by a resynchronisation ends in a
        partial one, and the header of the next block is not where it looks */
-    for (i = 0; i + 1024 <= cnt; i+= 1024, ret+= 1008) {
+    for (i = 0; i + 1024 <= cnt; i+= 1024) {
         unsigned char *b = src + i;
 
         /* ztracená data */
-        mirisdr_addr_next(p, b, p->addr_step);
+        if (mirisdr_addr_next(p, b, p->addr_step)) continue;
 
         memcpy(dst + ret, b + 16, 1008);
+        ret+= 1008;
     }
 
     return ret;
