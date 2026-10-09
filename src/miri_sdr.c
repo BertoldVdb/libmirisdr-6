@@ -77,16 +77,15 @@ void usage(void)
 		"\t    450000:  450 kHz\n"
 		"\t    1620000: 1620kHz\n"
 		"\t    2048000: 2048kHz\n"
-		"\t[-w BW mode (default: 8MHz]\n"
-		"\t    200000: 200kHz\n"
-		"\t    300000: 300kHz\n"
-		"\t    600000: 600kHz\n"
-		"\t   1536000: 1536kHz\n"
-		"\t   5000000: 5MHz\n"
-		"\t   6000000: 6MHz\n"
-		"\t   7000000: 7MHz\n"
-		"\t   8000000: 8MHz\n"
-        "\t  14000000: 14MHz\n"
+		"\t[-w BW mode (default: the widest the IF allows)]\n"
+		"\t    200000: 200kHz, 450 kHz IF\n"
+		"\t    300000: 300kHz, 450 kHz IF\n"
+		"\t    600000: 600kHz, any low IF\n"
+		"\t   1536000: 1536kHz, zero, 1620 or 2048 kHz IF\n"
+		"\t   5000000: 5MHz, zero IF, 6, 7 and 8 MHz too\n"
+		"\t   8000000: 8MHz, zero IF\n"
+		"\t  14000000: 14MHz, zero IF, no filter\n"
+		"\t    a combination the tuner cannot do is refused\n"
 		"\t[-s samplerate (default: 2048000 Hz)]\n"
 		"\t[-D decimation bypass (default: auto)]\n"
 		"\t    auto:   bypass above 14.5 Msps, where the PLL runs out\n"
@@ -180,7 +179,13 @@ int main(int argc, char **argv)
 	const char *transfer_name = "BULK";
 #endif
 	uint32_t if_mode = 0;
-	uint32_t bw = 8000000;
+	uint32_t bw = 0;
+	static const char *format_names[] = { "AUTO", "504_S8", "384_S16", "336_S16", "252_S16",
+	                                      "768_REAL_S16", "672_REAL_S16", "504_REAL_S16", "AUTO_REAL" };
+	mirisdr_stream_config_t sc;
+	mirisdr_stream_result_t sr;
+	mirisdr_tune_config_t tc;
+	mirisdr_tune_result_t tr;
 	uint32_t dev_index = 0;
 	uint32_t frequency = 100000000;
 	uint32_t samp_rate = DEFAULT_SAMPLE_RATE;
@@ -364,123 +369,53 @@ int main(int argc, char **argv)
 	else
 		fprintf(stderr, "%s, %s: SN: %s\n", vendor, product, serial);
 
-	/* Set the decimation mode */
-    if (mirisdr_set_decimation_bypass(dev, decimation) < 0)
+	/* The stream in one call: an invalid combination is refused, not adjusted. The
+	   real modes digitise one converter, so swap_iq picks which one; in the complex
+	   modes it swaps I and Q. */
+	mirisdr_get_stream(dev, &sc, NULL);
+	sc.rate = samp_rate;
+	sc.format = format_names[format];
+	sc.transfer = transfer_name;
+	sc.decimation_bypass = decimation;
+	sc.swap_iq = swap_iq;
+	if (mirisdr_set_stream(dev, &sc, &sr) < 0) {
+		fprintf(stderr, "Failed to set up the stream.\n");
 		exit(1);
-
-	/* Set the sample rate */
-	r = mirisdr_set_sample_rate(dev, samp_rate);
-	if (r < 0)
-		fprintf(stderr, "WARNING: Failed to set sample rate.\n");
-	else {
-		samp_rate = mirisdr_get_sample_rate(dev);
-		fprintf(stderr, "Sample rate is set to %u Hz.\n", samp_rate);
 	}
-
-	/* Set the frequency */
-	r = mirisdr_set_center_freq(dev, frequency);
-	if (r < 0)
-		fprintf(stderr, "WARNING: Failed to set center freq.\n");
-	else
-		fprintf(stderr, "Tuned to %u Hz.\n", frequency);
-
-	/* Set sample format */
-	switch (format) {
-	case 1:
-		mirisdr_set_sample_format(dev, "504_S8");
-		break;
-	case 2:
-		mirisdr_set_sample_format(dev, "384_S16");
-		break;
-	case 3:
-		mirisdr_set_sample_format(dev, "336_S16");
-		break;
-	case 4:
-		mirisdr_set_sample_format(dev, "252_S16");
-		break;
-	case 5:
-		mirisdr_set_sample_format(dev, "768_REAL_S16");
-		break;
-	case 6:
-		mirisdr_set_sample_format(dev, "672_REAL_S16");
-		break;
-	case 7:
-		mirisdr_set_sample_format(dev, "504_REAL_S16");
-		break;
-	case 8:
-		mirisdr_set_sample_format(dev, "AUTO_REAL");
-		break;
-	default:
-		mirisdr_set_sample_format(dev, "AUTO");
-		break;
-	}
-
-	/* The real modes digitise one converter, so this picks which one. In the
-	   complex modes it swaps I and Q. */
-	if (mirisdr_set_swap_iq(dev, swap_iq) < 0)
-		exit(1);
-	fprintf(stderr, "I/Q swap is %s.\n", mirisdr_get_swap_iq(dev) ? "on" : "off");
-
-	/* Set USB transfer type */
-	if (mirisdr_set_transfer(dev, transfer_name) < 0)
-		exit(1);
+	samp_rate = sr.rate;
+	fprintf(stderr, "Sample rate is set to %u Hz.\n", samp_rate);
+	fprintf(stderr, "I/Q swap is %s.\n", sc.swap_iq ? "on" : "off");
 	fprintf(stderr, "Transfer mode is %s.\n", mirisdr_get_transfer(dev));
-
 	fprintf(stderr, "Sample format is %s", mirisdr_get_sample_format(dev));
 	if (strncmp(mirisdr_get_sample_format(dev), "AUTO", 4) == 0)
-		fprintf(stderr, " (%s)", mirisdr_get_sample_format_selected(dev));
+		fprintf(stderr, " (%s)", sr.format);
 	fprintf(stderr, ".\n");
 
-	/* Set IF mode */
-	mirisdr_set_if_freq(dev, if_mode);
-
-	/* Set bandwidth */
-	mirisdr_set_bandwidth(dev, bw);
-
-	if (0 == gain && gain_one) {
-		 /* Enable automatic gain */
-		r = mirisdr_set_tuner_gain_mode(dev, 0);
-		if (r < 0)
-			fprintf(stderr, "WARNING: Failed to enable automatic gain.\n");
+	/* The tune in one call, the gain with it: -g as a total the library splits,
+	   -G stage by stage; there is no automatic gain, so -g 0 keeps what is set */
+	mirisdr_get_tune(dev, 0, &tc, NULL);
+	tc.frequency = frequency;
+	tc.if_freq = if_mode;
+	tc.bandwidth = bw;
+	if (!gain_one) {
+		tc.gain.mode = MIRISDR_GAIN_STAGES;
+		tc.gain.mixer = gain_mixer;
+		tc.gain.lna = gain_lna;
+		tc.gain.mixbuffer = gain_mb;
+		tc.gain.baseband = gain_bb;
+	} else if (gain) {
+		tc.gain.mode = MIRISDR_GAIN_TOTAL;
+		tc.gain.total = gain;
 	} else {
-		/* Enable manual gain */
-		r = mirisdr_set_tuner_gain_mode(dev, 1);
-		if (r < 0)
-			fprintf(stderr, "WARNING: Failed to enable manual gain.\n");
-
-        if (gain_one) {
-            r = mirisdr_set_tuner_gain(dev, gain);
-            if (r < 0)
-                fprintf(stderr, "WARNING: Failed to set tuner gain.\n");
-            else
-                fprintf(stderr, "Tuner gain set to %d dB.\n", mirisdr_get_tuner_gain(dev));
-        } else {
-            // mixer lna mb bb
-            r = mirisdr_set_mixer_gain(dev, gain_mixer);
-            if (r < 0)
-                fprintf(stderr, "WARNING: Failed to set mixer gain.\n");
-            else
-                fprintf(stderr, "Mixer amplifier set to %s.\n", gain_mixer ? "ON" : "OFF");
-
-            r = mirisdr_set_lna_gain(dev, gain_lna);
-            if (r < 0)
-                fprintf(stderr, "WARNING: Failed to set LNA gain.\n");
-            else
-                fprintf(stderr, "LNA set to %s.\n", gain_mixer ? "ON" : "OFF");
-
-            r = mirisdr_set_mixbuffer_gain(dev, gain_mb);
-            if (r < 0)
-                fprintf(stderr, "WARNING: Failed to set mixbuffer gain.\n");
-            else
-                fprintf(stderr, "Mixbuffer gain set to %d dB.\n", gain_mb);
-
-            r = mirisdr_set_baseband_gain(dev, gain_bb);
-            if (r < 0)
-                fprintf(stderr, "WARNING: Failed to set baseband gain.\n");
-            else
-                fprintf(stderr, "Baseband gain set to %d dB.\n", gain_bb);
-        }
+		fprintf(stderr, "No automatic gain, keeping the gain set.\n");
 	}
+	if (mirisdr_tune(dev, 0, &tc, &tr) < 0) {
+		fprintf(stderr, "Failed to tune.\n");
+		exit(1);
+	}
+	fprintf(stderr, "Tuned to %u Hz (LO %u Hz), bandwidth %u Hz.\n", frequency, tr.lo, tr.bandwidth);
+	fprintf(stderr, "Tuner gain %d dB: LNA %s, mixer %s, mixbuffer %d dB, baseband %d dB.\n", tr.gain.total,
+	        tr.gain.lna ? "on" : "off", tr.gain.mixer ? "on" : "off", tr.gain.mixbuffer, tr.gain.baseband);
 
 	if(strcmp(filename, "-") == 0) { /* Write samples to stdout */
 		file = stdout;

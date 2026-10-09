@@ -200,7 +200,7 @@ void usage(void)
         "\t[-T device_type device variant: 0 default, 1 SDRplay, 2 RSP1B (default: by VID:PID)]\n"
         "\t    0:       Default\n"
         "\t    1:       SDRPlay\n"
-		"\t[-g tuner_gain in 10 dB units, 0-10.2: 4.5 is 45 dB (default: automatic)]\n"
+		"\t[-g tuner_gain in 10 dB units, 0-10.2: 4.5 is 45 dB (default: the library's, 43 dB)]\n"
 		"\t[-m sample format (default: auto]\n"
 		"\t    504:    S8 (fastest)\n"
 		"\t    384:    S10 +2bits \n"
@@ -218,15 +218,14 @@ void usage(void)
 		"\t    450000:  450 kHz\n"
 		"\t    1620000: 1620kHz\n"
 		"\t    2048000: 2048kHz\n"
-		"\t[-w BW mode (default: 8MHz]\n"
-		"\t    200000:  200kHz\n"
-		"\t    300000:  300kHz\n"
-		"\t    600000:  600kHz\n"
-		"\t    1536000: 1536kHz\n"
-		"\t    5000000: 5MHz\n"
-		"\t    6000000: 6MHz\n"
-		"\t    7000000: 7MHz\n"
-		"\t    8000000: 8MHz\n"
+		"\t[-w BW mode (default: the widest the IF allows)]\n"
+		"\t    200000:  200kHz, 450 kHz IF\n"
+		"\t    300000:  300kHz, 450 kHz IF\n"
+		"\t    600000:  600kHz, any low IF\n"
+		"\t    1536000: 1536kHz, zero, 1620 or 2048 kHz IF\n"
+		"\t    5000000: 5MHz, zero IF, 6, 7 and 8 MHz too\n"
+		"\t    8000000: 8MHz, zero IF\n"
+		"\t    a combination the tuner cannot do is refused\n"
 		"\t[-l squelch_level (default: 0/off)]\n"
 		//"\t    for fm squelch is inverted\n"
 		"\t[-o oversampling (default: 1, 4 recommended)]\n"
@@ -953,6 +952,11 @@ static void *controller_thread_fn(void *arg)
 	// might be no good using a controller thread if retune/rate blocks
 	int i;
 	struct controller_state *s = arg;
+	static const char *formats[] = { "AUTO", "504_S8", "384_S16", "336_S16", "252_S16" };
+	mirisdr_stream_config_t sc;
+	mirisdr_stream_result_t sr;
+	mirisdr_tune_config_t tc;
+	mirisdr_tune_result_t tr;
 
 	if (s->wb_mode) {
 		for (i=0; i < s->freq_len; i++) {
@@ -966,51 +970,43 @@ static void *controller_thread_fn(void *arg)
 	if (dongle.offset_tuning) {
 		verbose_offset_tuning(dongle.dev);}
 
-	/* Set the frequency */
-	verbose_set_frequency(dongle.dev, dongle.freq);
 	fprintf(stderr, "Oversampling input by: %ix.\n", demod.downsample);
 	fprintf(stderr, "Oversampling output by: %ix.\n", demod.post_downsample);
 	fprintf(stderr, "Buffer size: %0.2fms\n",
 		1000 * 0.5 * (float)ACTUAL_BUF_LENGTH / (float)dongle.rate);
 
-	/* Set sample format */
-	switch (dongle.format) {
-	case 1:
-		mirisdr_set_sample_format(dongle.dev, "504_S8");
-		break;
-	case 2:
-		mirisdr_set_sample_format(dongle.dev, "384_S16");
-		break;
-	case 3:
-		mirisdr_set_sample_format(dongle.dev, "336_S16");
-		break;
-	case 4:
-		mirisdr_set_sample_format(dongle.dev, "252_S16");
-		break;
-	default:
-		mirisdr_set_sample_format(dongle.dev, "AUTO");
-		break;
+	/* The stream in one call: an invalid combination is refused, not adjusted */
+	mirisdr_get_stream(dongle.dev, &sc, NULL);
+	sc.rate = dongle.rate;
+	sc.format = formats[dongle.format];
+	if (dongle.transfer == 1) {
+		sc.transfer = "ISOC";}
+	if (dongle.transfer == 2) {
+		sc.transfer = "BULK";}
+	if (mirisdr_set_stream(dongle.dev, &sc, &sr) < 0) {
+		fprintf(stderr, "Failed to set up the stream.\n");
+		exit(1);
 	}
-
-	/* Set USB transfer type */
-	switch (dongle.transfer) {
-	case 1:
-		mirisdr_set_transfer(dongle.dev, "ISOC");
-		break;
-	case 2:
-		mirisdr_set_transfer(dongle.dev, "BULK");
-		break;
-	}
-
-	/* Set IF mode */
-	mirisdr_set_if_freq(dongle.dev, dongle.if_mode);
-
-	/* Set bandwidth */
-	mirisdr_set_bandwidth(dongle.dev, dongle.bw);
-
-	/* Set the sample rate */
-	verbose_set_sample_rate(dongle.dev, dongle.rate);
+	fprintf(stderr, "Sampling at %u S/s, %s.\n", sr.rate, sr.format);
 	fprintf(stderr, "Output at %u Hz.\n", demod.rate_in/demod.post_downsample);
+
+	/* The tune in one call, the gain with it; there is no automatic gain */
+	mirisdr_get_tune(dongle.dev, 0, &tc, NULL);
+	tc.frequency = dongle.freq;
+	tc.if_freq = dongle.if_mode;
+	tc.bandwidth = dongle.bw;
+	if (dongle.gain != AUTO_GAIN) {
+		tc.gain.mode = MIRISDR_GAIN_TOTAL;
+		tc.gain.total = dongle.gain;
+	}
+	if (mirisdr_tune(dongle.dev, 0, &tc, &tr) < 0) {
+		fprintf(stderr, "Failed to tune.\n");
+		exit(1);
+	}
+	fprintf(stderr, "Tuned to %u Hz, bandwidth %u Hz, tuner gain %d dB.\n", dongle.freq, tr.bandwidth, tr.gain.total);
+
+	/* hops keep the gain in force, which follows the band */
+	tc.gain.mode = MIRISDR_GAIN_KEEP;
 
 	while (!do_exit) {
 		safe_cond_wait(&s->hop, &s->hop_m);
@@ -1019,7 +1015,9 @@ static void *controller_thread_fn(void *arg)
 		/* hacky hopping */
 		s->freq_now = (s->freq_now + 1) % s->freq_len;
 		optimal_settings(s->freqs[s->freq_now], demod.rate_in);
-		mirisdr_set_center_freq(dongle.dev, dongle.freq);
+		tc.frequency = dongle.freq;
+		if (mirisdr_tune(dongle.dev, 0, &tc, NULL) < 0) {
+			fprintf(stderr, "Failed to tune to %u Hz.\n", dongle.freq);}
 		dongle.mute = BUFFER_DUMP;
 	}
 	return 0;
@@ -1059,7 +1057,7 @@ void dongle_init(struct dongle_state *s)
 #else
 	s->transfer = 2;
 #endif
-	s->bw = 8000000;
+	s->bw = 0;              /* the widest the IF allows */
 	s->if_mode = 0;
 }
 
@@ -1350,14 +1348,6 @@ int main(int argc, char **argv)
 
 	if (demod.deemph) {
 		demod.deemph_a = (int)round(1.0/((1.0-exp(-1.0/(demod.rate_out * 75e-6)))));
-	}
-
-	/* Set the tuner gain */
-	if (dongle.gain == AUTO_GAIN) {
-		verbose_auto_gain(dongle.dev);
-	} else {
-		dongle.gain = nearest_gain(dongle.dev, dongle.gain);
-		verbose_gain_set(dongle.dev, dongle.gain);
 	}
 
 	if (!custom_ppm) {
