@@ -82,6 +82,16 @@ target_link_libraries(miri_test mirisdr_shared
     ${LIBUSB_LIBRARIES}
     ${CMAKE_THREAD_LIBS_INIT}
 )
+if(MIRISDR_SOAPY)
+    # the soapy group: the module from this build, else the installed one
+    target_sources(miri_test PRIVATE miri_test_soapy.cpp)
+    target_include_directories(miri_test PRIVATE ${SoapySDR_INCLUDE_DIRS})
+    target_link_libraries(miri_test ${SoapySDR_LIBRARIES})
+    target_compile_definitions(miri_test PRIVATE MIRI_TEST_SOAPY
+        MIRI_SOAPY_MODULE_BUILD="$<TARGET_FILE:mirisdrSupport>"
+        MIRI_SOAPY_MODULE_INSTALL="${CMAKE_INSTALL_PREFIX}/lib${LIB_SUFFIX}/SoapySDR/modules${SOAPY_SDR_ABI_VERSION}/$<TARGET_FILE_NAME:mirisdrSupport>")
+    add_dependencies(miri_test mirisdrSupport)
+endif()
 
 if(UNIX)
 target_link_libraries(miri_fm m)

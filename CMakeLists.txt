@@ -117,21 +117,27 @@ endif (DETACH_KERNEL_DRIVER)
 ########################################################################
 # Add subdirectories
 ########################################################################
-add_subdirectory(include)
-add_subdirectory(src)
-
 ########################################################################
-# SoapySDR module
+# SoapySDR module, and miri_test's tests of it
 ########################################################################
 option(ENABLE_SOAPY "Build the SoapySDR module when SoapySDR is found" ON)
+set(MIRISDR_SOAPY OFF)
 if(ENABLE_SOAPY)
     find_package(SoapySDR CONFIG QUIET)
     if(SoapySDR_FOUND)
         message(STATUS "Building the SoapySDR module")
-        add_subdirectory(src/soapy)
+        enable_language(CXX)
+        set(MIRISDR_SOAPY ON)
     else()
         message(STATUS "SoapySDR not found, not building its module")
     endif()
+endif()
+
+add_subdirectory(include)
+add_subdirectory(src)
+
+if(MIRISDR_SOAPY)
+    add_subdirectory(src/soapy)
 endif()
 
 ########################################################################

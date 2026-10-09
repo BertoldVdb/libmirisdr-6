@@ -3363,6 +3363,50 @@ static tres_t t_scan_dry (void)
     return res;
 }
 
+#ifdef MIRI_TEST_SOAPY
+/* ------------------------------------------------------------------ */
+/* the SoapySDR module, loaded and used as an application would        */
+/* ------------------------------------------------------------------ */
+
+#include "miri_test_soapy.h"
+
+/* MIRI_SOAPY_MODULE in the environment, else the build's, else the installed one */
+static const char *soapy_module (void)
+{
+    const char *env = getenv("MIRI_SOAPY_MODULE");
+
+    if (env) return env;
+    if (access(MIRI_SOAPY_MODULE_BUILD, R_OK) == 0) return MIRI_SOAPY_MODULE_BUILD;
+    if (access(MIRI_SOAPY_MODULE_INSTALL, R_OK) == 0) return MIRI_SOAPY_MODULE_INSTALL;
+    return NULL;
+}
+
+/* the module opens the receiver itself, so ours is closed around it */
+static tres_t soapy_run (const char *which)
+{
+    const char *module = soapy_module();
+    int r;
+
+    if (opt_rom || opt_fw) { say("the module loads the built-in firmware"); return T_SKIP; }
+    if (!module) { say("module not found, set MIRI_SOAPY_MODULE"); return T_SKIP; }
+
+    pump_stop();
+    mirisdr_close(dev);
+    dev = NULL;
+
+    r = soapy_test(which, module, open_serial, opt_verbose, say, note);
+
+    if (device_reopen() < 0) { say("the device did not come back"); return T_FAIL; }
+
+    return r == SOAPY_T_PASS ? T_PASS : r == SOAPY_T_SKIP ? T_SKIP : T_FAIL;
+}
+
+static tres_t t_soapy_probe (void)  { return soapy_run("probe"); }
+static tres_t t_soapy_stream (void) { return soapy_run("stream"); }
+static tres_t t_soapy_cycles (void) { return soapy_run("cycles"); }
+static tres_t t_soapy_retune (void) { return soapy_run("retune"); }
+#endif
+
 static const struct {
     const char *group;
     const char *name;
@@ -3442,6 +3486,13 @@ static const struct {
     { "extras",   "i2c bus",                    t_i2c                 },
     { "extras",   "pps timestamping",           t_pps                 },
     { "extras",   "sof timestamping",           t_sof                 },
+
+#ifdef MIRI_TEST_SOAPY
+    { "soapy",    "module, ranges and gains",   t_soapy_probe         },
+    { "soapy",    "each format streams",        t_soapy_stream        },
+    { "soapy",    "start and stop",             t_soapy_cycles        },
+    { "soapy",    "retune and rate changes",    t_soapy_retune        },
+#endif
 };
 
 #define NTESTS ((int)(sizeof tests / sizeof tests[0]))
@@ -3462,7 +3513,11 @@ static void usage (const char *me)
            "  --eeprom-write   allow the eeprom write back test (implies --eeprom)\n"
            "  --pps            run the pps test, needs a 1PPS on GPIO_0\n"
            "  --list           list the tests and exit\n"
-           "\ngroups: decode identity stream fixes device tuner extras\n", me);
+           "\ngroups: decode identity stream fixes device tuner extras"
+#ifdef MIRI_TEST_SOAPY
+           " soapy"
+#endif
+           "\n", me);
 }
 
 int main (int argc, char **argv)
