@@ -787,6 +787,59 @@ static tres_t t_stall_clear_then_cancel (void)
     return (clean == 5 && within(sps, 4000000, 0.05)) ? T_PASS : T_FAIL;
 }
 
+/* A cancel while read_async starts up is kept: before, one that came before the
+ * transfers ran was dropped and the stream ran on */
+static volatile int start_entering, start_done;
+
+static void *start_pump (void *arg)
+{
+    (void) arg;
+    start_entering = 1;
+    pump_result = mirisdr_read_async(dev, stream_cb, NULL, 8, 65536);
+    start_done = 1;
+    return NULL;
+}
+
+static tres_t t_cancel_at_start (void)
+{
+    mirisdr_stream_stats_t d;
+    pthread_t th;
+    double t0, sps;
+    int i, r, e, kept = 0, before = 0, lost = 0;
+
+    if (stream_setup("BULK", "252_S16", 2000000) < 0) return T_FAIL;
+    pump_stop();
+
+    /* cancel 0 to 4 ms after starting, across the start up */
+    for (i = 0; i < 40; i++)
+    {
+        start_done = start_entering = 0;
+        if (mirisdr_reset_buffer(dev) < 0) { say("reset failed"); return T_FAIL; }
+        if (pthread_create(&th, NULL, start_pump, NULL)) return T_FAIL;
+        usleep(100 * i);
+        e = start_entering;
+        r = mirisdr_cancel_async(dev);
+
+        t0 = now();
+        while (!start_done && now() - t0 < 2) usleep(1000);
+
+        /* one before read_async is entered is not kept */
+        if (start_done) kept++;
+        else if (!e) before++;
+        else { lost++; note("cancel %d at %d us was lost (returned %d)", i, 100 * i, r); }
+
+        if (!start_done) mirisdr_cancel_async(dev);
+        pthread_join(th, NULL);
+    }
+
+    if (stream_setup("BULK", "252_S16", 2000000) < 0) { say("no stream after the cancels"); return T_FAIL; }
+    sps = stream_rate(0.4, &d);
+
+    say("%d cancels kept, %d lost, %d before the stream was entered; then %.0f sps", kept, lost, before, sps);
+
+    return (!lost && kept > 0 && within(sps, 2000000, 0.05)) ? T_PASS : T_FAIL;
+}
+
 /* Header bytes 8-11 are marked at startup; read them back through the remap */
 static tres_t t_header_stamp (void)
 {
@@ -3349,6 +3402,7 @@ static const struct {
     { "fixes",    "repeated stop and start",    t_stop_start          },
     { "fixes",    "stall and clear recovers",   t_stall_recovery      },
     { "fixes",    "unstall before cancel",      t_stall_clear_then_cancel },
+    { "fixes",    "cancel while starting",      t_cancel_at_start     },
     { "fixes",    "header stamp present",       t_header_stamp        },
     { "fixes",    "no false grid shifts",       t_no_false_resync     },
     { "fixes",    "usb reset recovers",         t_usb_reset           },

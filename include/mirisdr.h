@@ -87,6 +87,8 @@ MIRISDR_API int mirisdr_read_sync (mirisdr_dev_t *p, void *buf, int len, int *n_
 /* async */
 typedef void(*mirisdr_read_async_cb_t) (unsigned char *buf, uint32_t len, void *ctx);
 MIRISDR_API int mirisdr_read_async (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx, uint32_t num, uint32_t len);
+/* A cancel is kept from the moment mirisdr_read_async() is entered, also before its
+ * transfers run. One made before that call is not: check a flag of your own in the callback */
 MIRISDR_API int mirisdr_cancel_async (mirisdr_dev_t *p);
 MIRISDR_API int mirisdr_cancel_async_now (mirisdr_dev_t *p);            /* extra */
 MIRISDR_API int mirisdr_start_async (mirisdr_dev_t *p);                 /* extra */

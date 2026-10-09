@@ -105,6 +105,8 @@ struct mirisdr_dev {
         MIRISDR_ASYNC_PAUSED,
         MIRISDR_ASYNC_FAILED
     } async_status;
+    volatile int        async_starting; /* read_async entered, transfers not yet running */
+    volatile int        cancel_pending; /* a cancel came while starting */
     mirisdr_read_async_cb_t cb;
     void                *cb_ctx;
     size_t              xfer_buf_num;

@@ -568,6 +568,11 @@ int mirisdr_cancel_async (mirisdr_dev_t *p) {
 
     switch (p->async_status) {
     case MIRISDR_ASYNC_INACTIVE:
+        if (p->async_starting) {
+            p->cancel_pending = 1;
+            return 0;
+        }
+        goto canceled;
     case MIRISDR_ASYNC_CANCELING:
         goto canceled;
     case MIRISDR_ASYNC_RUNNING:
@@ -593,7 +598,9 @@ int mirisdr_cancel_async_now (mirisdr_dev_t *p) {
 
     switch (p->async_status) {
     case MIRISDR_ASYNC_INACTIVE:
-        goto done;
+        if (!p->async_starting) goto done;
+        p->cancel_pending = 1;
+        break;
     case MIRISDR_ASYNC_CANCELING:
         break;
     case MIRISDR_ASYNC_RUNNING:
@@ -605,8 +612,9 @@ int mirisdr_cancel_async_now (mirisdr_dev_t *p) {
     }
 
     /* cyklujeme dokud není vše ukončeno */
-    while ((p->async_status != MIRISDR_ASYNC_INACTIVE) &&
-           (p->async_status != MIRISDR_ASYNC_FAILED))
+    while (p->async_starting ||
+           ((p->async_status != MIRISDR_ASYNC_INACTIVE) &&
+            (p->async_status != MIRISDR_ASYNC_FAILED)))
 #if defined (_WIN32) && !defined(__MINGW32__)
     Sleep(20);
 #else
@@ -796,7 +804,25 @@ static int mirisdr_async_free (mirisdr_dev_t *p) {
 }
 
 /* spuštění async části */
+static int mirisdr_read_async_run (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx, uint32_t num, uint32_t len);
+
+/* TODO: this cancel_pending is a slight race condition, it solves the test problem now but I will fix properly later */
 int mirisdr_read_async (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx, uint32_t num, uint32_t len) {
+    int r;
+
+    if (!p) return -1;
+    if (p->async_status != MIRISDR_ASYNC_INACTIVE) return -1;
+
+    p->cancel_pending = 0;
+    p->async_starting = 1;
+    r = mirisdr_read_async_run(p, cb, ctx, num, len);
+    p->async_starting = 0;
+    p->cancel_pending = 0;
+
+    return r;
+}
+
+static int mirisdr_read_async_run (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx, uint32_t num, uint32_t len) {
     size_t i;
     int r;
     int transfer_failed = 0;
@@ -911,6 +937,11 @@ int mirisdr_read_async (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx,
     p->async_status = MIRISDR_ASYNC_RUNNING;
 
     while (p->async_status != MIRISDR_ASYNC_INACTIVE) {
+        if (p->cancel_pending) {
+            p->cancel_pending = 0;
+            if (p->async_status != MIRISDR_ASYNC_FAILED) p->async_status = MIRISDR_ASYNC_CANCELING;
+        }
+
         /* počkáme na další událost */
         if ((r = libusb_handle_events_timeout(p->ctx, &tv)) < 0) {
             fprintf( stderr, "libusb_handle_events returned: %d\n", r);
