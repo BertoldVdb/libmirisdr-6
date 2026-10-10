@@ -33,7 +33,7 @@
    "purple dongle" - one board's wiring, not something the part defines. */
 #define BIAS_GPIO 3
 
-void update_reg_8 (mirisdr_dev_t *p)
+static int update_reg_8 (mirisdr_dev_t *p)
 {
     uint32_t val = p->reg8 | ((p->bias && (p->hw_flavour != MIRISDR_HW_RSP1B)) ? (1 << (BIAS_GPIO + 8)) : 0);
     unsigned int pin;
@@ -47,9 +47,9 @@ void update_reg_8 (mirisdr_dev_t *p)
         if (p->gpio_val & (1 << pin)) val|= 1 << (pin + 8);
     }
 
-    if (p->reg8_valid && (p->reg8_sent == val)) return;
+    if (p->reg8_valid && (p->reg8_sent == val)) return 0;
 
-    mirisdr_write_reg(p, 0x08, val);
+    return (mirisdr_write_reg(p, 0x08, val) < 0) ? -1 : 0;
 }
 
 void mirisdr_gpio_hold_input (mirisdr_dev_t *p, uint8_t mask)
@@ -82,9 +82,7 @@ int mirisdr_set_gpio_direction (mirisdr_dev_t *p, unsigned int pin, int output)
     if (output) p->gpio_dir|= 1 << pin;
     else p->gpio_dir&= ~(1 << pin);
 
-    update_reg_8(p);
-
-    return 0;
+    return update_reg_8(p);
 }
 
 int mirisdr_get_gpio_direction (mirisdr_dev_t *p, unsigned int pin)
@@ -114,9 +112,7 @@ int mirisdr_set_gpio_outputs (mirisdr_dev_t *p, unsigned int mask, unsigned int 
         else p->gpio_val&= ~(1 << pin);
     }
 
-    update_reg_8(p);
-
-    return 0;
+    return update_reg_8(p);
 }
 
 int mirisdr_set_gpio_output (mirisdr_dev_t *p, unsigned int pin, int high)
@@ -167,7 +163,5 @@ int mirisdr_release_gpio (mirisdr_dev_t *p, unsigned int pin)
     p->gpio_dir&= ~(1 << pin);
     p->gpio_val&= ~(1 << pin);
 
-    update_reg_8(p);
-
-    return 0;
+    return update_reg_8(p);
 }

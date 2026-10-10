@@ -24,10 +24,13 @@ int mirisdr_set_gain(mirisdr_dev_t *p)
 {
     int r;
 
+    if (!p) return -1;
+
     mirisdr_batch_begin(p);
     r = mirisdr_set_gain_words(p);
+    if (mirisdr_batch_end(p) < 0) r = -1;
 
-    return r + mirisdr_batch_end(p);
+    return r;
 }
 
 /* XTALSEL naming the board's crystal */
@@ -134,11 +137,11 @@ static int mirisdr_set_gain_words(mirisdr_dev_t *p)
                               MIRISDR_DC_OFFSET_CALIBRATION_SPEEDUP_OFF) << 13;
     if (p->external_tuner) return 0;
 
-    mirisdr_tuner_write(p, 1, reg1, 0);
+    if (mirisdr_tuner_write(p, 1, reg1, 0) < 0) return -1;
 
     /* DC Offset Calibration setup */
     reg6 = mirisdr_dc_word(p);
-    mirisdr_tuner_write(p, 6, reg6, 0);
+    if (mirisdr_tuner_write(p, 6, reg6, 0) < 0) return -1;
 //// set to 0xf300 to select AM input added Dec 5 2014 SM5BSZ
 //    if (p->freq < 50000000)
 //      {
@@ -222,8 +225,9 @@ static void mirisdr_split_of(mirisdr_band_t band, int gain, mirisdr_gr_t *r)
 static int mirisdr_mixbuffer_of(mirisdr_band_t band, const mirisdr_gr_t *r)
 {
     if (band == MIRISDR_BAND_AM2) return r->mixbuffer ? 0 : 24;
+    if (band == MIRISDR_BAND_AM1) return 18 - 6 * r->mixbuffer;
 
-    return 18 - 6 * r->mixbuffer;
+    return 0;   /* no such stage */
 }
 
 static int mirisdr_lna_of(mirisdr_band_t band, const mirisdr_gr_t *r)
@@ -314,6 +318,8 @@ static void mirisdr_gain_retune (mirisdr_dev_t *p)
 int mirisdr_get_tuner_gains(mirisdr_dev_t *p, int *gains)
 {
     int i;
+
+    if (!p) return -1;
 #if MIRISDR_DEBUG >= 3
     fprintf(stderr, "mirisdr_get_tuner_gains: %p (band: %d)\n", gains, p->band);
 #endif
@@ -331,20 +337,21 @@ int mirisdr_get_tuner_gains(mirisdr_dev_t *p, int *gains)
 
 int mirisdr_set_tuner_gain(mirisdr_dev_t *p, int gain)
 {
-    p->gain = gain;
-#if MIRISDR_DEBUG >= 3
-    fprintf(stderr, "mirisdr_set_tuner_gain: %d dB (band: %d)\n", gain, p->band);
-#endif
     if (!p)
     {
         fprintf(stderr, "mirisdr_set_tuner_gain: error: nil device pointer!\n");
         return -1;
     }
-    if (p->gain < 0)
+#if MIRISDR_DEBUG >= 3
+    fprintf(stderr, "mirisdr_set_tuner_gain: %d dB (band: %d)\n", gain, p->band);
+#endif
+    /* there is no automatic gain, and the gain in force stays */
+    if (gain < 0)
     {
         goto gain_auto;
     }
 
+    p->gain = gain;
     p->gain_stages_set = 0;
     mirisdr_gain_split(p);
 
@@ -358,6 +365,8 @@ int mirisdr_get_tuner_gain(mirisdr_dev_t *p)
 {
     mirisdr_gain_config_t g;
     mirisdr_gr_t r;
+
+    if (!p) return -1;
 
     if (p->gain < 0)
         goto gain_auto;
@@ -385,6 +394,7 @@ int mirisdr_get_tuner_gain(mirisdr_dev_t *p)
  */
 int mirisdr_set_tuner_gain_mode(mirisdr_dev_t *p, int mode)
 {
+    if (!p) return -1;
 #if MIRISDR_DEBUG >= 3
     fprintf(stderr, "mirisdr_set_tuner_gain_mode: %d (%s)\n", mode, (mode)?"manual":"automatic -> rejected");
 #endif
@@ -407,6 +417,7 @@ int mirisdr_set_tuner_gain_mode(mirisdr_dev_t *p, int mode)
 
 int mirisdr_get_tuner_gain_mode(mirisdr_dev_t *p)
 {
+    if (!p) return -1;
 #if MIRISDR_DEBUG >= 3
     fprintf(stderr, "mirisdr_get_tuner_gain_mode: %d\n", 1);
 #endif
@@ -442,14 +453,14 @@ int mirisdr_set_mixer_gain(mirisdr_dev_t *p, int gain)
 
 int mirisdr_set_mixbuffer_gain(mirisdr_dev_t *p, int gain)
 {
-#if MIRISDR_DEBUG >= 3
-    fprintf(stderr, "mirisdr_set_mixbuffer_gain: %d dB (band: %d)\n", gain, p->band);
-#endif
     if (!p)
     {
         fprintf(stderr, "mirisdr_set_mixbuffer_gain: error: nil device pointer!\n");
         return -1;
     }
+#if MIRISDR_DEBUG >= 3
+    fprintf(stderr, "mirisdr_set_mixbuffer_gain: %d dB (band: %d)\n", gain, p->band);
+#endif
     if (gain < 0) {
         fprintf(stderr, "ERROR: mirisdr_set_mixbuffer_gain: negative number provided: %d\n", gain);
         return -1;
@@ -468,14 +479,14 @@ int mirisdr_set_mixbuffer_gain(mirisdr_dev_t *p, int gain)
 
 int mirisdr_set_lna_gain(mirisdr_dev_t *p, int gain)
 {
-#if MIRISDR_DEBUG >= 3
-    fprintf(stderr, "mirisdr_set_lna_gain: %d (band: %d)\n", gain, p->band);
-#endif
     if (!p)
     {
         fprintf(stderr, "mirisdr_set_lna_gain: error: nil device pointer!\n");
         return -1;
     }
+#if MIRISDR_DEBUG >= 3
+    fprintf(stderr, "mirisdr_set_lna_gain: %d (band: %d)\n", gain, p->band);
+#endif
     p->gain_reduction_lna = gain ? 0 : 1;
 
     p->gain_stages_set = 1;
@@ -504,7 +515,11 @@ int mirisdr_set_baseband_gain(mirisdr_dev_t *p, int gain)
 
 int mirisdr_get_mixer_gain(mirisdr_dev_t *p)
 {
-    int gain = p->gain_reduction_mixer ? 0 : 19;
+    int gain;
+
+    if (!p) return -1;
+
+    gain = p->gain_reduction_mixer ? 0 : 19;
 #if MIRISDR_DEBUG >= 3
     fprintf(stderr, "mirisdr_get_mixer_gain: %d dB\n", gain);
 #endif
@@ -513,7 +528,11 @@ int mirisdr_get_mixer_gain(mirisdr_dev_t *p)
 
 int mirisdr_get_mixbuffer_gain(mirisdr_dev_t *p)
 {
-    int gain = 18 - 6*p->gain_reduction_mixbuffer;
+    int gain;
+
+    if (!p) return -1;
+
+    gain = 18 - 6*p->gain_reduction_mixbuffer;
     if (p->band == MIRISDR_BAND_AM2)
     {
         gain = p->gain_reduction_mixbuffer ? 0 : 24;
@@ -527,7 +546,11 @@ int mirisdr_get_mixbuffer_gain(mirisdr_dev_t *p)
 
 int mirisdr_get_lna_gain(mirisdr_dev_t *p)
 {
-    int gain = 24;
+    int gain;
+
+    if (!p) return -1;
+
+    gain = 24;
     if (p->gain_reduction_lna) gain = 0;
     else if (p->band == MIRISDR_BAND_45) gain = 7;
     else if (p->band == MIRISDR_BAND_L) gain = 4; /* mean of measured values, with LNA cal */
@@ -539,7 +562,11 @@ int mirisdr_get_lna_gain(mirisdr_dev_t *p)
 
 int mirisdr_get_baseband_gain(mirisdr_dev_t *p)
 {
-    int gain = 59 - p->gain_reduction_baseband;
+    int gain;
+
+    if (!p) return -1;
+
+    gain = 59 - p->gain_reduction_baseband;
 #if MIRISDR_DEBUG >= 3
     fprintf(stderr, "mirisdr_get_baseband_gain: %d dB\n", gain);
 #endif

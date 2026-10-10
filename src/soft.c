@@ -28,7 +28,7 @@
 //GPIO0 - DAB notch
 //GPIO2 - Broadcast FM notch
 
-hw_switch_freq_plan_t hw_switch_freq_plan_default[] = {
+static hw_switch_freq_plan_t hw_switch_freq_plan_default[] = {
         {0,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf780, 0, 0},
         {12,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xff80, 0, 0},
         {30,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf280, 0, 0},
@@ -42,7 +42,7 @@ hw_switch_freq_plan_t hw_switch_freq_plan_default[] = {
         {2400, -1, 0, 0, 0, 0x0000, 0, 0},
 };
 
-hw_switch_freq_plan_t hw_switch_freq_plan_sdrplay[] = {
+static hw_switch_freq_plan_t hw_switch_freq_plan_sdrplay[] = {
         {0,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf580, 0, 0},
         {12,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf580, 0, 0},
         {30,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf580, 0, 0},
@@ -68,7 +68,7 @@ hw_switch_freq_plan_t hw_switch_freq_plan_sdrplay[] = {
 #define RSP1B_300_380   0x3C5F  /* and B1 B0 low */
 #define RSP1B_380_420   0x3E5F  /* and B0 low */
 
-hw_switch_freq_plan_t hw_switch_freq_plan_rsp1b[] = {
+static hw_switch_freq_plan_t hw_switch_freq_plan_rsp1b[] = {
         {0,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_LPF2},
         {2,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_2_12},
         {12,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_12_30},
@@ -85,16 +85,24 @@ hw_switch_freq_plan_t hw_switch_freq_plan_rsp1b[] = {
         {2400, -1, 0, 0, 0, 0x0000, 0, 0},
 };
 
-hw_switch_freq_plan_t *hw_switch_freq_plan[3] = {
+static hw_switch_freq_plan_t *hw_switch_freq_plan[3] = {
         hw_switch_freq_plan_default,
         hw_switch_freq_plan_sdrplay,
         hw_switch_freq_plan_rsp1b
 };
 
+/* The board's plan; mirisdr_open_ex() and mirisdr_set_hw_flavour() refuse other values */
+static const hw_switch_freq_plan_t *mirisdr_plan_of (mirisdr_dev_t *p)
+{
+    int f = (int) p->hw_flavour;
+
+    return hw_switch_freq_plan[(f >= MIRISDR_HW_DEFAULT && f <= MIRISDR_HW_RSP1B) ? f : MIRISDR_HW_DEFAULT];
+}
+
 /* The row a frequency falls in */
 static const hw_switch_freq_plan_t *mirisdr_plan_row_at (mirisdr_dev_t *p, uint32_t freq)
 {
-    const hw_switch_freq_plan_t *plan = hw_switch_freq_plan[(int) p->hw_flavour];
+    const hw_switch_freq_plan_t *plan = mirisdr_plan_of(p);
     int i = 0;
 
     while ((uint64_t) freq >= 1000000ULL * plan[i].low_cut && plan[i].mode >= 0) i++;
@@ -110,7 +118,7 @@ static const hw_switch_freq_plan_t *mirisdr_plan_row (mirisdr_dev_t *p)
 /* Where the plan ends: tuning past it is refused by mirisdr_tune() */
 static uint32_t mirisdr_plan_end (mirisdr_dev_t *p)
 {
-    const hw_switch_freq_plan_t *plan = hw_switch_freq_plan[(int) p->hw_flavour];
+    const hw_switch_freq_plan_t *plan = mirisdr_plan_of(p);
     int i = 0;
 
     while (plan[i].mode >= 0) i++;
@@ -138,6 +146,7 @@ typedef struct mirisdr_tune_words
     uint32_t lo_real;           /* Hz the LO reaches, as the received frequency */
     mirisdr_band_t band;
     uint8_t dc_n, gap;
+    uint8_t fits;               /* N fits its 6 bits: past ~3.07 GHz it would wrap */
     uint16_t expander;
     const hw_switch_freq_plan_t *row;
 } mirisdr_tune_words_t;
@@ -170,7 +179,8 @@ static void mirisdr_tune_words (mirisdr_dev_t *p, uint32_t lo, uint32_t rx, int 
         lo_div = row->lo_div;
 
         if (row->mode == MIRISDR_MODE_VHF) w->band = MIRISDR_BAND_VHF;
-        else if (row->mode == MIRISDR_MODE_B3) w->band = MIRISDR_BAND_3;
+        /* the RSP1's 261-404 MHz row sets the VHF bit with it */
+        else if (row->mode & MIRISDR_MODE_B3) w->band = MIRISDR_BAND_3;
         else if (row->mode == MIRISDR_MODE_B45) w->band = MIRISDR_BAND_45;
         else w->band = MIRISDR_BAND_L;
     }
@@ -249,6 +259,8 @@ static void mirisdr_tune_words (mirisdr_dev_t *p, uint32_t lo, uint32_t rx, int 
     reg5 |= (0xFFF & thresh);
     reg5 |= MIRISDR_RF_SYNTHESIZER_RESERVED_PROGRAMMING << 12;   /* reserved, must be 0x28 */
 
+    w->fits = n <= 0x3F;
+
     reg2 |= (0xFFF & frac);
     reg2 |= (0x3F & n) << 12;
     reg2 |= (uint32_t) (cal ? MIRISDR_LBAND_LNA_CALIBRATION_ON : MIRISDR_LBAND_LNA_CALIBRATION_OFF) << 18;
@@ -272,10 +284,12 @@ static void mirisdr_tune_words (mirisdr_dev_t *p, uint32_t lo, uint32_t rx, int 
 
 static int mirisdr_tune_send (mirisdr_dev_t *p, const mirisdr_tune_words_t *w)
 {
-    if (p->hw_flavour == MIRISDR_HW_RSP1B) mirisdr_rsp1b_frontend(p, w->expander);
+    int r = 0;
+
+    if ((p->hw_flavour == MIRISDR_HW_RSP1B) && (mirisdr_rsp1b_frontend(p, w->expander) < 0)) r = -1;
 
     p->reg8 = w->row->band_select_word;
-    update_reg_8(p);
+    if (update_reg_8(p) < 0) r = -1;
 
     p->band = w->band;
     p->dc_n = w->dc_n;
@@ -285,20 +299,22 @@ static int mirisdr_tune_send (mirisdr_dev_t *p, const mirisdr_tune_words_t *w)
        has this port wired somewhere else, or nowhere */
     if (!p->external_tuner)
     {
-        int synth = 0;
+        int synth = 0, s[7], i;
 
         /* only what changed; register 2 starts the calibration, so it follows any of 0, 3 and 5 */
-        mirisdr_tuner_write(p, 14, p->tuner_ovr14, 0);
-        mirisdr_tuner_write(p, 6, mirisdr_dc_word(p), 0);
-        synth |= mirisdr_tuner_write(p, 3, w->reg3, 0) != 0;
-        synth |= mirisdr_tuner_write(p, 0, w->reg0, 0) != 0;
-        synth |= mirisdr_tuner_write(p, 5, w->reg5, 0) != 0;
-        mirisdr_tuner_write(p, 2, w->reg2, synth);
+        s[0] = mirisdr_tuner_write(p, 14, p->tuner_ovr14, 0);
+        s[1] = mirisdr_tuner_write(p, 6, mirisdr_dc_word(p), 0);
+        synth |= (s[2] = mirisdr_tuner_write(p, 3, w->reg3, 0)) != 0;
+        synth |= (s[3] = mirisdr_tuner_write(p, 0, w->reg0, 0)) != 0;
+        synth |= (s[4] = mirisdr_tuner_write(p, 5, w->reg5, 0)) != 0;
+        s[5] = mirisdr_tuner_write(p, 2, w->reg2, synth);
         p->tuner_regd = w->regd;
-        mirisdr_tuner_write(p, 13, mirisdr_reg13(p), 0);
+        s[6] = mirisdr_tuner_write(p, 13, mirisdr_reg13(p), 0);
+
+        for (i = 0; i < 7; i++) if (s[i] < 0) r = -1;
     }
 
-    return 0;
+    return r;
 }
 
 /* The gap rows name another crystal for their first IF, and the IF filter
@@ -472,10 +488,18 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
         pl->bw = i;
     }
 
-    if (!adjust && !(mirisdr_if_bws[pl->ifm] & (1 << pl->bw)))
+    if (!(mirisdr_if_bws[pl->ifm] & (1 << pl->bw)))
     {
-        mirisdr_refuse(p, "a %u Hz bandwidth is not available with a %u Hz IF\n", mirisdr_bw_hz[pl->bw], c->if_freq);
-        return -1;
+        if (!adjust)
+        {
+            mirisdr_refuse(p, "a %u Hz bandwidth is not available with a %u Hz IF\n", mirisdr_bw_hz[pl->bw], c->if_freq);
+            return -1;
+        }
+
+        /* a single setter: the filter goes back to the library's choice, which
+           an IF has, so the tune stays one a check takes */
+        pl->bw = mirisdr_bw_auto(pl->ifm, (pl->ifm == MIRISDR_IF_ZERO) ? mirisdr_zero_if_rate(p) : 0);
+        pl->cfg.bandwidth = 0;
     }
 
     if ((c->iq < MIRISDR_IQ_BOTH) || (c->iq > MIRISDR_IQ_ONLY_Q))
@@ -546,6 +570,13 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
     pl->lo = (uint32_t) lo;
 
     mirisdr_tune_words(p, pl->lo, c->frequency, pl->ifm, pl->bw, pl->iq, 0, c->synth_thresh, &pl->w);
+
+    /* past the plan the single setters go on, as far as the synthesizer can count */
+    if (!pl->w.fits)
+    {
+        mirisdr_refuse(p, "cannot tune the LO to %lld Hz\n", (long long) lo);
+        return -1;
+    }
 
     /* the gain in that band */
     if (c->gain.mode == MIRISDR_GAIN_STAGES)
@@ -640,7 +671,7 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
     p->notch = c->frontend.notch;
 
     r = mirisdr_lna_calibrate(p, pl.w.row, c->frequency, pl.ifm, pl.bw, pl.iq);
-    r += mirisdr_tune_send(p, &pl.w);
+    if (mirisdr_tune_send(p, &pl.w) < 0) r = -1;
 
     p->freq = pl.lo;
     p->if_freq = pl.ifm;
@@ -664,8 +695,8 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
     }
 
     mirisdr_gain_retune(p);
-    r += mirisdr_set_gain(p);
-    r += mirisdr_batch_end(p);
+    if (mirisdr_set_gain(p) < 0) r = -1;
+    if (mirisdr_batch_end(p) < 0) r = -1;
 
     if (restream)
     {
@@ -728,7 +759,7 @@ void mirisdr_tune_config_default (mirisdr_tune_config_t *cfg)
 
 int mirisdr_tune (mirisdr_dev_t *p, int tuner, const mirisdr_tune_config_t *cfg, mirisdr_tune_result_t *res)
 {
-    if ((tuner < 0) || (tuner >= MIRISDR_TUNERS)) return -1;
+    if (!p || (tuner < 0) || (tuner >= MIRISDR_TUNERS)) return -1;
 
     return mirisdr_tune_apply(p, cfg, 0, res);
 }
@@ -741,6 +772,15 @@ int mirisdr_tune_check (mirisdr_dev_t *p, int tuner, const mirisdr_tune_config_t
     if (!p || !cfg || (tuner < 0) || (tuner >= MIRISDR_TUNERS)) return -1;
     p->checking = 1;
     r = mirisdr_tune_plan(p, cfg, 0, &pl);
+
+    /* a stream following the tune has to take it too, as mirisdr_tune() asks */
+    if ((r == 0) && (p->stream.follow_tune || p->stream.baseband))
+    {
+        mirisdr_stream_plan_t spl;
+
+        r = mirisdr_stream_plan(p, &p->stream, p->stream.baseband ? MIRISDR_STREAM_ADJUST : 0, pl.iq,
+                                mirisdr_if_hz[pl.ifm], &spl);
+    }
     p->checking = 0;
     if (r < 0) return -1;
 
@@ -812,6 +852,8 @@ int mirisdr_set_center_freq(mirisdr_dev_t *p, uint32_t freq)
 
 uint32_t mirisdr_get_center_freq(mirisdr_dev_t *p)
 {
+    if (!p) return 0;
+
     return p->freq;
 }
 
@@ -953,6 +995,8 @@ int mirisdr_set_transfer(mirisdr_dev_t *p, const char *v)
 
 const char *mirisdr_get_transfer(mirisdr_dev_t *p)
 {
+    if (!p) return "";
+
     switch (p->transfer)
     {
     case MIRISDR_TRANSFER_BULK:
@@ -971,6 +1015,8 @@ const char *mirisdr_get_transfer(mirisdr_dev_t *p)
 
 mirisdr_band_t mirisdr_get_band (mirisdr_dev_t *p)
 {
+    if (!p) return MIRISDR_BAND_AM1;
+
     return p->band;
 }
 
@@ -1002,5 +1048,5 @@ int mirisdr_get_notch (mirisdr_dev_t *p)
 
 int mirisdr_get_bias (mirisdr_dev_t *p)
 {
-	return p->bias;
+	return p ? p->bias : -1;
 }
