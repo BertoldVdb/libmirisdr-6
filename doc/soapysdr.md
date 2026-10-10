@@ -37,6 +37,7 @@ The device string can hold these keys:
   - `serial=...`: a receiver by its serial, when more than one is plugged in. `SoapySDRUtil --find` lists the serials.
   - `if_freq`, `converters` and `baseband`: the settings of the same name, described below. They are here for programs that only let you type a device string. An example is `driver=mirisdr,if_freq=450000`.
   - `bandwidth`: the tuner filter in Hz, for programs such as GQRX that have no field for it. See Bandwidth below.
+  - `gain_ranges`: `max`, the default, or `band`. See Gain below.
 
 When opened, the receiver is at 100 MHz with a total gain of 40 dB and a rate of 2.048 Msps.
 
@@ -115,7 +116,7 @@ Asking for 0, the default, lets the library choose:
   - At zero IF it takes the narrowest filter that is at least as wide as the sample rate, up to 8 MHz. It changes when the rate changes. For example 2.048 Msps gets 5 MHz, 6 Msps gets 6 MHz and 10 Msps gets 8 MHz. This passes the whole stream and keeps strong signals outside it away from the receiver's converters.
   - With a low IF it takes the widest filter the IF has. The software filters do the rest.
 
-Some programs, GQRX among them, have no field for the filter. For those, put it in the device string, for example `driver=mirisdr,bandwidth=1536000`. A program that asks for 0 then gets this filter.
+Some programs, have no field for the filter. For those, put it in the device string, for example `driver=mirisdr,bandwidth=1536000`. A program that asks for 0 then gets this filter.
 
 | IF | Filters |
 |---|---|
@@ -132,10 +133,10 @@ The stages can also be set one by one:
 
   - `LNA`: 0 or its full gain, which is 24 dB on most bands, 7 dB in band IV/V and about 4 dB in L band. The AM inputs have none.
   - `MIX`: 0 or 19 dB.
-  - `MIXBUF`: only on the AM inputs, below about 30 MHz. 0, 6, 12 or 18 dB on one input, 0 or 24 dB on the other.
+  - `MIXBUF`: 0 or 24 dB, only where the receiver uses its AM input: below 55 MHz, and from 255 to 420 MHz through the up-converter. On the RSP1 that is below 50 MHz only. The tuner's other AM input, with steps of 6 dB, is not used.
   - `BB`: 0 to 59 dB.
 
-The ranges the module reports follow the band you are tuned to. There is no automatic gain control.
+The ranges the module reports are the most each stage has in any band, because programs such as GQRX read them only once, when the device opens. A value the band you are tuned to cannot take gives the nearest one it can, and a stage the band does not have stays at 0. For ranges that follow the band, add `gain_ranges=band` to the device string. There is no automatic gain control.
 
 
 <h3>Sample formats</h3>

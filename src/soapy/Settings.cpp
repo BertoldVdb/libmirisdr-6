@@ -34,7 +34,7 @@ static bool isTrue(const std::string &v)
 
 SoapyMiriSDR::SoapyMiriSDR(const SoapySDR::Kwargs &args):
     dev(nullptr), flavour(MIRISDR_HW_DEFAULT), ifFreq(0), ifMode("auto"), converters(MIRISDR_IQ_BOTH),
-    baseband(true), wantRate(2048000), wantBw(0), argBw(0),
+    baseband(true), wantRate(2048000), wantBw(0), argBw(0), bandGainRanges(false),
     freqMin(0), freqMax(0), rateMin(0), rateMax(0),
     stopping(false), rxDone(true), rxResult(0), outFormat(0),
     ringHead(0), ringTail(0), ringCount(0), dropPending(false), slotPos(0), gapPos(0),
@@ -65,6 +65,14 @@ SoapyMiriSDR::SoapyMiriSDR(const SoapySDR::Kwargs &args):
         try { argBw = (uint32_t) std::stoul(args.at("bandwidth")); }
         catch (const std::exception &) { SoapySDR_logf(SOAPY_SDR_ERROR, "mirisdr: bandwidth %s is not a number of Hz", args.at("bandwidth").c_str()); }
         wantBw = argBw;
+    }
+    /* the gain ranges: "max", the default, stay the same in every band, as programs
+       such as GQRX read them once at open; "band" has only what the band tuned has */
+    if (args.count("gain_ranges"))
+    {
+        if (args.at("gain_ranges") == "band") bandGainRanges = true;
+        else if (args.at("gain_ranges") != "max")
+            SoapySDR_logf(SOAPY_SDR_ERROR, "mirisdr: gain_ranges %s is not max or band", args.at("gain_ranges").c_str());
     }
 
     /* the library's defaults, its filter and a known gain, the ranges at zero IF */
@@ -436,16 +444,38 @@ double SoapyMiriSDR::getGain(const int direction, const size_t channel, const st
     return 0;
 }
 
+/* The most each stage reaches in any band: the LNA below band IV/V, the mixbuffer on
+   AM2, which never run together. The band plans use AM2 only, so the mixbuffer is 0 or
+   24 dB (AM1 would step by 6) */
+#define MAX_LNA                 24
+#define MAX_MIX                 19
+#define MAX_MIXBUF              24
+#define MAX_BB                  59
+
 SoapySDR::Range SoapyMiriSDR::getGainRange(const int direction, const size_t channel) const
 {
-    StageRanges sr = stageRanges();
+    StageRanges sr;
 
+    if (!bandGainRanges) return SoapySDR::Range(0, std::max(MAX_LNA, MAX_MIXBUF) + MAX_MIX + MAX_BB, 1);
+
+    sr = stageRanges();
     return SoapySDR::Range(0, sr.lna + sr.mixer + sr.mixbuffer.back() + sr.baseband, 1);
 }
 
 SoapySDR::Range SoapyMiriSDR::getGainRange(const int direction, const size_t channel, const std::string &name) const
 {
-    StageRanges sr = stageRanges();
+    StageRanges sr;
+
+    if (!bandGainRanges)
+    {
+        if (name == "LNA") return SoapySDR::Range(0, MAX_LNA, MAX_LNA);
+        if (name == "MIX") return SoapySDR::Range(0, MAX_MIX, MAX_MIX);
+        if (name == "MIXBUF") return SoapySDR::Range(0, MAX_MIXBUF, MAX_MIXBUF);
+        if (name == "BB") return SoapySDR::Range(0, MAX_BB, 1);
+        return SoapySDR::Range(0, 0);
+    }
+
+    sr = stageRanges();
 
     if (name == "LNA") return SoapySDR::Range(0, sr.lna, sr.lna ? sr.lna : 1);
     if (name == "MIX") return SoapySDR::Range(0, sr.mixer, sr.mixer ? sr.mixer : 1);

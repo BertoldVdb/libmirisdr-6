@@ -143,6 +143,7 @@ private:
     bool baseband;          /* the band at 0 Hz in complex float, whatever the IF */
     uint32_t wantRate, wantBw;  /* as asked, wantBw 0 for the library's choice */
     uint32_t argBw;             /* the device string's bandwidth, what 0 falls back to */
+    bool bandGainRanges;    /* gain ranges of the band tuned, not the most of any band */
 
     /* ranges found at open */
     double freqMin, freqMax, rateMin, rateMax;

@@ -28,7 +28,7 @@ static double now(void)
 /* quiet unless verbose: the module and library log refusals on purpose */
 static void quietLog(const SoapySDRLogLevel, const char *) {}
 
-static Dev *openDev(const char *module, const char *serial, soapy_say_t say)
+static Dev *openDev(const char *module, const char *serial, const char *gainRanges, soapy_say_t say)
 {
     static std::string loaded;
     SoapySDR::Kwargs args;
@@ -47,6 +47,7 @@ static Dev *openDev(const char *module, const char *serial, soapy_say_t say)
 
     args["driver"] = "mirisdr";
     if (serial) args["serial"] = serial;
+    if (gainRanges) args["gain_ranges"] = gainRanges;
     try { return Dev::make(args); }
     catch (const std::exception &e) { say("make failed: %s", e.what()); }
     return nullptr;
@@ -87,19 +88,27 @@ static int probe(Dev *d, soapy_say_t say, soapy_say_t note)
     g = d->listGains(SOAPY_SDR_RX, 0);
     if (g.size() != 4 || !has(g, "LNA") || !has(g, "MIX") || !has(g, "MIXBUF") || !has(g, "BB")) { say("gain stages wrong"); bad++; }
 
-    /* VHF: LNA 24, mixer 19, no mixbuffer, baseband 59 */
+    /* the most of any band, the same at VHF and HF: GQRX reads them once */
     d->setFrequency(SOAPY_SDR_RX, 0, 100e6);
     if (d->getGainRange(SOAPY_SDR_RX, 0).maximum() != 102 ||
         d->getGainRange(SOAPY_SDR_RX, 0, "LNA").maximum() != 24 ||
         d->getGainRange(SOAPY_SDR_RX, 0, "MIX").maximum() != 19 ||
-        d->getGainRange(SOAPY_SDR_RX, 0, "MIXBUF").maximum() != 0 ||
+        d->getGainRange(SOAPY_SDR_RX, 0, "MIXBUF").maximum() != 24 ||
+        d->getGainRange(SOAPY_SDR_RX, 0, "MIXBUF").step() != 24 ||
         d->getGainRange(SOAPY_SDR_RX, 0, "BB").maximum() != 59)
     { say("VHF gain ranges wrong, total %.0f", d->getGainRange(SOAPY_SDR_RX, 0).maximum()); bad++; }
 
-    /* HF goes through AM2: a 24 dB mixbuffer and no LNA gain */
+    /* VHF has no mixbuffer: asking for one leaves it at 0 */
+    d->setGain(SOAPY_SDR_RX, 0, "MIXBUF", 24);
+    if (d->getGain(SOAPY_SDR_RX, 0, "MIXBUF") != 0) { say("MIXBUF at VHF gave %.0f", d->getGain(SOAPY_SDR_RX, 0, "MIXBUF")); bad++; }
+
+    /* HF goes through AM2, with a 24 dB mixbuffer, set with the ranges read at VHF */
     d->setFrequency(SOAPY_SDR_RX, 0, 10e6);
-    if (d->getGainRange(SOAPY_SDR_RX, 0, "MIXBUF").maximum() != 24 || d->getGainRange(SOAPY_SDR_RX, 0, "LNA").maximum() != 0)
+    if (d->getGainRange(SOAPY_SDR_RX, 0, "MIXBUF").maximum() != 24 || d->getGainRange(SOAPY_SDR_RX, 0, "LNA").maximum() != 24)
     { say("HF gain ranges wrong"); bad++; }
+    d->setGain(SOAPY_SDR_RX, 0, "MIXBUF", 24);
+    if (d->getGain(SOAPY_SDR_RX, 0, "MIXBUF") != 24) { say("MIXBUF 24 at HF gave %.0f", d->getGain(SOAPY_SDR_RX, 0, "MIXBUF")); bad++; }
+    d->setGain(SOAPY_SDR_RX, 0, "MIXBUF", 0);
 
     /* a total, then one stage: the others stay */
     d->setFrequency(SOAPY_SDR_RX, 0, 100e6);
@@ -328,6 +337,28 @@ static int retune(Dev *d, soapy_say_t say, soapy_say_t note)
     return bad ? SOAPY_T_FAIL : SOAPY_T_PASS;
 }
 
+/* gain_ranges=band: only what the band tuned has */
+static int bandRanges(Dev *d, soapy_say_t say, soapy_say_t note)
+{
+    int bad = 0;
+
+    /* VHF: LNA 24, mixer 19, no mixbuffer, baseband 59 */
+    d->setFrequency(SOAPY_SDR_RX, 0, 100e6);
+    if (d->getGainRange(SOAPY_SDR_RX, 0).maximum() != 102 ||
+        d->getGainRange(SOAPY_SDR_RX, 0, "LNA").maximum() != 24 ||
+        d->getGainRange(SOAPY_SDR_RX, 0, "MIX").maximum() != 19 ||
+        d->getGainRange(SOAPY_SDR_RX, 0, "MIXBUF").maximum() != 0 ||
+        d->getGainRange(SOAPY_SDR_RX, 0, "BB").maximum() != 59)
+    { say("VHF gain ranges wrong, total %.0f", d->getGainRange(SOAPY_SDR_RX, 0).maximum()); bad++; }
+
+    /* HF goes through AM2: a 24 dB mixbuffer and no LNA gain */
+    d->setFrequency(SOAPY_SDR_RX, 0, 10e6);
+    if (d->getGainRange(SOAPY_SDR_RX, 0, "MIXBUF").maximum() != 24 || d->getGainRange(SOAPY_SDR_RX, 0, "LNA").maximum() != 0)
+    { say("HF gain ranges wrong"); bad++; }
+
+    return bad ? SOAPY_T_FAIL : SOAPY_T_PASS;
+}
+
 extern "C" int soapy_test(const char *which, const char *module, const char *serial, int verbose,
                           soapy_say_t say, soapy_say_t note)
 {
@@ -335,7 +366,7 @@ extern "C" int soapy_test(const char *which, const char *module, const char *ser
     int r = SOAPY_T_FAIL;
 
     if (!verbose) SoapySDR::registerLogHandler(quietLog);
-    if (!(d = openDev(module, serial, say))) return SOAPY_T_FAIL;
+    if (!(d = openDev(module, serial, strcmp(which, "bandranges") ? nullptr : "band", say))) return SOAPY_T_FAIL;
 
     try
     {
@@ -343,6 +374,7 @@ extern "C" int soapy_test(const char *which, const char *module, const char *ser
         else if (!strcmp(which, "stream")) r = stream(d, say, note);
         else if (!strcmp(which, "cycles")) r = cycles(d, say, note);
         else if (!strcmp(which, "retune")) r = retune(d, say, note);
+        else if (!strcmp(which, "bandranges")) r = bandRanges(d, say, note);
     }
     catch (const std::exception &e) { say("%s", e.what()); r = SOAPY_T_FAIL; }
 

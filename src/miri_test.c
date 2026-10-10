@@ -4091,6 +4091,7 @@ static tres_t t_soapy_probe (void)  { return soapy_run("probe"); }
 static tres_t t_soapy_stream (void) { return soapy_run("stream"); }
 static tres_t t_soapy_cycles (void) { return soapy_run("cycles"); }
 static tres_t t_soapy_retune (void) { return soapy_run("retune"); }
+static tres_t t_soapy_band (void)   { return soapy_run("bandranges"); }
 #endif
 
 static const struct {
@@ -4187,6 +4188,7 @@ static const struct {
     { "soapy",    "each format streams",        t_soapy_stream        },
     { "soapy",    "start and stop",             t_soapy_cycles        },
     { "soapy",    "retune and rate changes",    t_soapy_retune        },
+    { "soapy",    "gain ranges of the band",    t_soapy_band          },
 #endif
 };
 
