@@ -160,7 +160,7 @@ A filter the IF does not have is refused. This matters when you change the IF. `
 
 `mirisdr_tune_check()` takes the same arguments and fills the same result, without tuning. Use it to find out what would work.
 
-The older `mirisdr_set_center_freq()` sets the LO directly. It switches `low_if_auto` and `lo_offset` off.
+The older `mirisdr_set_center_freq()` sets the LO directly. It switches `low_if_auto` and `lo_offset` off. Under a baseband stream at a low IF it sets the frequency put at 0 Hz instead, with the LO the IF above it, as any tune there does.
 
 <h4>The front end</h4>
 
@@ -320,7 +320,7 @@ Gap fill only covers short gaps. It puts in at most 16 USB packets of zeros per 
 
 <h4>Reading without a callback</h4>
 
-`mirisdr_read_sync()` reads into your buffer and returns. It gives no buffer information, so you cannot see gaps. It does not do baseband. Use `mirisdr_read_async()` where you can.
+`mirisdr_read_sync()` reads into your buffer and returns. It gives no buffer information, so you cannot see gaps. It does not do baseband, and it needs the `BULK` transfer, which is not the default on Linux. Use `mirisdr_read_async()` where you can.
 
 
 <h3>Baseband: the band at 0 Hz, at any IF</h3>
@@ -424,9 +424,22 @@ The comments in `mirisdr.h` describe the timing in detail.
 `mirisdr_open_null(&dev, format)` opens a fake receiver. `mirisdr_feed_bulk()` pushes your own USB packets through the library as if they came from a receiver. This is how the library's own tests check the sample handling, gap reports and baseband filters.
 
 
+<h3>Threads</h3>
+
+The library follows rtl-sdr's model. A device has no lock around its calls, so the threads that use it share the work as follows:
+
+  - **One control thread.** Tuning, gain, rate, format and the other settings, scans, GPIO, EEPROM, UART, I2C and register access all come from one thread at a time. Several of them are made of a sequence of USB requests, and the library keeps the registers it last wrote in a cache. Two control threads at once interleave those requests and let the cache go out of date. If your program has more than one thread that changes settings, hold a lock of your own around these calls.
+  - **The stream thread** is the one inside `mirisdr_read_async()`. It calls your callback.
+  - **From the callback**, call only `mirisdr_cancel_async()` and the calls that read the stream: `mirisdr_get_buffer_info()`, `mirisdr_get_stream_stats()` and `mirisdr_get_stream()`. A setting changed from the callback would have to stop the stream, which waits for the callback that is asking it to.
+  - **`mirisdr_cancel_async()`** may come from any thread at any time, also while the control thread changes a setting that restarts the stream.
+  - **`mirisdr_scan_feed()`** runs in its own thread, next to the stream and the control thread, as described under Scanning.
+  - **`mirisdr_close()`** comes last, from the control thread. It cancels the stream and waits for `mirisdr_read_async()` to return, so call it outside the callback.
+
+Settings that change the stream may be made while it runs, from the control thread: the stream stops, takes the change and starts again, so the callback never sees a setting change under it.
+
 <h3>Room to grow</h3>
 
-Every struct your program allocates ends in a `reserved` array. Later versions of the library add fields there, so the struct keeps its size and programs built against this version keep working. A new field always means the old behaviour when it is 0.
+Every config and result struct ends in a `reserved` array. The register list entries and `mirisdr_call_regs_t` mirror the firmware and have none. Later versions of the library add fields there, so the struct keeps its size and programs built against this version keep working. A new field always means the old behaviour when it is 0.
 
   - Start a config from its default call (such as `mirisdr_tune_config_default()`) or its get call (such as `mirisdr_get_tune()`). Both leave `reserved` at 0.
   - Do not write to `reserved`. A config with anything set there is refused, with a message that the program needs a newer libmirisdr. This way a program written for a newer library fails clearly on an older one, rather than having settings quietly ignored.

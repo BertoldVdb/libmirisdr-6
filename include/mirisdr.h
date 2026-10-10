@@ -88,11 +88,18 @@ MIRISDR_API int mirisdr_get_hw_flavour (mirisdr_dev_t *p);
 /* sync */
 MIRISDR_API int mirisdr_read_sync (mirisdr_dev_t *p, void *buf, int len, int *n_read);
 
-/* async */
+/* async
+ *
+ * Threads: one thread at a time makes the control calls (settings, tuning, scans,
+ * GPIO and the other I/O); the library has no lock around them. The callback runs on
+ * the thread inside mirisdr_read_async() and may only cancel and read the stream
+ * (buffer info, stats, mirisdr_get_stream()). mirisdr_cancel_async() may come from any
+ * thread, also during a setting that restarts the stream. See doc/c-api.md, Threads. */
 typedef void(*mirisdr_read_async_cb_t) (unsigned char *buf, uint32_t len, void *ctx);
 MIRISDR_API int mirisdr_read_async (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx, uint32_t num, uint32_t len);
 /* A cancel is kept from the moment mirisdr_read_async() is entered, also before its
- * transfers run. One made before that call is not: check a flag of your own in the callback */
+ * transfers run. One made before that call is not: check a flag of your own in the callback.
+ * Once a cancel is pending, another returns 0; without a stream it returns -1 */
 MIRISDR_API int mirisdr_cancel_async (mirisdr_dev_t *p);
 MIRISDR_API int mirisdr_cancel_async_now (mirisdr_dev_t *p);            /* extra */
 MIRISDR_API int mirisdr_start_async (mirisdr_dev_t *p);                 /* extra */
@@ -238,7 +245,7 @@ MIRISDR_API int mirisdr_set_gap_fill (mirisdr_dev_t *p, int on); /* extra */
  * PPS and scan reports still count the converters' samples, decimation (in the stream
  * result) of them to an output sample. Gap fill is always on, so the filters see time
  * pass. swap_iq still mirrors the spectrum with both outputs, as without baseband.
- * mirisdr_read_sync() does not support baseband output.
+ * mirisdr_read_sync() does not support baseband output, and needs the BULK transfer.
  *
  * Bulk transfers max bandwidth is very host dependent, so only the receiver's own limit
  * (~56 MB/s) is enforced there. The automatic choice takes the format with the most
@@ -329,7 +336,9 @@ MIRISDR_API mirisdr_band_t mirisdr_get_band (mirisdr_dev_t *p);         /* extra
  * (see mirisdr_set_stream()): the tune then switches it, in one restart.
  *
  * mirisdr_get_center_freq() returns the LO.
- * mirisdr_set_center_freq() sets the LO: it clears low_if_auto and lo_offset.
+ * mirisdr_set_center_freq() sets the LO: it clears low_if_auto and lo_offset. Under a
+ * baseband stream at a low IF it sets the frequency put at 0 Hz instead, the LO going
+ * the IF above it as with any tune there.
  *
  * tuner is which tuner of the receiver, currently always 0.
  */

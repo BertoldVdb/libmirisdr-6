@@ -396,14 +396,13 @@ static void mirisdr_async_fail (mirisdr_dev_t *p) {
 /* volání pro zasílání dat */
 static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
     size_t i;
-    int len, bytes = 0;
-    static unsigned char *iso_packet_buf;
+    int len, bytes = 0, s;
+    unsigned char *iso_packet_buf;
     mirisdr_dev_t *p = (mirisdr_dev_t*) xfer->user_data;
-    uint8_t *samples = p->samples;
+    uint8_t *samples;
 
-    if (!p) goto failed;
-    /* one completion per submission, whatever its status */
-    p->xfer_inflight--;
+    if (!p) return;
+    samples = p->samples;
 
     /* zpracujeme pouze kompletní přenos */
     if (xfer->status == LIBUSB_TRANSFER_COMPLETED) {
@@ -525,8 +524,11 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
         }
 
         if (bytes > 0 || p->fills_n) mirisdr_feed_converted(p, samples, bytes);
-        /* draining: the transfer is done, and should not be reused */
-        if (p->xfer_draining || (mirisdr_async_get(p) != MIRISDR_ASYNC_RUNNING)) return;
+        /* draining: the transfer is done, and should not be reused. Starting (or
+           restarting) it goes back in, or isochronous ones completing early drop out */
+        s = mirisdr_async_get(p);
+        if (p->xfer_draining || ((s != MIRISDR_ASYNC_RUNNING) && (s != MIRISDR_ASYNC_STARTING) &&
+                                 (s != MIRISDR_ASYNC_PAUSED))) goto done;
 
         /* with the stamp: back onto the grid once the queue has drained of the old phase */
         if ((xfer->type == LIBUSB_TRANSFER_TYPE_BULK) && p->fw_ours)
@@ -573,16 +575,22 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
             fprintf( stderr, "error re-submitting URB on device %u\n", p->index);
             goto failed;
         }
-        p->xfer_inflight++;
+
+        /* in flight again */
+        return;
     } else if (xfer->status != LIBUSB_TRANSFER_CANCELLED) {
         fprintf( stderr, "error async transfer status %d on device %u\n", xfer->status, p->index);
         goto failed;
     }
 
+done:
+    /* back for good: only now, so a drain elsewhere waits until this is through */
+    p->xfer_inflight--;
     return;
 
 failed:
-    if (p) mirisdr_async_fail(p);
+    p->xfer_inflight--;
+    mirisdr_async_fail(p);
 }
 
 /* ukončení async části: one step, so the stream that runs takes it, or none runs */
@@ -593,11 +601,11 @@ int mirisdr_cancel_async (mirisdr_dev_t *p) {
 
     for (;;) {
         switch (s = mirisdr_async_get(p)) {
-        case MIRISDR_ASYNC_INACTIVE:
         case MIRISDR_ASYNC_CANCELING:
-            goto canceled;
+            return 0;           /* already on its way: as asked */
+        case MIRISDR_ASYNC_INACTIVE:
         case MIRISDR_ASYNC_FAILED:
-            goto failed;
+            goto failed;        /* not -2, which is MIRISDR_REOPEN */
         }
 
         /* starting, running or paused: the run stops it */
@@ -606,9 +614,6 @@ int mirisdr_cancel_async (mirisdr_dev_t *p) {
 
 failed:
     return -1;
-
-canceled:
-    return -2;
 }
 
 /* ukončení async části včetně čekání, until read_async has returned. Not from
@@ -707,6 +712,8 @@ static int mirisdr_async_alloc (mirisdr_dev_t *p) {
 
     if (!p->xfer) {
         if (!(p->xfer = calloc(p->xfer_buf_num, sizeof(*p->xfer)))) goto failed;
+        p->xfer_kind = p->transfer;
+        p->xfer_alt = p->alt_setting;
 
         for (i = 0; i < p->xfer_buf_num; i++) {
             switch (p->transfer) {
@@ -771,8 +778,12 @@ failed:
 }
 
 /* uvolnění asynchronních bufferů */
+/* The only place the transfers are freed: under the lock, so not while a stop or a
+   restart in another thread is using them */
 static int mirisdr_async_free (mirisdr_dev_t *p) {
     size_t i;
+
+    mirisdr_xfer_lock(p);
 
     if (p->xfer) {
         for (i = 0; i < p->xfer_buf_num; i++) {
@@ -801,7 +812,95 @@ static int mirisdr_async_free (mirisdr_dev_t *p) {
         p->xfer_out = NULL;
     }
 
+    mirisdr_xfer_unlock(p);
+
     return 0;
+}
+
+/* The end of a run: every transfer back, then freed, in one hold of the lock. A stop
+   or restart under way finishes first; it fails on the canceled state, so the
+   transfers it put in are drained here too. -1: they would not come back, and are
+   left to libusb */
+static int mirisdr_async_finish (mirisdr_dev_t *p) {
+    int r = 0;
+
+    mirisdr_xfer_lock(p);
+
+    if (p->xfer) {
+        /* Ask the firmware to stop while the transfers are still queued, so the
+         * engine can drain */
+        mirisdr_streaming_stop(p);
+
+        /* A stalled endpoint may never return its transfers, so do not wait
+         * for them for ever -- that hangs the caller's stream thread. Give
+         * up after a few seconds and leave without freeing: the transfers
+         * are still owned by libusb, and freeing an in-flight transfer
+         * corrupts memory. libusb_close()/libusb_exit() in mirisdr_close()
+         * cleans up from here. */
+        if (mirisdr_async_drain(p, 5) < 0) {
+            fprintf(stderr, "libmirisdr: transfers would not cancel, "
+                            "abandoning them\n");
+            r = -1;
+        }
+        /* every completion is in: nothing of ours is on libusb's list */
+        else mirisdr_async_free(p);
+    }
+
+    mirisdr_xfer_unlock(p);
+
+    return r;
+}
+
+/* One transfer filled in for the transfer mode in force, at its full length */
+static int mirisdr_async_fill (mirisdr_dev_t *p, size_t i) {
+    switch (p->transfer) {
+    case MIRISDR_TRANSFER_BULK:
+        libusb_fill_bulk_transfer(p->xfer[i],
+                                  p->dh,
+                                  0x81,
+                                  p->xfer_buf[i],
+                                  DEFAULT_BULK_BUFFER,
+                                  _libusb_callback,
+                                  (void*) p,
+                                  DEFAULT_BULK_TIMEOUT);
+        return 0;
+    case MIRISDR_TRANSFER_ISOC:
+        libusb_fill_iso_transfer(p->xfer[i],
+                                 p->dh,
+                                 0x81,
+                                 p->xfer_buf[i],
+                                 DEFAULT_ISO_BUFFER * mirisdr_burst(p) * DEFAULT_ISO_PACKETS,
+                                 DEFAULT_ISO_PACKETS,
+                                 _libusb_callback,
+                                 (void*) p,
+                                 DEFAULT_ISO_TIMEOUT);
+        libusb_set_iso_packet_lengths(p->xfer[i], DEFAULT_ISO_BUFFER * mirisdr_burst(p));
+        return 0;
+    }
+
+    fprintf( stderr, "unsupported transfer type\n");
+    return -1;
+}
+
+/* The interface's alternate setting for the transfer mode: bulk or the isochronous
+   bandwidth. Not critical, the stream runs on whatever the endpoint gives */
+static void mirisdr_async_alt (mirisdr_dev_t *p) {
+    int r;
+
+    if ((r = libusb_set_interface_alt_setting(p->dh, 0, p->alt_setting)) < 0)
+        fprintf( stderr, "failed to use alternate setting %u for %s mode on miri usb device %u with code %d\n",
+                 p->alt_setting, (p->transfer == MIRISDR_TRANSFER_BULK) ? "Bulk" : "Isochronous", p->index, r);
+}
+
+/* The parser and the filters from the start of a stream: what came before does not
+   go on, and the first blocks of a restart may still be the old stream's */
+static void mirisdr_async_rewind (mirisdr_dev_t *p) {
+    p->sync_run = 0;
+    p->bulk_carry_n = 0;
+    p->bulk_lost = 0;
+    p->bulk_wait = 0;
+    p->addr_restart = 1;
+    p->addr_dropped = 0;
 }
 
 /* spuštění async části */
@@ -826,7 +925,6 @@ static int mirisdr_read_async_run (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb,
     size_t i;
     int r;
     int transfer_failed = 0;
-    int stop_asked = 0;
     struct timeval tv = {1, 0};
 
     if (!p) goto failed;
@@ -865,62 +963,19 @@ static int mirisdr_read_async_run (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb,
     p->cb_lost = 0;
     p->ev_valid = 0;
     p->sync_ready = 0;
+#if MIRISDR_DEBUG >= 1
+    fprintf( stderr, ", transfer: %s\n", (p->transfer == MIRISDR_TRANSFER_BULK) ? "bulk" : "isochronous");
+#endif
     /* použití správného rozhraní které zasílá data - není kritické */
-    switch (p->transfer) {
-    case MIRISDR_TRANSFER_BULK:
-#if MIRISDR_DEBUG >= 1
-        fprintf( stderr, ", transfer: bulk\n");
-#endif
-        if ((r = libusb_set_interface_alt_setting(p->dh, 0, p->alt_setting)) < 0) {
-            fprintf( stderr, "failed to use alternate setting for Bulk mode on miri usb device %u with code %d\n", p->index, r);
-        }
-        break;
-    case MIRISDR_TRANSFER_ISOC:
-#if MIRISDR_DEBUG >= 1
-        fprintf( stderr, ", transfer: isochronous\n");
-#endif
-        if ((r = libusb_set_interface_alt_setting(p->dh, 0, p->alt_setting)) < 0) {
-            fprintf( stderr, "failed to use alternate setting for Isochronous mode on miri usb device %u with code %d\n", p->index, r);
-        }
-        break;
-    default:
-        fprintf( stderr, "\nunsupported transfer type on miri usb device %u\n", p->index);
-        goto failed;
-    }
+    mirisdr_async_alt(p);
 
     if (mirisdr_async_alloc(p) < 0) goto failed;
 
     /* spustíme přenosy */
     for (i = 0; i < p->xfer_buf_num; i++) {
-        switch (p->transfer) {
-        case MIRISDR_TRANSFER_BULK:
-            libusb_fill_bulk_transfer(p->xfer[i],
-                                      p->dh,
-                                      0x81,
-                                      p->xfer_buf[i],
-                                      DEFAULT_BULK_BUFFER,
-                                      _libusb_callback,
-                                      (void*) p,
-                                      DEFAULT_BULK_TIMEOUT);
-            break;
-        case MIRISDR_TRANSFER_ISOC:
-            libusb_fill_iso_transfer(p->xfer[i],
-                                     p->dh,
-                                     0x81,
-                                     p->xfer_buf[i],
-                                     DEFAULT_ISO_BUFFER * mirisdr_burst(p) * DEFAULT_ISO_PACKETS,
-                                     DEFAULT_ISO_PACKETS,
-                                     _libusb_callback,
-                                     (void*) p,
-                                     DEFAULT_ISO_TIMEOUT);
-            libusb_set_iso_packet_lengths(p->xfer[i], DEFAULT_ISO_BUFFER * mirisdr_burst(p));
-            break;
-        default:
-            fprintf( stderr, "unsupported transfer type\n");
-            goto failed_free;
-        }
+        if (mirisdr_async_fill(p, i) < 0) goto failed_free;
 
-                r = libusb_submit_transfer(p->xfer[i]);
+        r = libusb_submit_transfer(p->xfer[i]);
         if (r < 0) {
             fprintf(stderr, "Failed to submit transfer %lu reason: %d\n", i, r);
             /* the ones before it are in flight: get them back first */
@@ -951,37 +1006,19 @@ static int mirisdr_read_async_run (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb,
             s = MIRISDR_ASYNC_CANCELING;
         }
 
-        /* dochází k ukončení */
+        /* dochází k ukončení: drained and freed under the lock, after a stop or
+           restart in another thread is through with the transfers */
         if (s == MIRISDR_ASYNC_CANCELING) {
-            if (!p->xfer) break;
-
-            /* Ask the firmware to stop while the transfers are still queued,
-             * so the engine can drain */
-            if (!stop_asked) {
-                mirisdr_streaming_stop(p);
-                stop_asked = 1;
-            }
-
-            /* A stalled endpoint may never return its transfers, so do not wait
-             * for them for ever -- that hangs the caller's stream thread. Give
-             * up after a few seconds and leave without freeing: the transfers
-             * are still owned by libusb, and freeing an in-flight transfer
-             * corrupts memory. libusb_close()/libusb_exit() in mirisdr_close()
-             * cleans up from here. */
-            if (mirisdr_async_drain(p, 5) < 0) {
-                fprintf(stderr, "libmirisdr: transfers would not cancel, "
-                                "abandoning them\n");
-                return -1;
-            }
-            /* every completion is in: nothing of ours is on libusb's list */
+            if (mirisdr_async_finish(p) < 0) return -1;
             break;
         }
 
-        /* počkáme na další událost */
+        /* počkáme na další událost; on an error the transfers are still out, so
+           they are drained as for a failed one, not freed */
         if ((r = libusb_handle_events_timeout(p->ctx, &tv)) < 0) {
             fprintf( stderr, "libusb_handle_events returned: %d\n", r);
             if (r == LIBUSB_ERROR_INTERRUPTED) continue; /* stray */
-            goto failed_free;
+            mirisdr_async_fail(p);
         }
     }
 
@@ -1007,7 +1044,7 @@ failed:
 }
 
 /* spuštění streamování */
-int mirisdr_start_async (mirisdr_dev_t *p) {
+static int mirisdr_start_async_held (mirisdr_dev_t *p) {
     size_t i;
 
     /* nedovolíme jiný stav než pozastavený */
@@ -1015,11 +1052,29 @@ int mirisdr_start_async (mirisdr_dev_t *p) {
 
         /* reset interního bufferu */
     p->xfer_out_pos = 0;
+
+    /* all of it before the transfers go out: their completions feed the filters */
+    mirisdr_bb_restart(p);
+    mirisdr_async_rewind(p);
+
+    /* another transfer mode: other transfers, on another alternate setting. None is
+       in flight while paused */
+    if (p->xfer && ((p->xfer_kind != (int) p->transfer) || (p->xfer_alt != p->alt_setting))) {
+        mirisdr_async_free(p);
+        mirisdr_async_alt(p);
+        if (mirisdr_async_alloc(p) < 0) goto failed;
+    }
+
+    if (!p->xfer) goto failed;
+
     p->xfer_draining = 0;
 
     for (i = 0; i < p->xfer_buf_num; i++) {
-        if (!p->xfer[i]) continue;
+        if (!p->xfer[i] || (mirisdr_async_fill(p, i) < 0)) continue;
         if (libusb_submit_transfer(p->xfer[i])< 0) {
+            /* still paused: the ones before it come back, and stay */
+            p->xfer_draining = 1;
+            mirisdr_async_drain(p, 5);
             goto failed;
         }
         p->xfer_inflight++;
@@ -1027,7 +1082,6 @@ int mirisdr_start_async (mirisdr_dev_t *p) {
 
     if (mirisdr_async_get(p) != MIRISDR_ASYNC_PAUSED) goto failed;
 
-    mirisdr_bb_restart(p);
     mirisdr_iso_settle(p);
     mirisdr_streaming_start(p);
 
@@ -1054,6 +1108,15 @@ static void mirisdr_cb_rebase (mirisdr_dev_t *p) {
 
     /* the real samples of the dropped part, and all of the gaps not reached */
     p->cb_lost += (dropped > filled ? dropped - filled : 0) + missing;
+
+    /* the stats count what was delivered: the dropped part, fill included, was not.
+       Their index (samples + lost) stays */
+    if (dropped > p->stats.samples) dropped = p->stats.samples;
+    if (filled > dropped) filled = dropped;
+    if (filled > p->stats.filled) filled = p->stats.filled;
+    p->stats.samples -= dropped;
+    p->stats.lost += dropped;
+    p->stats.filled -= filled;
     p->cb_base += p->cb_bytes / ub;
     p->cb_bytes = 0;
     p->fed_bytes = 0;
@@ -1062,7 +1125,7 @@ static void mirisdr_cb_rebase (mirisdr_dev_t *p) {
 }
 
 /* zastavení streamování */
-int mirisdr_stop_async (mirisdr_dev_t *p) {
+static int mirisdr_stop_async_held (mirisdr_dev_t *p) {
 
     /* nedovolíme jiný stav než spuštěný */
     if (mirisdr_async_get(p) != MIRISDR_ASYNC_RUNNING) goto failed;
@@ -1096,6 +1159,32 @@ failed:
     return -1;
 }
 
+/* Both hold the transfers' lock throughout, so a cancel meanwhile cannot have the run
+   free the transfers under them; the run frees them once they are through */
+int mirisdr_start_async (mirisdr_dev_t *p) {
+    int r;
+
+    if (!p) return -1;
+
+    mirisdr_xfer_lock(p);
+    r = mirisdr_start_async_held(p);
+    mirisdr_xfer_unlock(p);
+
+    return r;
+}
+
+int mirisdr_stop_async (mirisdr_dev_t *p) {
+    int r;
+
+    if (!p) return -1;
+
+    mirisdr_xfer_lock(p);
+    r = mirisdr_stop_async_held(p);
+    mirisdr_xfer_unlock(p);
+
+    return r;
+}
+
 int mirisdr_get_buffer_info (mirisdr_dev_t *p, mirisdr_buffer_info_t *info) {
     if (!p || !info) return -1;
 
@@ -1107,8 +1196,9 @@ int mirisdr_get_buffer_info (mirisdr_dev_t *p, mirisdr_buffer_info_t *info) {
 int mirisdr_set_gap_fill (mirisdr_dev_t *p, int on) {
     if (!p) return -1;
 
-    p->gap_fill = !!on;
-    p->stream.gap_fill = p->gap_fill;
+    /* always on under baseband, where the filters need time to pass */
+    p->stream.gap_fill = !!on;
+    p->gap_fill = !!on || (p->bb_path != MIRISDR_BASEBAND_OFF);
 
     return 0;
 }

@@ -215,6 +215,7 @@ static void mirisdr_bb_restart (mirisdr_dev_t *p)
     b->dc_i = b->dc_q = 0;
     b->rot = 0;
     b->have_carry = 0;
+    b->lost += b->out_n;        /* the buffer being filled is dropped */
     b->out_n = 0;
     b->gq_n = 0;
     b->produced = b->sample;
@@ -263,7 +264,7 @@ static int mirisdr_bb_setup (mirisdr_dev_t *p)
 
     if (old) {
         b->sample = b->produced = old->sample;
-        b->lost = old->lost;
+        b->lost = old->lost + old->out_n;   /* its buffer being filled is dropped */
         b->lost_in = old->lost_in;
     }
     mirisdr_bb_free(p);
@@ -458,10 +459,21 @@ static void mirisdr_bb_feed (mirisdr_dev_t *p, unsigned char *buf, uint32_t len)
     b->lost_in = lost_in;
 
     /* its gaps, where they come out */
-    for (k = 0; k < in->gaps_len && b->gq_n < MIRISDR_BB_GAPQ; k++) {
+    for (k = 0; k < in->gaps_len; k++) {
+        uint64_t samples = (in->gaps[k].samples + b->decim - 1) / b->decim;
+        /* filled whole stays filled whole, or the rounding reads as a loss */
+        uint32_t filled = (in->gaps[k].filled == in->gaps[k].samples) ? (uint32_t) samples
+                                                                       : in->gaps[k].filled / b->decim;
+
+        /* a full queue: the last one takes it, so the counts stay right */
+        if (b->gq_n == MIRISDR_BB_GAPQ) {
+            b->gq[b->gq_n - 1].samples += samples;
+            b->gq[b->gq_n - 1].filled += filled;
+            continue;
+        }
         b->gq[b->gq_n].at = b->produced + in->gaps[k].offset / b->decim;
-        b->gq[b->gq_n].samples = (in->gaps[k].samples + b->decim - 1) / b->decim;
-        b->gq[b->gq_n].filled = in->gaps[k].filled / b->decim;
+        b->gq[b->gq_n].samples = samples;
+        b->gq[b->gq_n].filled = filled;
         b->gq_n++;
     }
 

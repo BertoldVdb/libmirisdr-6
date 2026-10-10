@@ -21,19 +21,27 @@ int mirisdr_read_sync (mirisdr_dev_t *p, void *buf, int len, int *n_read) {
     uint8_t *out = buf;
     int got = 0, n, r, k, phase;
 
-    if (!p || !buf || len < 0) goto failed;
+    if (!p || !p->dh || !buf || len < 0) goto failed;
     if (p->bb) {
         fprintf(stderr, "mirisdr_read_sync() does not do baseband, use mirisdr_read_async()\n");
         goto failed;
     }
     if (n_read) *n_read = 0;
+    if (p->transfer != MIRISDR_TRANSFER_BULK) {
+        fprintf(stderr, "mirisdr_read_sync() reads bulk transfers: set the transfer to BULK\n");
+        goto failed;
+    }
+    if (mirisdr_async_get(p) != MIRISDR_ASYNC_INACTIVE) goto failed;
 
     if (!p->sync_in && !(p->sync_in = malloc(DEFAULT_BULK_BUFFER))) goto failed;
     if (!p->sync_out && !(p->sync_out = malloc((DEFAULT_BULK_BUFFER / 1024 + 2) * MIRISDR_BLOCK_OUT_MAX))) goto failed;
 
     if (!p->sync_ready) {
         if (libusb_set_interface_alt_setting(p->dh, 0, p->alt_setting) < 0) goto failed;
-        if (mirisdr_streaming_start(p) < 0) goto failed;
+        if (mirisdr_streaming_start(p) < 0) {
+            mirisdr_streaming_stop(p);
+            goto failed;
+        }
 
         memset(&p->stats, 0, sizeof(p->stats));
         p->sync_run = 0;
@@ -53,6 +61,8 @@ int mirisdr_read_sync (mirisdr_dev_t *p, void *buf, int len, int *n_read) {
             r = libusb_bulk_transfer(p->dh, 0x81, p->sync_in, p->sync_xlen, &n, DEFAULT_BULK_TIMEOUT);
             if (r < 0) {
                 if (got) break;
+                /* the device stops, and the next read starts it from the beginning */
+                mirisdr_streaming_stop(p);
                 return r;
             }
             p->sync_xlen = DEFAULT_BULK_BUFFER;

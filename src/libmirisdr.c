@@ -93,6 +93,8 @@ static int mirisdr_reserved_set (const uint32_t *r, size_t n)
 int mirisdr_setup (mirisdr_dev_t **out_dev, mirisdr_dev_t *dev) {
     int r;
 
+    mirisdr_xfer_lock_init(dev);
+
     if (libusb_kernel_driver_active(dev->dh, 0) == 1) {
         dev->driver_active = 1;
 
@@ -160,6 +162,7 @@ int mirisdr_setup (mirisdr_dev_t **out_dev, mirisdr_dev_t *dev) {
 
 failed:
     if (dev) {
+        mirisdr_xfer_lock_destroy(dev);
         if (dev->dh) {
             libusb_release_interface(dev->dh, 0);
             libusb_close(dev->dh);
@@ -347,6 +350,7 @@ int mirisdr_close (mirisdr_dev_t *p) {
     if (p->sync_in) free(p->sync_in);
     if (p->sync_out) free(p->sync_out);
 
+    mirisdr_xfer_lock_destroy(p);
     free(p);
 
     return 0;

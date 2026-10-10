@@ -151,6 +151,11 @@ FOREACH(lib ${LIBUSB_LIBRARY_DIRS})
     LIST(APPEND MIRISDR_PC_LIBS "-L${lib}")
 ENDFOREACH(lib)
 
+# the transfers' lock: a critical section on Windows, pthreads elsewhere
+IF(NOT WIN32)
+    LIST(APPEND MIRISDR_PC_LIBS "${CMAKE_THREAD_LIBS_INIT}")
+ENDIF(NOT WIN32)
+
 # use space-separation format for the pc file
 STRING(REPLACE ";" " " MIRISDR_PC_CFLAGS "${MIRISDR_PC_CFLAGS}")
 STRING(REPLACE ";" " " MIRISDR_PC_LIBS "${MIRISDR_PC_LIBS}")

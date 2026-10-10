@@ -27,6 +27,7 @@ add_library(mirisdr_shared SHARED
 
 target_link_libraries(mirisdr_shared
     ${LIBUSB_LIBRARIES}
+    ${CMAKE_THREAD_LIBS_INIT}
 )
 
 set_target_properties(mirisdr_shared PROPERTIES DEFINE_SYMBOL "mirisdr_EXPORTS")
@@ -47,6 +48,7 @@ endif()
 
 target_link_libraries(mirisdr_static
     ${LIBUSB_LIBRARIES}
+    ${CMAKE_THREAD_LIBS_INIT}
 )
 
 set_property(TARGET mirisdr_static APPEND PROPERTY COMPILE_DEFINITIONS "mirisdr_STATIC" )

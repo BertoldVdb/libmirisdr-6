@@ -111,8 +111,8 @@ static const struct { const char *name; int transfer; uint8_t alt; } mirisdr_tra
 	{ "ISOC2", MIRISDR_TRANSFER_ISOC, 4 },
 };
 
-/* ISOC is more stable but works only on Unix systems */
-#if !defined (_WIN32) || defined(__MINGW32__)
+/* ISOC is more stable but works only on Unix systems, MinGW builds included in Windows */
+#if !defined (_WIN32)
 #define MIRISDR_TRANSFER_DEFAULT        "ISOC"
 #else
 #define MIRISDR_TRANSFER_DEFAULT        "BULK"
@@ -369,7 +369,9 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 
 	if ((pl->rate < rate_min) || (pl->rate > rate_max))
 	{
-		if (!adjust)
+		/* a low IF baseband stream's converters run at 4 x IF, which the filters are
+		   planned for: no other rate will do */
+		if (!adjust || (pl->bb_path >= MIRISDR_BASEBAND_COMPLEX))
 		{
 			mirisdr_refuse(p, "rate %u is outside %u to %u sps\n", pl->rate, rate_min, rate_max);
 			return -1;
@@ -430,10 +432,10 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 	{
 		mirisdr_refuse(p, "rate %u needs %lu B/s of blocks, more than the engine's %lu", pl->rate,
 		        (long unsigned) ((uint64_t) pl->rate * 1024 / spp), (long unsigned) MIRISDR_ENGINE_BLOCK_RATE);
-		if (adjust) mirisdr_refuse(p, ", using %lu", (long unsigned) most);
+		if (adjust && (pl->bb_path < MIRISDR_BASEBAND_COMPLEX)) mirisdr_refuse(p, ", using %lu", (long unsigned) most);
 		mirisdr_refuse(p, "\n");
 
-		if (!adjust) return -1;
+		if (!adjust || (pl->bb_path >= MIRISDR_BASEBAND_COMPLEX)) return -1;
 
 		pl->rate = (uint32_t) most;
 
@@ -592,6 +594,17 @@ static void mirisdr_stream_regs (mirisdr_dev_t *p, const mirisdr_stream_plan_t *
 /* stopped and started around it if it runs; returns whether it ran */
 static int mirisdr_stream_pause (mirisdr_dev_t *p)
 {
+	/* a stream still starting sets up its transfers from what this changes */
+	while (mirisdr_async_get(p) == MIRISDR_ASYNC_STARTING)
+#if defined (_WIN32) && !defined(__MINGW32__)
+		Sleep(1);
+#else
+		usleep(1000);
+#endif
+
+	/* the synchronous reads: stopped, the next one starts it again */
+	if (p->sync_ready) return (mirisdr_streaming_stop(p) < 0) ? -1 : 0;
+
 	if (mirisdr_async_get(p) != MIRISDR_ASYNC_RUNNING) return 0;
 
 	return ((mirisdr_stop_async(p) < 0) || (mirisdr_adc_stop(p) < 0)) ? -1 : 1;
@@ -705,8 +718,9 @@ int mirisdr_set_sample_rate(mirisdr_dev_t *p, uint32_t rate)
 	c.rate = rate;
 	r = mirisdr_stream_apply(p, &c, MIRISDR_STREAM_ADJUST | MIRISDR_STREAM_FORCE, NULL);
 
-	/* the range depends on the decimation bypass, report what was reached */
-	if (p->rate != rate) fprintf(stderr, "can't set rate %u, using %u\n", rate, p->rate);
+	/* the range depends on the decimation bypass, report what was reached: the output's,
+	   which under baseband is not the converters' */
+	if (p->stream.rate != rate) fprintf(stderr, "can't set rate %u, using %u\n", rate, p->stream.rate);
 
 	return r;
 }
@@ -748,13 +762,18 @@ int mirisdr_set_swap_iq(mirisdr_dev_t *p, int swap)
 	return mirisdr_stream_apply(p, &c, MIRISDR_STREAM_ADJUST | MIRISDR_STREAM_FORCE, NULL);
 }
 
+/* the callback's rate, as set: under baseband the output's */
 uint32_t mirisdr_get_sample_rate(mirisdr_dev_t *p)
 {
-	return p->rate;
+	if (!p) return 0;
+
+	return p->stream.rate;
 }
 
 const char *mirisdr_get_decimation_bypass(mirisdr_dev_t *p)
 {
+	if (!p) return "";
+
 	switch (p->decimation_bypass)
 	{
 	case MIRISDR_DECIMATION_BYPASS_ON:
@@ -768,11 +787,15 @@ const char *mirisdr_get_decimation_bypass(mirisdr_dev_t *p)
 
 int mirisdr_get_swap_iq(mirisdr_dev_t *p)
 {
+	if (!p) return -1;
+
 	return p->swap_iq;
 }
 
 const char *mirisdr_get_sample_format(mirisdr_dev_t *p)
 {
+	if (!p) return "";
+
 	if (p->format_auto == MIRISDR_FORMAT_AUTO_ON) {
 		return "AUTO";
 	}
@@ -786,6 +809,8 @@ const char *mirisdr_get_sample_format(mirisdr_dev_t *p)
 
 const char *mirisdr_get_sample_format_selected(mirisdr_dev_t *p)
 {
+	if (!p) return "";
+
 	switch (p->format)
 	{
 	case MIRISDR_FORMAT_252_S16:

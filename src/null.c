@@ -36,12 +36,14 @@ int mirisdr_open_null (mirisdr_dev_t **out, const char *format) {
     if (i == sizeof f / sizeof f[0]) return -1;
 
     if (!(p = calloc(1, sizeof *p))) return -1;
+    mirisdr_xfer_lock_init(p);              /* mirisdr_close() destroys it */
 
     p->format = f[i].format;  /* the enum is declared in the struct */
     p->addr_step = f[i].step;
     p->fw_ours = 1;             /* stamped blocks */
     p->fake = 1;                /* the configs can be applied, and read back */
     p->gap_track = 1;
+    p->stream.rate = p->rate = DEFAULT_RATE;    /* so get_stream then set_stream works */
     mirisdr_tuner_defaults(p);   /* so tunes and scan lists come out as on a device */
 
     *out = p;
@@ -55,6 +57,7 @@ int mirisdr_feed_bulk (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx, 
     int bytes;
 
     if (!p || p->dh || !cb || (!data && n)) return -1;
+    if (n > (1u << 24)) return -1;          /* in pieces: the parser counts in int */
 
     /* the callback's buffer size is fixed by the first call, as read_async's is */
     if (!p->cb) {

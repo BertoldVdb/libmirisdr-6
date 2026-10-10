@@ -25,6 +25,14 @@ typedef struct mirisdr_device {
     int                 flavour;        /* mirisdr_hw_flavour_t picked by MIRISDR_HW_AUTO */
 } mirisdr_device_t;
 
+/* the lock on the transfers, recursive: a stop's drain runs callbacks, which may stop */
+#if defined(_WIN32)
+typedef CRITICAL_SECTION mirisdr_lock_t;
+#else
+#include <pthread.h>
+typedef pthread_mutex_t mirisdr_lock_t;
+#endif
+
 enum {
     MIRISDR_ASYNC_INACTIVE = 0,
     MIRISDR_ASYNC_CANCELING,
@@ -122,6 +130,10 @@ struct mirisdr_dev {
     int                 xfer_inflight;  /* transfers submitted and not yet completed */
     int                 xfer_draining;  /* completions must not resubmit */
     struct libusb_transfer **xfer;
+    mirisdr_lock_t      xfer_lock;      /* held by whatever uses or frees xfer from more than
+                                           one thread: a stop, a restart, the run's last drain */
+    int                 xfer_kind;      /* the transfer and alt setting xfer was made for */
+    uint8_t             xfer_alt;
     unsigned char       **xfer_buf;
     int                 xfer_buf_devmem;
     int                 xfer_buf_slow;  /* reading from USB buffers is slow */
@@ -269,6 +281,26 @@ struct mirisdr_dev {
     int                 dc_track;   // tracking duration
     int                 dc_period;  // refresh period
 };
+
+#if defined(_WIN32)
+static void mirisdr_xfer_lock_init (mirisdr_dev_t *p)    { InitializeCriticalSection(&p->xfer_lock); }
+static void mirisdr_xfer_lock_destroy (mirisdr_dev_t *p) { DeleteCriticalSection(&p->xfer_lock); }
+static void mirisdr_xfer_lock (mirisdr_dev_t *p)         { EnterCriticalSection(&p->xfer_lock); }
+static void mirisdr_xfer_unlock (mirisdr_dev_t *p)       { LeaveCriticalSection(&p->xfer_lock); }
+#else
+static void mirisdr_xfer_lock_init (mirisdr_dev_t *p)
+{
+    pthread_mutexattr_t a;
+
+    pthread_mutexattr_init(&a);
+    pthread_mutexattr_settype(&a, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&p->xfer_lock, &a);
+    pthread_mutexattr_destroy(&a);
+}
+static void mirisdr_xfer_lock_destroy (mirisdr_dev_t *p) { pthread_mutex_destroy(&p->xfer_lock); }
+static void mirisdr_xfer_lock (mirisdr_dev_t *p)         { pthread_mutex_lock(&p->xfer_lock); }
+static void mirisdr_xfer_unlock (mirisdr_dev_t *p)       { pthread_mutex_unlock(&p->xfer_lock); }
+#endif
 
 /* A change of the stream state that depends on the state it leaves is one compare
    and swap, so a cancel cannot land between the check and the change */

@@ -138,6 +138,7 @@ static void sighandler(int signum)
 static void mirisdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 {
 	mirisdr_stream_stats_t st;
+	mirisdr_stream_result_t sr;
 	static uint64_t mark;
 
 	/* a signal before the stream ran was not a cancel */
@@ -153,9 +154,10 @@ static void mirisdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 		}
 	}
 
-	if (mirisdr_get_stream_stats(dev, &st) == 0) {
+	/* the stats count the converters' samples, at their rate */
+	if (mirisdr_get_stream_stats(dev, &st) == 0 && mirisdr_get_stream(dev, NULL, &sr) == 0) {
 		if (st.index < mark) mark = 0;
-		if (st.index - mark >= mirisdr_get_sample_rate(dev)) {
+		if (st.index - mark >= sr.adc_rate) {
 			mark = st.index;
 			fprintf(stderr, "%.3f Ms delivered, %llu lost in %llu gaps, %llu jitter, %llu resync\n",
 				st.samples / 1e6, (unsigned long long) st.lost,
