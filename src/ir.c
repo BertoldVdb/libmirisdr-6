@@ -80,13 +80,14 @@ int mirisdr_set_ir (mirisdr_dev_t *p, uint32_t tick_ns, mirisdr_ir_cb_t cb, void
     /* GPIO_3 is the RSP1B's expander chip select: released, it would float */
     if (p->hw_flavour == MIRISDR_HW_RSP1B) return -1;
 
+    /* off first, so the stream thread stops before the callback goes */
+    p->ir_tick_ns = 0;
     p->ir_cb = cb;
     p->ir_ctx = ctx;
     p->ir_have = 0;
 
     if (!tick_ns)
     {
-        p->ir_tick_ns = 0;
         if (mirisdr_write_reg(p, 0x0A, 0) < 0) return -1;
 
         return mirisdr_release_gpio(p, MIRISDR_IR_GPIO);
@@ -125,11 +126,15 @@ static void mirisdr_ir_latch (mirisdr_dev_t *p, uint8_t b6, uint32_t addr)
 {
     uint8_t ticks = b6 & 0x7F;
     uint8_t level = (b6 & 0x80) ? 0 : 1;        /* the byte sets the bit for a low pin */
-    uint64_t full = (uint64_t) (MIRISDR_IR_KEEPS_GOING + 1) * p->ir_tick_ns;
+    /* once: mirisdr_set_ir() may change them from another thread meanwhile */
+    uint32_t tick_ns = p->ir_tick_ns;
+    mirisdr_ir_cb_t cb = p->ir_cb;
+    void *ctx = p->ir_ctx;
+    uint64_t full = (uint64_t) (MIRISDR_IR_KEEPS_GOING + 1) * tick_ns;
     uint64_t packet, elapsed, ns;
     mirisdr_ir_pulse_t e;
 
-    if (!p->ir_tick_ns || !p->ir_cb || !p->rate) return;
+    if (!tick_ns || !cb || !p->rate) return;
 
     if (!p->ir_have)
     {
@@ -160,7 +165,7 @@ static void mirisdr_ir_latch (mirisdr_dev_t *p, uint8_t b6, uint32_t addr)
 
         if (ticks != MIRISDR_IR_KEEPS_GOING)
         {
-            uint64_t tail = (uint64_t) ticks * p->ir_tick_ns;
+            uint64_t tail = (uint64_t) ticks * tick_ns;
 
             /* the count is the time since the counter last restarted, and the
                stream says how many restarts there were - which it can only do
@@ -185,7 +190,7 @@ static void mirisdr_ir_latch (mirisdr_dev_t *p, uint8_t b6, uint32_t addr)
 
     e.duration = (uint32_t) ((ns + 500) / 1000);
 
-    p->ir_cb(&e, p->ir_ctx);
+    cb(&e, ctx);
 
     if (e.ended)
     {

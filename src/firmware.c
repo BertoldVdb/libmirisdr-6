@@ -70,6 +70,8 @@ int mirisdr_running_from_rom (mirisdr_dev_t *p)
     uint8_t low[4], mirror[4];
     uint16_t at;
 
+    if (!p) return -1;
+
     for (at = 0; at < 0x1000; at+= sizeof(low))
     {
         if (mirisdr_read_mem(p, at, low, sizeof(low), MIRISDR_MEM_XDATA) < 0) return -1;
@@ -317,15 +319,29 @@ int mirisdr_fw_get (const uint8_t *image, uint32_t size, mirisdr_fw_patch_t *out
 
 int mirisdr_fw_patch (uint8_t *image, uint32_t size, const mirisdr_fw_patch_t *p)
 {
+    uint8_t *work;
+    int r = -1;
+
     if (!image || !p || MIRISDR_RESERVED_SET(*p)) return -1;
+    if (p->fields & ~(MIRISDR_FW_PATCH_IDS | MIRISDR_FW_PATCH_SERIAL)) return -1;
+
+    /* on a copy, so a refused part leaves the image as it was */
+    if (!(work = malloc(size ? size : 1))) return -1;
+    memcpy(work, image, size);
 
     if ((p->fields & MIRISDR_FW_PATCH_IDS)
-        && mirisdr_fw_set_ids(image, size, p->vid, p->pid)) return -1;
+        && mirisdr_fw_set_ids(work, size, p->vid, p->pid)) goto out;
 
     if ((p->fields & MIRISDR_FW_PATCH_SERIAL)
-        && mirisdr_fw_set_serial(image, size, p->serial)) return -1;
+        && mirisdr_fw_set_serial(work, size, p->serial)) goto out;
 
-    return 0;
+    memcpy(image, work, size);
+    r = 0;
+
+out:
+    free(work);
+
+    return r;
 }
 
 static uint8_t *mirisdr_fw_read (const char *path, uint32_t *size)
@@ -518,6 +534,14 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
 
     if (!out || !cfg) return -1;
 
+    *out = NULL;
+
+    if ((cfg->hw_flavour < MIRISDR_HW_AUTO) || (cfg->hw_flavour > MIRISDR_HW_RSP1B))
+    {
+        fprintf(stderr, "libmirisdr: hw_flavour %d is not a board\n", cfg->hw_flavour);
+        return -1;
+    }
+
     if (MIRISDR_RESERVED_SET(*cfg) || MIRISDR_RESERVED_SET(cfg->firmware_patch))
     {
         fprintf(stderr, "libmirisdr: " MIRISDR_RESERVED_MSG, "the open config");
@@ -547,6 +571,13 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
         image = owned;
     }
 
+    /* RAM from 0x1800 on is the firmware's own, see mirisdr_fw_read() */
+    if (image && (size > 0x1800) && !cfg->keep_running)
+    {
+        fprintf(stderr, "the firmware image is %u bytes, more than the 0x1800 there is room for\n", size);
+        goto out;
+    }
+
     if (image && size)
     {
         if (!(work = malloc(size))) goto out;
@@ -560,6 +591,13 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
     if (work && !cfg->keep_running)
     {
         if ((have_ids = mirisdr_fw_ids_wanted(dev, cfg, work, size, &vid, &pid)) < 0) goto out;
+
+        /* it comes back on those ids, which have to be found to reopen it */
+        if (have_ids && !mirisdr_device_get(vid, pid))
+        {
+            fprintf(stderr, "not loading: %04x:%04x is not a receiver this library finds again\n", vid, pid);
+            goto out;
+        }
         if (have_ids && (mirisdr_fw_set_ids(work, size, vid, pid) < 0)) goto out;
 
         if ((have_serial = mirisdr_fw_serial_wanted(dev, cfg, work, size, serial,
@@ -660,7 +698,12 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
     r = -1;
 
 out:
-    if (dev) mirisdr_close(dev);
+    /* a device not handed back is a failure, whatever an earlier step left in r */
+    if (dev)
+    {
+        mirisdr_close(dev);
+        if (r == 0) r = -1;
+    }
     if (work) free(work);
     if (owned) free(owned);
 

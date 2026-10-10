@@ -34,7 +34,8 @@ static int mirisdr_uart_delay (uint32_t baud, uint32_t *bit_ns)
 
     delay = (bit - MIRISDR_UART_FIXED_PS + MIRISDR_UART_UNIT_PS / 2) / MIRISDR_UART_UNIT_PS;
 
-    if (delay > MIRISDR_UART_MAX_DELAY) delay = MIRISDR_UART_MAX_DELAY;
+    /* slower than the delay counts: the line would run at another rate */
+    if (delay > MIRISDR_UART_MAX_DELAY) return -1;
 
     if (bit_ns) *bit_ns = (uint32_t) ((delay * MIRISDR_UART_UNIT_PS + MIRISDR_UART_FIXED_PS) / 1000);
 
@@ -44,7 +45,7 @@ static int mirisdr_uart_delay (uint32_t baud, uint32_t *bit_ns)
 int mirisdr_uart_write (mirisdr_dev_t *p, uint32_t baud, const uint8_t *buf, int len)
 {
     uint32_t bit_ns;
-    int done = 0, delay;
+    int done = 0, delay, before = 0;
 
     if (!p || !p->dh || !buf || (len < 0)) return -1;
     if (!p->fw_ours) return -1;
@@ -58,8 +59,9 @@ int mirisdr_uart_write (mirisdr_dev_t *p, uint32_t baud, const uint8_t *buf, int
         if (n > MIRISDR_UART_CHUNK) n = MIRISDR_UART_CHUNK;
 
         /* The status stage is acknowledged before the bits go out, so it is the
-           next transfer that waits for the line, not this one. */
-        ms = (unsigned int) ((uint64_t) n * 10 * bit_ns / 1000000) + CTRL_TIMEOUT;
+           next transfer that waits for the line: for the chunk before it too. */
+        ms = (unsigned int) ((uint64_t) (before + n) * 10 * bit_ns / 1000000) + CTRL_TIMEOUT;
+        before = n;
 
         /* the firmware drives the line through register 8 */
         p->reg8_valid = 0;

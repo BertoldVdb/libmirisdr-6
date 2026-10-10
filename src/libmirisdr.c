@@ -122,6 +122,9 @@ int mirisdr_setup (mirisdr_dev_t **out_dev, mirisdr_dev_t *dev) {
             fprintf(stderr, "Verify that the SDRplay background service is not running by `sudo systemctl stop sdrplay` and try again.\n");
         }
 
+#ifdef DETACH_KERNEL_DRIVER
+        if (dev->driver_active) libusb_attach_kernel_driver(dev->dh, 0);
+#endif
         goto failed;
     }
 
@@ -190,11 +193,19 @@ static int mirisdr_open_raw (mirisdr_dev_t **p, uint32_t index, int external_tun
     libusb_set_option(NULL, LIBUSB_OPTION_NO_DEVICE_DISCOVERY, NULL);
 #endif
 
-    libusb_init(&dev->ctx);
-    i_max = libusb_get_device_list(dev->ctx, &list);
+    if (libusb_init(&dev->ctx) < 0) {
+        dev->ctx = NULL;
+        fprintf(stderr, "libusb cannot start\n");
+        goto failed;
+    }
+
+    if ((i_max = libusb_get_device_list(dev->ctx, &list)) < 0) {
+        fprintf(stderr, "libusb cannot list the devices\n");
+        goto failed;
+    }
 
     for (i = 0; i < i_max; i++) {
-        libusb_get_device_descriptor(list[i], &dd);
+        if (libusb_get_device_descriptor(list[i], &dd) < 0) continue;
 
         if ((mirisdr_device_get(dd.idVendor, dd.idProduct)) &&
             (count++ == index)) {
@@ -261,9 +272,10 @@ static int mirisdr_open_fd_raw (mirisdr_dev_t **p, int fd, int external_tuner, u
         free(dev);
         return -1;
     }
-    
+
     r = libusb_wrap_sys_device(dev->ctx, (intptr_t)fd, &dev->dh);
     if (r || dev->dh == NULL){
+        libusb_exit(dev->ctx);
         free(dev);
         return -1;
     }
@@ -401,8 +413,11 @@ int mirisdr_get_usb_strings (mirisdr_dev_t *dev, char *manufact, char *product, 
     memset(product, 0, 256);
     memset(serial, 0, 256);
 
-    if (!mirisdr_usb_string(dev->dh, dd.iManufacturer, manufact, 256)
-        || !mirisdr_usb_string(dev->dh, dd.iProduct, product, 256))
+    /* both read, so a missing one does not hide the other */
+    mirisdr_usb_string(dev->dh, dd.iManufacturer, manufact, 256);
+    mirisdr_usb_string(dev->dh, dd.iProduct, product, 256);
+
+    if (!*manufact || !*product)
     {
         if ((known = mirisdr_device_get(dd.idVendor, dd.idProduct)))
         {
@@ -491,6 +506,14 @@ int mirisdr_set_hw_flavour (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_flavour) {
 
     p->hw_flavour = hw_flavour;
     p->exp_valid = 0;
+
+    /* only the RSP1B has notches: one left in the tune would refuse every later tune */
+    if (hw_flavour != MIRISDR_HW_RSP1B)
+    {
+        p->notch = 0;
+        p->tune.frontend.notch = 0;
+    }
+
     return 0;
 
 failed:

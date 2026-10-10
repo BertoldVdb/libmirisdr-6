@@ -59,6 +59,27 @@ static int mirisdr_flavour_of (libusb_device_handle *dh)
     return d ? d->flavour : MIRISDR_HW_DEFAULT;
 }
 
+/* the USB devices, or -1 with nothing to free when libusb cannot start or list them */
+static ssize_t mirisdr_list_devices (libusb_context **ctx, libusb_device ***list)
+{
+    ssize_t n;
+
+#ifdef __ANDROID__
+    /* LibUSB does not support device discovery on android */
+    libusb_set_option(NULL, LIBUSB_OPTION_NO_DEVICE_DISCOVERY, NULL);
+#endif
+
+    if (libusb_init(ctx) < 0) return -1;
+
+    if ((n = libusb_get_device_list(*ctx, list)) < 0)
+    {
+        libusb_exit(*ctx);
+        return -1;
+    }
+
+    return n;
+}
+
 /* počet dostupných zařízení */
 uint32_t mirisdr_get_device_count (void) {
     ssize_t i, i_max;
@@ -67,17 +88,10 @@ uint32_t mirisdr_get_device_count (void) {
     libusb_device **list;
     struct libusb_device_descriptor dd;
 
-#ifdef __ANDROID__
-    /* LibUSB does not support device discovery on android */
-    libusb_set_option(NULL, LIBUSB_OPTION_NO_DEVICE_DISCOVERY, NULL);
-#endif
-
-    libusb_init(&ctx);
-
-    i_max = libusb_get_device_list(ctx, &list);
+    if ((i_max = mirisdr_list_devices(&ctx, &list)) < 0) return 0;
 
     for (i = 0; i < i_max; i++) {
-        libusb_get_device_descriptor(list[i], &dd);
+        if (libusb_get_device_descriptor(list[i], &dd) < 0) continue;
 
         if (mirisdr_device_get(dd.idVendor, dd.idProduct)) ret++;
     }
@@ -98,16 +112,10 @@ const char *mirisdr_get_device_name (uint32_t index) {
     struct libusb_device_descriptor dd;
     mirisdr_device_t *device = NULL;
 
-#ifdef __ANDROID__
-    /* LibUSB does not support device discovery on android */
-    libusb_set_option(NULL, LIBUSB_OPTION_NO_DEVICE_DISCOVERY, NULL);
-#endif
-
-    libusb_init(&ctx);
-    i_max = libusb_get_device_list(ctx, &list);
+    if ((i_max = mirisdr_list_devices(&ctx, &list)) < 0) return "";
 
     for (i = 0; i < i_max; i++) {
-        libusb_get_device_descriptor(list[i], &dd);
+        if (libusb_get_device_descriptor(list[i], &dd) < 0) continue;
 
         if ((device = mirisdr_device_get(dd.idVendor, dd.idProduct)) &&
             (j++ == index)) {
@@ -175,16 +183,19 @@ int mirisdr_get_device_usb_strings (uint32_t index, char *manufact, char *produc
     struct libusb_device_descriptor dd;
     mirisdr_device_t *device = NULL;
 
-#ifdef __ANDROID__
-    /* LibUSB does not support device discovery on android */
-    libusb_set_option(NULL, LIBUSB_OPTION_NO_DEVICE_DISCOVERY, NULL);
-#endif
+    if (!manufact || !product || !serial) return -1;
 
-    libusb_init(&ctx);
-    i_max = libusb_get_device_list(ctx, &list);
+    if ((i_max = mirisdr_list_devices(&ctx, &list)) < 0)
+    {
+        memset(manufact, 0, 256);
+        memset(product, 0, 256);
+        memset(serial, 0, 256);
+
+        return -1;
+    }
 
     for (i = 0; i < i_max; i++) {
-        libusb_get_device_descriptor(list[i], &dd);
+        if (libusb_get_device_descriptor(list[i], &dd) < 0) continue;
 
         if ((device = mirisdr_device_get(dd.idVendor, dd.idProduct)) &&
             (j++ == index)) {
@@ -225,5 +236,5 @@ int mirisdr_get_index_by_serial (const char *serial)
         if (!strcmp(have, serial)) return (int) i;
     }
 
-    return -2;
+    return -1;
 }

@@ -43,6 +43,7 @@ double atofs(char *s)
 	int len;
 	double suff = 1.0;
 	len = strlen(s);
+	if (!len) return 0;
 	last = s[len-1];
 	s[len-1] = '\0';
 	switch (last) {
@@ -72,6 +73,7 @@ double atoft(char *s)
 	int len;
 	double suff = 1.0;
 	len = strlen(s);
+	if (!len) return 0;
 	last = s[len-1];
 	s[len-1] = '\0';
 	switch (last) {
@@ -100,6 +102,7 @@ double atofp(char *s)
 	int len;
 	double suff = 1.0;
 	len = strlen(s);
+	if (!len) return 0;
 	last = s[len-1];
 	s[len-1] = '\0';
 	switch (last) {

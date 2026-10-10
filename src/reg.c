@@ -203,7 +203,8 @@ int mirisdr_write_reg (mirisdr_dev_t *p, uint8_t reg, uint32_t val) {
         p->rec[p->rec_n++].val = val;
         r = 0;
     }
-    else if (p->batch_depth && p->fw_ours)
+    /* images before the list block take lists too, but cannot say when one is done */
+    else if (p->batch_depth && p->fw_ours && p->fw_list_at)
     {
         uint8_t *e = p->batch + 4 * p->batch_n;
 
@@ -313,6 +314,13 @@ static int mirisdr_spi (mirisdr_dev_t *p, int n, uint8_t t1, uint8_t t2, uint8_t
     if (list)
     {
         r = (mirisdr_write_reg(p, MIRISDR_LIST_WAIT_SPI, 0) < 0) ? -1 : 0;
+        goto out;
+    }
+
+    /* the null device: a write has nothing to wait for */
+    if (!p->dh && !rx)
+    {
+        r = 0;
         goto out;
     }
 

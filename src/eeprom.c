@@ -71,14 +71,13 @@ static int mirisdr_ee_probe (mirisdr_dev_t *p)
     uint8_t wren = 0, wrdi = 0;
     int g;
 
-    p->ee_size = 0;
-
+    /* a failure leaves it unknown, to probe again; only an answer is kept */
     if (mirisdr_spi(p, 1, MIRISDR_EE_WREN, 0, 0, 0, NULL) < 0) return -1;
     if (mirisdr_spi(p, 2, MIRISDR_EE_RDSR, 0x00, 0, 0, &wren) < 0) return -1;
     if (mirisdr_spi(p, 1, MIRISDR_EE_WRDI, 0, 0, 0, NULL) < 0) return -1;
     if (mirisdr_spi(p, 2, MIRISDR_EE_RDSR, 0x00, 0, 0, &wrdi) < 0) return -1;
 
-    if (!(wren & MIRISDR_EE_WEL) || (wrdi & MIRISDR_EE_WEL)) return 0;
+    if (!(wren & MIRISDR_EE_WEL) || (wrdi & MIRISDR_EE_WEL)) return p->ee_size = 0;
 
     if ((g = mirisdr_get_gpio_inputs(p)) < 0) return -1;
 
@@ -86,6 +85,8 @@ static int mirisdr_ee_probe (mirisdr_dev_t *p)
 
     return p->ee_size;
 }
+
+static void mirisdr_ee_end (mirisdr_dev_t *p);
 
 static int mirisdr_ee_begin (mirisdr_dev_t *p)
 {
@@ -97,7 +98,12 @@ static int mirisdr_ee_begin (mirisdr_dev_t *p)
     /* set GPIO for EEPROM access */
     if (mirisdr_write_reg(p, 0x08, (p->hw_flavour == MIRISDR_HW_RSP1B) ? 0x00AA80 : 0x002280) < 0) return -1;
 
-    if (p->ee_size < 0) return mirisdr_ee_probe(p);
+    /* register 8 is the EEPROM's now: give it back if this fails */
+    if ((p->ee_size < 0) && (mirisdr_ee_probe(p) < 0))
+    {
+        mirisdr_ee_end(p);
+        return -1;
+    }
 
     return p->ee_size;
 }
