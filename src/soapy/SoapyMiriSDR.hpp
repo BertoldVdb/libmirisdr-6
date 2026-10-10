@@ -162,6 +162,9 @@ private:
     long long timeOffsetNs;
     std::atomic<long long> lastIndex;
     std::atomic<uint32_t> lastRate;
+    /* the index counts samples at the rate of each part: time up to the last rate change */
+    std::atomic<long long> timeBaseNs, timeBaseIndex;
+    std::atomic<uint32_t> timeBaseRate;
     uint32_t asyncBuffers;
 
     void applyStream(const mirisdr_stream_config_t &cfg);
@@ -174,4 +177,6 @@ private:
     uint32_t pickBandwidth(uint32_t ifHz) const;
     void probeRanges(void);
     long long indexToNs(uint64_t index, uint32_t rate) const;
+    void timeRebase(uint64_t index, uint32_t rate);
+    uint32_t fixedIf(void) const;
 };

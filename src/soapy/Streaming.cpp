@@ -101,7 +101,11 @@ SoapySDR::Stream *SoapyMiriSDR::setupStream(const int direction, const std::stri
 void SoapyMiriSDR::closeStream(SoapySDR::Stream *stream)
 {
     deactivateStream(stream, 0, 0);
+
+    std::lock_guard<std::mutex> rl(ringMutex);
     ring.clear();
+    ringHead = ringTail = ringCount = 0;
+    slotPos = gapPos = 0;
 }
 
 static inline int16_t clip16(float v)
@@ -189,6 +193,12 @@ int SoapyMiriSDR::activateStream(SoapySDR::Stream *stream, const int flags, cons
         dropPending = false;
         slotPos = gapPos = 0;
     }
+    if (ring.empty()) return SOAPY_SDR_STREAM_ERROR;    /* closed, or never set up */
+
+    /* the library counts from 0 again */
+    timeBaseNs = 0;
+    timeBaseIndex = 0;
+    timeBaseRate = 0;
     stopping = false;
     rxDone = false;
     rxResult = 0;
@@ -240,6 +250,7 @@ void SoapyMiriSDR::rxCallback(unsigned char *buf, uint32_t len)
     {
         std::lock_guard<std::mutex> rl(ringMutex);
 
+        if (ring.empty()) return;
         if (ringCount == ring.size())
         {
             dropPending = true;
@@ -283,10 +294,14 @@ int SoapyMiriSDR::readStream(SoapySDR::Stream *stream, void * const *buffs, cons
     {
         std::unique_lock<std::mutex> rl(ringMutex);
 
+        if (ring.empty()) return SOAPY_SDR_STREAM_ERROR;    /* closed */
+
         if (!ringCount)
         {
+            /* stopped, the whole timeout: a reader looping on it does not spin */
             ringCond.wait_for(rl, std::chrono::microseconds(timeoutUs),
-                              [this] { return ringCount != 0 || rxDone; });
+                              [this] { return ringCount != 0 || (rxDone && rxResult < 0); });
+            if (ring.empty()) return SOAPY_SDR_STREAM_ERROR;
             if (!ringCount) return rxDone && rxResult < 0 ? SOAPY_SDR_STREAM_ERROR : SOAPY_SDR_TIMEOUT;
         }
     }
@@ -323,6 +338,7 @@ int SoapyMiriSDR::readStream(SoapySDR::Stream *stream, void * const *buffs, cons
     index = s.index + slotPos;
     for (k = 0; k < s.gaps.size(); k++)
         if (s.gaps[k].offset > 0 && s.gaps[k].offset <= slotPos) index += s.gaps[k].missing;
+    timeRebase(index, s.rate);
     timeNs = indexToNs(index, s.rate);
     flags |= SOAPY_SDR_HAS_TIME;
     lastIndex = (long long) (index + n);

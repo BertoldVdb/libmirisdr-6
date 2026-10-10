@@ -12,8 +12,10 @@
 #include <SoapySDR/Logger.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 
@@ -32,13 +34,42 @@ static bool isTrue(const std::string &v)
     return v == "true" || v == "1" || v == "on" || v == "yes";
 }
 
+/* An IF setting as "auto" or the Hz of one the tuner has, anything else refused */
+static bool parseIf(const std::string &v, std::string &mode)
+{
+    std::string l = v;
+    char *end;
+    unsigned long hz;
+
+    std::transform(l.begin(), l.end(), l.begin(), [](unsigned char c) { return (char) std::tolower(c); });
+    if (l == "auto")
+    {
+        mode = "auto";
+        return true;
+    }
+
+    if (v.empty() || !std::isdigit((unsigned char) v[0])) return false;
+    hz = std::strtoul(v.c_str(), &end, 10);
+    if (*end || std::find(std::begin(IFS), std::end(IFS), (uint32_t) hz) == std::end(IFS)) return false;
+
+    mode = std::to_string(hz);
+    return true;
+}
+
+/* the IF asked for, 0 for automatic (or zero IF) */
+uint32_t SoapyMiriSDR::fixedIf(void) const
+{
+    return ifMode == "auto" ? 0 : (uint32_t) std::strtoul(ifMode.c_str(), NULL, 10);
+}
+
 SoapyMiriSDR::SoapyMiriSDR(const SoapySDR::Kwargs &args):
     dev(nullptr), flavour(MIRISDR_HW_DEFAULT), ifFreq(0), ifMode("auto"), converters(MIRISDR_IQ_BOTH),
     baseband(true), wantRate(2048000), wantBw(0), argBw(0), bandGainRanges(false),
     freqMin(0), freqMax(0), rateMin(0), rateMax(0),
     stopping(false), rxDone(true), rxResult(0), outFormat(0),
     ringHead(0), ringTail(0), ringCount(0), dropPending(false), slotPos(0), gapPos(0),
-    timeOffsetNs(0), lastIndex(0), lastRate(0), asyncBuffers(0)
+    timeOffsetNs(0), lastIndex(0), lastRate(0), timeBaseNs(0), timeBaseIndex(0), timeBaseRate(0),
+    asyncBuffers(0)
 {
     mirisdr_open_config_t cfg;
     mirisdr_tune_config_t tc;
@@ -50,11 +81,15 @@ SoapyMiriSDR::SoapyMiriSDR(const SoapySDR::Kwargs &args):
     if (mirisdr_open_ex(&dev, &cfg) < 0 || !dev)
         throw std::runtime_error("mirisdr: could not open the device");
 
+    /* the device is ours from here: closed again if anything below throws */
+    try {
+
     flavour = mirisdr_get_hw_flavour(dev);
     if (mirisdr_get_usb_strings(dev, manufact, product, ser) == 0) serial = ser;
 
     /* the IF settings may come with the device, for programs that only take a string */
-    if (args.count("if_freq")) ifMode = args.at("if_freq");
+    if (args.count("if_freq") && !parseIf(args.at("if_freq"), ifMode))
+        SoapySDR_logf(SOAPY_SDR_ERROR, "mirisdr: no IF %s, using auto", args.at("if_freq").c_str());
     if (args.count("converters"))
         converters = args.at("converters") == "I" ? MIRISDR_IQ_ONLY_I :
                      args.at("converters") == "Q" ? MIRISDR_IQ_ONLY_Q : MIRISDR_IQ_BOTH;
@@ -91,6 +126,12 @@ SoapyMiriSDR::SoapyMiriSDR(const SoapySDR::Kwargs &args):
 
     probeRanges();
     configure(wantRate);
+
+    } catch (...) {
+        mirisdr_close(dev);
+        dev = nullptr;
+        throw;
+    }
 
     SoapySDR_logf(SOAPY_SDR_INFO, "mirisdr: opened %s", serial.c_str());
 }
@@ -219,7 +260,7 @@ void SoapyMiriSDR::configure(uint32_t rate)
     uint32_t ifHz = 0, out = rate, pick = 0;
     double best = 0;
 
-    if (ifMode != "auto") ifHz = (uint32_t) std::stoul(ifMode);
+    ifHz = fixedIf();
 
     if (baseband && ifMode == "auto" && rate < rateMin)
     {
@@ -587,7 +628,7 @@ std::vector<double> SoapyMiriSDR::listSampleRates(const int direction, const siz
     static const double common[] = { 1.536e6, 2e6, 2.048e6, 2.4e6, 3e6, 4e6, 5e6, 6e6, 7e6,
                                      8e6, 9e6, 10e6, 12e6, 14e6 };
     std::vector<double> rates;
-    uint32_t fixed = ifMode == "auto" ? 0 : (uint32_t) std::stoul(ifMode);
+    uint32_t fixed = fixedIf();
 
     if (baseband && fixed) addLowIf(rates, lowIfRates(fixed), 1e12);
     else
@@ -605,7 +646,7 @@ SoapySDR::RangeList SoapyMiriSDR::getSampleRateRange(const int direction, const 
 {
     SoapySDR::RangeList out;
     std::vector<double> low;
-    uint32_t fixed = ifMode == "auto" ? 0 : (uint32_t) std::stoul(ifMode);
+    uint32_t fixed = fixedIf();
 
     if (baseband && fixed) addLowIf(low, lowIfRates(fixed), 1e12);
     else if (baseband)
@@ -806,13 +847,11 @@ void SoapyMiriSDR::writeSetting(const std::string &key, const std::string &value
 
     if (key == "if_freq")
     {
-        if (value != "auto" && std::find(std::begin(IFS), std::end(IFS), (uint32_t) std::strtoul(value.c_str(), NULL, 10))
-                               == std::end(IFS))
+        if (!parseIf(value, ifMode))
         {
             SoapySDR_logf(SOAPY_SDR_ERROR, "mirisdr: no IF %s", value.c_str());
             return;
         }
-        ifMode = value;
         configure(wantRate);
     }
     else if (key == "converters")
@@ -838,6 +877,7 @@ void SoapyMiriSDR::writeSetting(const std::string &key, const std::string &value
         mirisdr_get_stream(dev, &now, NULL);
         if (key == "format" && !s.empty() && (!now.format || s != now.format)) s = was;
         if (key == "transfer" && !s.empty() && (!now.transfer || s != now.transfer)) s = was;
+        if (key == "decimation_bypass" && !s.empty() && (!now.decimation_bypass || s != now.decimation_bypass)) s = was;
 
         /* the rates a format and transfer reach differ */
         probeRanges();
@@ -899,11 +939,29 @@ std::string SoapyMiriSDR::readSetting(const std::string &key) const
  * Time: the stream's sample count, from when it started
  ******************************************************************/
 
+static long long spanNs(uint64_t n, uint32_t rate)
+{
+    if (!rate) return 0;
+    return (long long) ((n / rate) * 1000000000ULL + ((n % rate) * 1000000000ULL) / rate);
+}
+
+/* From the last rate change on at its rate, before it at the rates before */
 long long SoapyMiriSDR::indexToNs(uint64_t index, uint32_t rate) const
 {
-    if (!rate) return timeOffsetNs;
-    return timeOffsetNs + (long long) ((index / rate) * 1000000000ULL +
-                                       ((index % rate) * 1000000000ULL) / rate);
+    uint64_t from = (uint64_t) timeBaseIndex.load();
+
+    return timeOffsetNs + timeBaseNs + spanNs(index > from ? index - from : 0, rate);
+}
+
+/* the rate changes at index: the time so far is kept, at the rate it ran at */
+void SoapyMiriSDR::timeRebase(uint64_t index, uint32_t rate)
+{
+    uint64_t from = (uint64_t) timeBaseIndex.load();
+
+    if (rate == timeBaseRate) return;
+    if (timeBaseRate) timeBaseNs += spanNs(index > from ? index - from : 0, timeBaseRate);
+    timeBaseIndex = (long long) index;
+    timeBaseRate = rate;
 }
 
 bool SoapyMiriSDR::hasHardwareTime(const std::string &what) const
