@@ -83,6 +83,7 @@ static volatile int     pump_result;   /* what read_async returned: -1 means it
 /* the last buffer's converters, and buffers whose position went back */
 static volatile int     pump_adc = -1, pump_backwards, pump_infos;
 static uint64_t         pump_sample, pump_index;
+static volatile int64_t pump_ahead;    /* stats.samples past the end of the last buffer */
 
 static void stream_cb (unsigned char *buf, uint32_t len, void *ctx)
 {
@@ -94,6 +95,12 @@ static void stream_cb (unsigned char *buf, uint32_t len, void *ctx)
     if (mirisdr_get_buffer_info(dev, &in) < 0) return;
 
     if (pump_infos && ((in.sample <= pump_sample) || (in.index < pump_index))) pump_backwards++;
+    {
+        mirisdr_stream_stats_t st;
+        uint32_t ub = (in.type == MIRISDR_SAMPLE_S8 ? 1 : 2) * (in.adc == MIRISDR_IQ_BOTH ? 2 : 1);
+
+        if (mirisdr_get_stream_stats(dev, &st) == 0) pump_ahead = (int64_t) (st.samples - (in.sample + len / ub));
+    }
     pump_sample = in.sample;
     pump_index = in.index;
     pump_adc = in.adc;
@@ -702,6 +709,85 @@ static tres_t t_sync_read (void)
 /* the faults this driver has had to fix                               */
 /* ------------------------------------------------------------------ */
 
+/* The stats count what was delivered: a restart drops the buffer being filled, which
+   they must not go on counting. Ahead by a transfer and a buffer being filled at most */
+static tres_t t_restart_counts (void)
+{
+    int i;
+    int64_t ahead, most = 65536 / 4 + 24 * 252;
+
+    if (stream_setup("BULK", "252_S16", 2000000) < 0) return T_FAIL;
+
+    for (i = 0; i < 10; i++) {
+        if (mirisdr_set_sample_rate(dev, (i & 1) ? 2000000 : 2400000) < 0) { say("rate refused"); return T_FAIL; }
+        usleep(150000);
+    }
+    usleep(300000);
+    ahead = pump_ahead;
+
+    say("after 10 restarts the stats are %lld samples past the buffers, at most %lld", (long long) ahead, (long long) most);
+    return (ahead >= 0 && ahead <= most) ? T_PASS : T_FAIL;
+}
+
+/* The transfer changed while streaming: other transfers, on another alternate setting */
+static tres_t t_transfer_live (void)
+{
+    /* from one 1024 byte slot to three: kept on the old alternate setting, it stalls */
+    static const char *const kinds[] = { "ISOC", "BULK", "ISOC1", "BULK", "ISOC" };
+    unsigned i;
+    int bad = 0;
+    char line[160] = "";
+
+    if (stream_setup("ISOC1", "504_S8", 2000000) < 0) return T_FAIL;
+
+    for (i = 0; i < sizeof kinds / sizeof kinds[0]; i++) {
+        double sps;
+
+        if (mirisdr_set_transfer(dev, kinds[i]) < 0) { say("%s refused", kinds[i]); return T_FAIL; }
+        sps = stream_rate_settled(0.5, NULL);
+        snprintf(line + strlen(line), sizeof line - strlen(line), "%s%s %.2f", i ? ", " : "", kinds[i], sps / 1e6);
+        if (!within(sps, 2000000, 0.03) || strcmp(mirisdr_get_transfer(dev), kinds[i]) || pump_result < 0) bad++;
+    }
+
+    say("while streaming, Msps: %s", line);
+    return bad ? T_FAIL : T_PASS;
+}
+
+/* Sync reads take bulk only, and a rate change between them restarts the stream */
+static tres_t t_sync_restart (void)
+{
+    unsigned char *buf;
+    mirisdr_stream_stats_t st;
+    int n = 0, r, got = 0, i;
+
+    pump_stop();
+
+    if (mirisdr_set_transfer(dev, "ISOC") < 0) { say("isoc refused"); return T_FAIL; }
+    if (!(buf = malloc(65536))) { say("out of memory"); return T_FAIL; }
+    r = mirisdr_read_sync(dev, buf, 65536, &n);
+    if (r != -1) { say("a sync read with isochronous transfers: %d", r); free(buf); return T_FAIL; }
+
+    mirisdr_set_transfer(dev, "BULK");
+    mirisdr_set_sample_format(dev, "504_S8");
+    mirisdr_set_sample_rate(dev, 2000000);
+
+    for (i = 0; i < 2; i++) {
+        int k;
+
+        for (k = 0; k < 8; k++) {
+            if (mirisdr_read_sync(dev, buf, 65536, &n) < 0) break;
+            got += n;
+        }
+        if (!i) mirisdr_set_sample_rate(dev, 3000000);
+    }
+    mirisdr_get_stream_stats(dev, &st);
+    mirisdr_streaming_stop(dev);
+    free(buf);
+
+    say("isochronous refused; %d bytes over a rate change, %llu lost after it", got, (unsigned long long) st.lost);
+    return (got >= 16 * 65536 && st.lost < 100000) ? T_PASS : T_FAIL;
+}
+
 static tres_t t_stall_recovery (void)
 {
     mirisdr_stream_stats_t d;
@@ -879,9 +965,15 @@ static tres_t t_bb_device (void)
  * transfers ran was dropped and the stream ran on */
 static volatile int start_entering, start_done;
 
+static int pump_infos_since (void)
+{
+    return pump_infos;
+}
+
 static void *start_pump (void *arg)
 {
     (void) arg;
+    pump_infos = 0;
     start_entering = 1;
     pump_result = mirisdr_read_async(dev, stream_cb, NULL, 8, 65536);
     start_done = 1;
@@ -926,6 +1018,63 @@ static tres_t t_cancel_at_start (void)
     say("%d cancels kept, %d lost, %d before the stream was entered; then %.0f sps", kept, lost, before, sps);
 
     return (!lost && kept > 0 && within(sps, 2000000, 0.05)) ? T_PASS : T_FAIL;
+}
+
+/* A cancel while another thread stops or restarts the stream: the stream thread must
+   not free the transfers that one is still using */
+static volatile int churn_quit, churn_cycles;
+
+static void *churn_main (void *arg)
+{
+    (void) arg;
+    while (!churn_quit) {
+        if (mirisdr_stop_async(dev) == 0 && mirisdr_start_async(dev) == 0) churn_cycles++;
+        else usleep(100);
+    }
+    return NULL;
+}
+
+static tres_t t_cancel_while_restarting (void)
+{
+    mirisdr_stream_stats_t d;
+    pthread_t pump, churn;
+    double t0, sps;
+    int i, hung = 0, cycles = 0;
+
+    if (stream_setup("BULK", "252_S16", 2000000) < 0) return T_FAIL;
+    pump_stop();
+
+    for (i = 0; i < 200; i++)
+    {
+        start_done = start_entering = 0;
+        if (mirisdr_reset_buffer(dev) < 0) { say("reset failed"); return T_FAIL; }
+        if (pthread_create(&pump, NULL, start_pump, NULL)) return T_FAIL;
+
+        /* running, with another thread stopping and restarting it */
+        t0 = now();
+        while (!pump_infos_since() && now() - t0 < 1) usleep(1000);
+        churn_quit = 0;
+        churn_cycles = 0;
+        if (pthread_create(&churn, NULL, churn_main, NULL)) return T_FAIL;
+
+        /* the cancel anywhere in a cycle */
+        usleep(500 + (useconds_t) (rand() % 8000));
+        mirisdr_cancel_async(dev);
+
+        t0 = now();
+        while (!start_done && now() - t0 < 3) usleep(1000);
+        if (!start_done) { hung++; mirisdr_cancel_async(dev); }
+        pthread_join(pump, NULL);
+        churn_quit = 1;
+        pthread_join(churn, NULL);
+        cycles += churn_cycles;
+    }
+
+    if (stream_setup("BULK", "252_S16", 2000000) < 0) { say("no stream after the cancels"); return T_FAIL; }
+    sps = stream_rate(0.4, &d);
+
+    say("200 cancels during %d stop and restart cycles, %d hung; then %.0f sps", cycles, hung, sps);
+    return (!hung && cycles > 0 && within(sps, 2000000, 0.05)) ? T_PASS : T_FAIL;
 }
 
 /* Header bytes 8-11 are marked at startup; read them back through the remap */
@@ -4049,6 +4198,359 @@ static tres_t t_bb_speed (void)
     return slow ? T_FAIL : T_PASS;
 }
 
+/* ------------------------------------------------------------------ */
+/* regress: what the review of 2026-10 found, each once, no device    */
+/* ------------------------------------------------------------------ */
+
+static int reg_bad;
+
+#define REG_CHECK(cond, ...) do { if (!(cond)) { reg_bad++; say(__VA_ARGS__); } } while (0)
+
+static tres_t t_reg_open (void)
+{
+    mirisdr_open_config_t cfg;
+    mirisdr_dev_t *d;
+    uint8_t *big;
+    uint32_t size;
+
+    reg_bad = 0;
+
+    /* a board not in the list is refused, before it indexes the band plans */
+    mirisdr_open_config_default(&cfg);
+    cfg.hw_flavour = 7;
+    d = (mirisdr_dev_t *) 1;
+    REG_CHECK(mirisdr_open_ex(&d, &cfg) < 0, "hw_flavour 7 opened");
+    REG_CHECK(d == NULL, "*out not cleared on a refused open");
+    cfg.hw_flavour = -2;
+    REG_CHECK(mirisdr_open_ex(&d, &cfg) < 0, "hw_flavour -2 opened");
+
+    /* an image past the 0x1800 the firmware's RAM leaves: the built-in one padded out */
+    mirisdr_open_config_default(&cfg);
+    if ((big = calloc(1, 0x1900))) {
+        const uint8_t *fw = mirisdr_default_firmware(&size);
+
+        memcpy(big, fw, size);
+        cfg.firmware = big;
+        cfg.firmware_size = 0x1900;
+        REG_CHECK(mirisdr_open_ex(&d, &cfg) < 0, "a 0x1900 byte image accepted");
+        free(big);
+    }
+
+    REG_CHECK(mirisdr_get_index_by_serial("no such serial") == -1, "a serial not found is not -1");
+
+    if (!reg_bad) say("a board out of range and an image too big refused, *out cleared, -1 for no serial");
+    return reg_bad ? T_FAIL : T_PASS;
+}
+
+/* every call with no device returns its failure rather than crashing */
+static tres_t t_reg_null_dev (void)
+{
+    mirisdr_stream_config_t sc;
+    mirisdr_tune_config_t tc;
+    uint8_t b[16];
+
+    reg_bad = 0;
+    mirisdr_stream_config_default(&sc);
+    mirisdr_tune_config_default(&tc);
+
+    REG_CHECK(mirisdr_get_sample_rate(NULL) == 0, "get_sample_rate");
+    REG_CHECK(!strcmp(mirisdr_get_decimation_bypass(NULL), ""), "get_decimation_bypass");
+    REG_CHECK(mirisdr_get_swap_iq(NULL) < 0, "get_swap_iq");
+    REG_CHECK(!strcmp(mirisdr_get_sample_format(NULL), ""), "get_sample_format");
+    REG_CHECK(!strcmp(mirisdr_get_sample_format_selected(NULL), ""), "get_sample_format_selected");
+    REG_CHECK(mirisdr_get_center_freq(NULL) == 0, "get_center_freq");
+    REG_CHECK(!strcmp(mirisdr_get_transfer(NULL), ""), "get_transfer");
+    mirisdr_get_band(NULL);
+    REG_CHECK(mirisdr_get_bias(NULL) < 0, "get_bias");
+    REG_CHECK(mirisdr_get_tuner_gains(NULL, NULL) < 0, "get_tuner_gains");
+    REG_CHECK(mirisdr_get_tuner_gain(NULL) < 0, "get_tuner_gain");
+    REG_CHECK(mirisdr_set_tuner_gain(NULL, 10) < 0, "set_tuner_gain");
+    REG_CHECK(mirisdr_set_tuner_gain_mode(NULL, 1) < 0, "set_tuner_gain_mode");
+    REG_CHECK(mirisdr_get_tuner_gain_mode(NULL) < 0, "get_tuner_gain_mode");
+    REG_CHECK(mirisdr_get_mixer_gain(NULL) < 0, "get_mixer_gain");
+    REG_CHECK(mirisdr_get_mixbuffer_gain(NULL) < 0, "get_mixbuffer_gain");
+    REG_CHECK(mirisdr_get_lna_gain(NULL) < 0, "get_lna_gain");
+    REG_CHECK(mirisdr_get_baseband_gain(NULL) < 0, "get_baseband_gain");
+    REG_CHECK(mirisdr_set_mixbuffer_gain(NULL, 6) < 0, "set_mixbuffer_gain");
+    REG_CHECK(mirisdr_set_lna_gain(NULL, 1) < 0, "set_lna_gain");
+    REG_CHECK(mirisdr_set_gain(NULL) < 0, "set_gain");
+    REG_CHECK(mirisdr_start_async(NULL) < 0, "start_async");
+    REG_CHECK(mirisdr_stop_async(NULL) < 0, "stop_async");
+    REG_CHECK(mirisdr_cancel_async(NULL) < 0, "cancel_async");
+    REG_CHECK(mirisdr_get_fw_id(NULL, b, sizeof b) < 0, "get_fw_id");
+    REG_CHECK(mirisdr_running_from_rom(NULL) < 0, "running_from_rom");
+    REG_CHECK(mirisdr_tune(NULL, 0, &tc, NULL) < 0, "tune");
+    REG_CHECK(mirisdr_set_stream(NULL, &sc, NULL) < 0, "set_stream");
+    REG_CHECK(mirisdr_read_sync(NULL, b, sizeof b, NULL) < 0, "read_sync");
+
+    if (!reg_bad) say("30 getters and setters return their failure");
+    return reg_bad ? T_FAIL : T_PASS;
+}
+
+static tres_t t_reg_tune (void)
+{
+    mirisdr_dev_t *n;
+    mirisdr_tune_config_t c, got;
+    mirisdr_tune_result_t r;
+    mirisdr_stream_config_t sc;
+    int g;
+
+    reg_bad = 0;
+    if (mirisdr_open_null(&n, "252_S16") < 0) { say("no null device"); return T_FAIL; }
+
+    /* a refused gain leaves the one in force */
+    mirisdr_set_tuner_gain(n, 60);
+    g = mirisdr_get_tuner_gain(n);
+    REG_CHECK(mirisdr_set_tuner_gain(n, -1) < 0, "a negative gain accepted");
+    REG_CHECK(mirisdr_get_tuner_gain(n) == g, "a refused gain changed it: %d, was %d", mirisdr_get_tuner_gain(n), g);
+
+    /* no mixbuffer outside the AM bands, so the stages add up */
+    mirisdr_tune_config_default(&c);
+    c.frequency = 100000000;
+    c.gain.mode = MIRISDR_GAIN_TOTAL;
+    c.gain.total = 90;
+    REG_CHECK(mirisdr_tune(n, 0, &c, &r) == 0, "100 MHz refused");
+    REG_CHECK(r.gain.mixbuffer == 0, "a %d dB mixbuffer at VHF", r.gain.mixbuffer);
+    REG_CHECK(r.gain.total == (r.gain.lna ? 24 : 0) + (r.gain.mixer ? 19 : 0) + r.gain.baseband,
+              "VHF stages do not add up to %d", r.gain.total);
+
+    /* the RSP1's 261-404 MHz row is band III, not L */
+    mirisdr_set_hw_flavour(n, MIRISDR_HW_SDRPLAY);
+    c.frequency = 300000000;
+    c.gain.total = 110;
+    REG_CHECK(mirisdr_tune(n, 0, &c, &r) == 0, "300 MHz on the RSP1 refused");
+    REG_CHECK(r.band == MIRISDR_BAND_3 && r.gain.total == 102, "300 MHz on the RSP1: band %d, %d dB", r.band, r.gain.total);
+    mirisdr_set_hw_flavour(n, MIRISDR_HW_DEFAULT);
+
+    /* the single setters go past the plan, but not where the synthesizer's N wraps */
+    REG_CHECK(mirisdr_set_center_freq(n, 2900000000u) == 0, "2.9 GHz refused");
+    REG_CHECK(mirisdr_set_center_freq(n, 3100000000u) < 0, "3.1 GHz accepted, which wraps the synthesizer");
+    REG_CHECK(mirisdr_get_center_freq(n) == 2900000000u, "a refused LO changed it");
+    mirisdr_set_center_freq(n, 100000000);
+
+    /* a notch does not outlive the RSP1B */
+    mirisdr_set_hw_flavour(n, MIRISDR_HW_RSP1B);
+    REG_CHECK(mirisdr_set_notch(n, MIRISDR_NOTCH_FM) == 0, "notch on the RSP1B refused");
+    mirisdr_set_hw_flavour(n, MIRISDR_HW_DEFAULT);
+    REG_CHECK(mirisdr_get_notch(n) == 0, "notch %d left after the flavour change", mirisdr_get_notch(n));
+    REG_CHECK(mirisdr_set_center_freq(n, 101000000) == 0, "tuning refused after the flavour change");
+
+    /* a single setter leaves a tune a check takes */
+    REG_CHECK(mirisdr_set_bandwidth(n, 8000000) == 0, "8 MHz filter refused");
+    REG_CHECK(mirisdr_set_offset_tuning(n, 1) == 0, "offset tuning refused");
+    mirisdr_get_tune(n, 0, &got, NULL);
+    REG_CHECK(mirisdr_tune_check(n, 0, &got, NULL) == 0, "the setters left IF %u with a %u Hz filter", got.if_freq, got.bandwidth);
+    mirisdr_set_offset_tuning(n, 0);
+
+    /* the null device has a stream to start from */
+    mirisdr_get_stream(n, &sc, NULL);
+    REG_CHECK(mirisdr_set_stream(n, &sc, NULL) == 0, "get_stream then set_stream refused on the null device");
+
+    /* a check predicts a refusal by a stream following the tune */
+    mirisdr_tune_config_default(&c);
+    c.frequency = 100000000;
+    c.if_freq = 2048000;
+    c.low_if_auto = 1;
+    c.iq = MIRISDR_IQ_ONLY_I;
+    REG_CHECK(mirisdr_tune(n, 0, &c, NULL) == 0, "single output tune refused");
+    mirisdr_stream_config_default(&sc);
+    sc.follow_tune = 1;
+    sc.transfer = "ISOC1";
+    sc.rate = 5000000;
+    REG_CHECK(mirisdr_set_stream(n, &sc, NULL) == 0, "following stream refused");
+    c.iq = MIRISDR_IQ_BOTH;
+    REG_CHECK((mirisdr_tune_check(n, 0, &c, NULL) == 0) == (mirisdr_tune(n, 0, &c, NULL) == 0),
+              "check and tune disagree with a stream following it");
+
+    mirisdr_close(n);
+
+    if (!reg_bad) say("refused gain kept, MIXBUF 0 at VHF, the RSP1 at 300 MHz, LO past 3.07 GHz refused, "
+                      "notch cleared, setters and checks agree");
+    return reg_bad ? T_FAIL : T_PASS;
+}
+
+static tres_t t_reg_stream (void)
+{
+    mirisdr_dev_t *n;
+    mirisdr_tune_config_t c;
+    mirisdr_stream_config_t sc;
+    mirisdr_stream_result_t sr;
+    uint8_t b[16];
+
+    reg_bad = 0;
+    if (mirisdr_open_null(&n, "252_S16") < 0) { say("no null device"); return T_FAIL; }
+
+    /* a baseband stream at a low IF has no other rate than 4 x IF: with the decimation
+       bypass on that is below its range, so refused rather than clamped */
+    mirisdr_stream_config_default(&sc);
+    sc.rate = 4000000;
+    sc.baseband = 1;
+    sc.decimation_bypass = "ON";
+    REG_CHECK(mirisdr_set_stream(n, &sc, NULL) == 0, "baseband at zero IF with the bypass on refused");
+    mirisdr_tune_config_default(&c);
+    c.frequency = 100000000;
+    c.if_freq = 450000;
+    if (mirisdr_tune(n, 0, &c, NULL) == 0) {
+        mirisdr_get_stream(n, &sc, &sr);
+        REG_CHECK(sr.adc_rate == 1800000 && sr.rate * sr.decimation == sr.adc_rate,
+                  "450 kHz IF with the bypass on: converters at %u, out %u, decimation %u", sr.adc_rate, sr.rate, sr.decimation);
+    }
+
+    REG_CHECK(mirisdr_cancel_async(n) == -1, "cancel without a stream: %d", mirisdr_cancel_async(n));
+    REG_CHECK(mirisdr_read_sync(n, b, sizeof b, NULL) < 0, "a sync read on the null device");
+    mirisdr_close(n);
+
+    /* under baseband the legacy rate calls take and give the output's rate */
+    if (bb_open(0, 450000, 900000, &sr) == 0) {
+        REG_CHECK(mirisdr_get_sample_rate(bbo.d) == 900000, "get_sample_rate %u under baseband at 900k", mirisdr_get_sample_rate(bbo.d));
+        REG_CHECK(mirisdr_set_sample_rate(bbo.d, 450000) == 0 && mirisdr_get_sample_rate(bbo.d) == 450000,
+                  "set_sample_rate 450k under baseband gave %u", mirisdr_get_sample_rate(bbo.d));
+        mirisdr_close(bbo.d);
+    } else { reg_bad++; say("no baseband stream"); }
+
+    if (!reg_bad) say("baseband with the bypass on keeps its rates, cancel without a stream -1, legacy rates under baseband");
+    return reg_bad ? T_FAIL : T_PASS;
+}
+
+static struct { uint64_t gap_samples, gap_filled, first_index; int restarted, short_fill, calls; } rg;
+
+static void reg_cb (unsigned char *buf, uint32_t len, void *ctx)
+{
+    mirisdr_buffer_info_t in;
+    uint32_t k;
+
+    (void) buf; (void) len; (void) ctx;
+    if (mirisdr_get_buffer_info(bbo.d, &in) < 0) return;
+    rg.calls++;
+    rg.gap_samples += in.gap_samples;
+    for (k = 0; k < in.gaps_len; k++) {
+        rg.gap_filled += in.gaps[k].filled;
+        /* within gap fill's reach: all of it filled */
+        if (in.gaps[k].filled != in.gaps[k].samples && in.gaps[k].samples < 64) rg.short_fill++;
+    }
+    if (rg.restarted == 1) { rg.first_index = in.index; rg.restarted = 2; }
+}
+
+/* blocks of bb_gen with every other one of 'n' from 'at' cut out: n gaps of a block */
+static uint8_t *reg_holes (uint32_t *len, int blocks, int at, int n)
+{
+    uint8_t *d = bb_gen(0, 1800000, 450000, 10000, 0.5, 0, 0, blocks, -1, 0, len), *o = d;
+    int k;
+
+    for (k = 0; k < blocks; k++)
+        if (!(k >= at && k < at + 2 * n && ((k - at) & 1))) { memmove(o, d + 1024 * k, 1024); o += 1024; }
+    *len = (uint32_t) (o - d);
+    return d;
+}
+
+static tres_t t_reg_baseband (void)
+{
+    mirisdr_stream_result_t sr;
+    mirisdr_stream_config_t sc;
+    uint8_t *data;
+    uint32_t len, half;
+    uint64_t want;
+    int k;
+
+    reg_bad = 0;
+
+    /* one block missing, filled: decimated, still all filled (31.5 samples is not a loss) */
+    if (bb_open(0, 450000, 225000, &sr) < 0) { say("no stream"); return T_FAIL; }
+    memset(&rg, 0, sizeof rg);
+    data = reg_holes(&len, 400, 100, 1);
+    bb_feed_cb(data, len, 0, reg_cb);
+    free(data);
+    REG_CHECK(rg.gap_samples && !rg.short_fill, "a filled gap reads as partly lost (%llu)", (unsigned long long) rg.gap_samples);
+    mirisdr_close(bbo.d);
+
+    /* gap fill stays on under baseband whatever is asked */
+    if (bb_open(0, 450000, 225000, &sr) < 0) { say("no stream"); return T_FAIL; }
+    mirisdr_set_gap_fill(bbo.d, 0);
+    memset(&rg, 0, sizeof rg);
+    data = reg_holes(&len, 400, 100, 1);
+    bb_feed_cb(data, len, 0, reg_cb);
+    free(data);
+    REG_CHECK(rg.gap_filled, "set_gap_fill(0) turned the fill off under baseband");
+    mirisdr_close(bbo.d);
+
+    /* 100 gaps waiting for one big buffer: all counted */
+    if (bb_open(0, 450000, 225000, &sr) < 0) { say("no stream"); return T_FAIL; }
+    memset(&rg, 0, sizeof rg);
+    data = reg_holes(&len, 600, 50, 100);
+    bb_feed_cb(data, len, 15000 * 8, reg_cb);   /* about 600 blocks out, the gaps in the first */
+    free(data);
+    want = 100 * ((252 + 7) / 8);
+    REG_CHECK(rg.gap_samples == want, "100 gaps in one buffer: %llu missing, not %llu",
+              (unsigned long long) rg.gap_samples, (unsigned long long) want);
+    mirisdr_close(bbo.d);
+
+    /* a restart drops the buffer being filled: the index carries on past it */
+    if (bb_open(0, 450000, 225000, &sr) < 0) { say("no stream"); return T_FAIL; }
+    memset(&rg, 0, sizeof rg);
+    data = bb_gen(0, 1800000, 450000, 10000, 0.5, 0, 0, 800, -1, 0, &len);
+    /* 444 blocks are 13986 out: 986 of a 1000 sample buffer pending. The parser holds a
+       transfer's last block back, so one more goes in before the restart. From that one
+       the counter is a restarted stream's, which the null device expects from 2 past a
+       block's step */
+    half = 445 * 1024;
+    for (k = 444; k < 800; k++) {
+        uint32_t idx = 254 + (uint32_t) (k - 444) * 252;
+        uint8_t *h = data + 1024 * k;
+
+        h[0] = (uint8_t) idx; h[1] = (uint8_t) (idx >> 8); h[2] = (uint8_t) (idx >> 16); h[3] = (uint8_t) (idx >> 24);
+    }
+    bb_feed_cb(data, half, 8000, reg_cb);
+    mirisdr_get_stream(bbo.d, &sc, NULL);
+    sc.swap_iq = !sc.swap_iq;           /* a restream, the rate as it was */
+    if (mirisdr_set_stream(bbo.d, &sc, NULL) < 0) { reg_bad++; say("restream refused"); }
+    rg.restarted = 1;
+    bb_feed_cb(data + half, len - half, 8000, reg_cb);
+    free(data);
+    want = (uint64_t) 444 * 252 / 8;
+    REG_CHECK(rg.restarted == 2 && rg.first_index + 2 >= want && rg.first_index <= want + 2,
+              "first index after a restart %llu, the stream was at %llu", (unsigned long long) rg.first_index,
+              (unsigned long long) want);
+    mirisdr_close(bbo.d);
+
+    if (!reg_bad) say("filled gaps stay filled, fill on under baseband, 100 gaps in a buffer, the index over a restart");
+    return reg_bad ? T_FAIL : T_PASS;
+}
+
+static tres_t t_reg_fw_patch (void)
+{
+    mirisdr_fw_patch_t pt;
+    const uint8_t *fw;
+    uint8_t *img, *orig;
+    uint32_t size;
+
+    reg_bad = 0;
+    fw = mirisdr_default_firmware(&size);
+    img = malloc(size);
+    orig = malloc(size);
+    if (!img || !orig) { free(img); free(orig); say("out of memory"); return T_FAIL; }
+    memcpy(img, fw, size);
+    memcpy(orig, fw, size);
+
+    /* new ids with a serial too long: refused, and the ids not written either */
+    memset(&pt, 0, sizeof pt);
+    pt.fields = MIRISDR_FW_PATCH_IDS | MIRISDR_FW_PATCH_SERIAL;
+    pt.vid = 0x1234;
+    pt.pid = 0x5678;
+    memset(pt.serial, 'A', sizeof pt.serial);
+    REG_CHECK(mirisdr_fw_patch(img, size, &pt) < 0, "a 13 character serial accepted");
+    REG_CHECK(!memcmp(img, orig, size), "a refused patch changed the image");
+
+    /* a field this library does not know */
+    memset(&pt, 0, sizeof pt);
+    pt.fields = 1u << 5;
+    REG_CHECK(mirisdr_fw_patch(img, size, &pt) < 0, "an unknown field accepted");
+
+    free(img);
+    free(orig);
+    if (!reg_bad) say("a patch is refused as a whole, unknown fields too");
+    return reg_bad ? T_FAIL : T_PASS;
+}
+
 #ifdef MIRI_TEST_SOAPY
 /* ------------------------------------------------------------------ */
 /* the SoapySDR module, loaded and used as an application would        */
@@ -4092,6 +4594,7 @@ static tres_t t_soapy_stream (void) { return soapy_run("stream"); }
 static tres_t t_soapy_cycles (void) { return soapy_run("cycles"); }
 static tres_t t_soapy_retune (void) { return soapy_run("retune"); }
 static tres_t t_soapy_band (void)   { return soapy_run("bandranges"); }
+static tres_t t_soapy_regress (void) { return soapy_run("regress"); }
 #endif
 
 static const struct {
@@ -4116,6 +4619,13 @@ static const struct {
     { "baseband", "counts, buffers and gaps",   t_bb_timing           },
     { "baseband", "speed against real time",    t_bb_speed            },
 
+    { "regress",  "open config refusals",       t_reg_open            },
+    { "regress",  "calls without a device",     t_reg_null_dev        },
+    { "regress",  "tune, gain and setters",     t_reg_tune            },
+    { "regress",  "stream plan and rates",      t_reg_stream          },
+    { "regress",  "baseband gaps and restarts", t_reg_baseband        },
+    { "regress",  "firmware patch as a whole",  t_reg_fw_patch        },
+
     { "identity", "device enumerates",          t_enumerate           },
     { "identity", "usb descriptors",            t_usb_strings         },
     { "identity", "open by serial",             t_open_by_serial      },
@@ -4139,10 +4649,14 @@ static const struct {
     { "stream",   "baseband on the receiver",   t_bb_device           },
 
     { "fixes",    "rate changes keep the stream", t_rate_changes      },
+    { "fixes",    "counts over restarts",       t_restart_counts      },
+    { "fixes",    "transfer changed live",      t_transfer_live       },
+    { "fixes",    "sync reads and restarts",    t_sync_restart        },
     { "fixes",    "repeated stop and start",    t_stop_start          },
     { "fixes",    "stall and clear recovers",   t_stall_recovery      },
     { "fixes",    "unstall before cancel",      t_stall_clear_then_cancel },
     { "fixes",    "cancel while starting",      t_cancel_at_start     },
+    { "fixes",    "cancel while restarting",    t_cancel_while_restarting },
     { "fixes",    "header stamp present",       t_header_stamp        },
     { "fixes",    "no false grid shifts",       t_no_false_resync     },
     { "fixes",    "usb reset recovers",         t_usb_reset           },
@@ -4189,6 +4703,7 @@ static const struct {
     { "soapy",    "start and stop",             t_soapy_cycles        },
     { "soapy",    "retune and rate changes",    t_soapy_retune        },
     { "soapy",    "gain ranges of the band",    t_soapy_band          },
+    { "soapy",    "review fixes",               t_soapy_regress       },
 #endif
 };
 
@@ -4210,7 +4725,7 @@ static void usage (const char *me)
            "  --eeprom-write   allow the eeprom write back test (implies --eeprom)\n"
            "  --pps            run the pps test, needs a 1PPS on GPIO_0\n"
            "  --list           list the tests and exit\n"
-           "\ngroups: decode plan baseband identity stream fixes device tuner extras"
+           "\ngroups: decode plan baseband regress identity stream fixes device tuner extras"
 #ifdef MIRI_TEST_SOAPY
            " soapy"
 #endif
@@ -4267,8 +4782,9 @@ int main (int argc, char **argv)
         if (mirisdr_running_from_rom(dev) != 1) mirisdr_reboot(dev, MIRISDR_BOOT_ROM);
     }
 
-    /* the decode and plan groups need no device */
-    if (opt_only && (!strcmp(opt_only, "decode") || !strcmp(opt_only, "plan") || !strcmp(opt_only, "baseband"))) goto run;
+    /* the decode, plan, baseband and regress groups need no device */
+    if (opt_only && (!strcmp(opt_only, "decode") || !strcmp(opt_only, "plan") || !strcmp(opt_only, "baseband") ||
+                     !strcmp(opt_only, "regress"))) goto run;
 
     if ((opt_rom ? device_reopen() : device_open()) < 0) {
         fprintf(stderr, "cannot open the device\n");

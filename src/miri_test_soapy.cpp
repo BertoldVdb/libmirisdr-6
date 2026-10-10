@@ -28,7 +28,8 @@ static double now(void)
 /* quiet unless verbose: the module and library log refusals on purpose */
 static void quietLog(const SoapySDRLogLevel, const char *) {}
 
-static Dev *openDev(const char *module, const char *serial, const char *gainRanges, soapy_say_t say)
+static Dev *openDev(const char *module, const char *serial, const char *gainRanges, soapy_say_t say,
+                    const SoapySDR::Kwargs &extra = SoapySDR::Kwargs())
 {
     static std::string loaded;
     SoapySDR::Kwargs args;
@@ -48,6 +49,7 @@ static Dev *openDev(const char *module, const char *serial, const char *gainRang
     args["driver"] = "mirisdr";
     if (serial) args["serial"] = serial;
     if (gainRanges) args["gain_ranges"] = gainRanges;
+    for (const auto &kv : extra) args[kv.first] = kv.second;
     try { return Dev::make(args); }
     catch (const std::exception &e) { say("make failed: %s", e.what()); }
     return nullptr;
@@ -359,6 +361,119 @@ static int bandRanges(Dev *d, soapy_say_t say, soapy_say_t note)
     return bad ? SOAPY_T_FAIL : SOAPY_T_PASS;
 }
 
+/* reads for a while, returning the samples and the time stamps' end; err counts errors, and
+   jumps time stamps more than 10 ms back or 100 ms on from where the last read ended (a
+   restart takes a few ms; a buffer of the old rate read at the new is 3 ms out at most) */
+static long long readFor(Dev *d, SoapySDR::Stream *s, std::vector<float> &buf, double secs, long long &end,
+                         long long &err, long long *jumps = nullptr)
+{
+    void *b = buf.data();
+    long long got = 0;
+    double t0 = now();
+
+    while (now() - t0 < secs)
+    {
+        int fl = 0; long long t = 0;
+        int n = d->readStream(s, &b, buf.size() / 2, fl, t, 1000000);
+
+        if (n == SOAPY_SDR_OVERFLOW) continue;
+        if (n < 0) { err++; continue; }
+        if (jumps && end && (t < end - 10000000 || t > end + 100000000)) (*jumps)++;
+        end = t + (long long) std::llround(n * 1e9 / d->getSampleRate(SOAPY_SDR_RX, 0));
+        got += n;
+    }
+    return got;
+}
+
+/* what the review of 2026-10 found, each once */
+static int regress(Dev *d, const char *module, const char *serial, soapy_say_t say, soapy_say_t note)
+{
+    int bad = 0;
+
+    /* an IF given in any other way than the module lists: refused, and nothing throws later */
+    for (const char *v : { "AUTO", "", "450k", "Zero IF" })
+    {
+        try {
+            d->writeSetting("if_freq", v);
+            d->setSampleRate(SOAPY_SDR_RX, 0, 2e6);
+            if (d->listSampleRates(SOAPY_SDR_RX, 0).empty() || d->getSampleRateRange(SOAPY_SDR_RX, 0).empty())
+            { say("if_freq \"%s\": no rates left", v); bad++; }
+        } catch (const std::exception &e) { say("if_freq \"%s\" threw: %s", v, e.what()); bad++; }
+        if (d->readSetting("if_freq") != "auto") { say("if_freq \"%s\" left %s", v, d->readSetting("if_freq").c_str()); bad++; }
+    }
+    if (d->getSampleRate(SOAPY_SDR_RX, 0) != 2e6) { say("2 Msps after the IF settings: %.0f", d->getSampleRate(SOAPY_SDR_RX, 0)); bad++; }
+
+    /* a refused decimation bypass is not kept */
+    d->writeSetting("decimation_bypass", "ON");
+    if (d->readSetting("decimation_bypass") != "AUTO") { say("refused bypass kept: %s", d->readSetting("decimation_bypass").c_str()); bad++; }
+    d->setSampleRate(SOAPY_SDR_RX, 0, 2.048e6);
+    d->setSampleRate(SOAPY_SDR_RX, 0, 2e6);
+    if (d->getSampleRate(SOAPY_SDR_RX, 0) != 2e6) { say("2 Msps after a refused bypass: %.0f", d->getSampleRate(SOAPY_SDR_RX, 0)); bad++; }
+
+    /* no phantom mixbuffer outside the AM bands */
+    d->setFrequency(SOAPY_SDR_RX, 0, 100e6);
+    d->setGain(SOAPY_SDR_RX, 0, 90);
+    if (d->getGain(SOAPY_SDR_RX, 0, "MIXBUF") != 0) { say("MIXBUF %.0f dB at VHF", d->getGain(SOAPY_SDR_RX, 0, "MIXBUF")); bad++; }
+
+    SoapySDR::Stream *s = d->setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32);
+    std::vector<float> buf(2 * d->getStreamMTU(s));
+    void *b = buf.data();
+    long long end = 0, err = 0, jumps = 0;
+
+    /* the time goes on across a rate change, at each part's rate */
+    d->setSampleRate(SOAPY_SDR_RX, 0, 4.096e6);
+    d->activateStream(s);
+    readFor(d, s, buf, 0.3, end, err);
+    d->setSampleRate(SOAPY_SDR_RX, 0, 2.048e6);
+    readFor(d, s, buf, 0.3, end, err, &jumps);
+    d->setSampleRate(SOAPY_SDR_RX, 0, 4.096e6);
+    readFor(d, s, buf, 0.3, end, err, &jumps);
+    d->setSampleRate(SOAPY_SDR_RX, 0, 2.048e6);
+    readFor(d, s, buf, 0.3, end, err, &jumps);
+    /* rescaled at the new rate, the time so far would double or halve */
+    if (jumps) { say("%lld time jumps over rate changes, ending at %.3f s", jumps, end / 1e9); bad++; }
+
+    /* the transfer changed while streaming: it flows on */
+    for (const char *t : { "BULK", "ISOC1", "ISOC" })
+    {
+        long long e = 0, got;
+
+        d->writeSetting("transfer", t);
+        got = readFor(d, s, buf, 0.5, end, e);
+        note("%s while streaming: %.0f sps", t, got / 0.5);
+        if (d->readSetting("transfer") != t || e || got < 0.8 * 0.5 * 2.048e6)
+        { say("transfer %s while streaming: %s, %.0f sps, %lld errors", t, d->readSetting("transfer").c_str(), got / 0.5, e); bad++; }
+    }
+
+    /* stopped: a read waits its timeout rather than spinning */
+    d->deactivateStream(s);
+    {
+        int fl; long long t;
+        double t0 = now();
+        int n, k = 0;
+
+        while ((n = d->readStream(s, &b, buf.size() / 2, fl, t, 100000)) > 0 && k++ < 1000);
+        t0 = now();
+        n = d->readStream(s, &b, buf.size() / 2, fl, t, 100000);
+        if (n != SOAPY_SDR_TIMEOUT || now() - t0 < 0.08) { say("read when stopped: %d after %.0f ms", n, (now() - t0) * 1e3); bad++; }
+    }
+
+    /* after closing, reads and starts are refused */
+    d->closeStream(s);
+    {
+        int fl; long long t;
+        int n = d->readStream(s, &b, buf.size() / 2, fl, t, 1000);
+
+        if (n >= 0 || n == SOAPY_SDR_TIMEOUT) { say("read after close: %d", n); bad++; }
+        if (d->activateStream(s) == 0) { say("start after close accepted"); bad++; d->deactivateStream(s); }
+    }
+
+    if (err) { say("%lld read errors", err); bad++; }
+    if (!bad) say("IF strings, a refused bypass, MIXBUF at VHF, time over a rate change, transfers while "
+                  "streaming, reads when stopped and closed");
+    return bad ? SOAPY_T_FAIL : SOAPY_T_PASS;
+}
+
 extern "C" int soapy_test(const char *which, const char *module, const char *serial, int verbose,
                           soapy_say_t say, soapy_say_t note)
 {
@@ -366,6 +481,20 @@ extern "C" int soapy_test(const char *which, const char *module, const char *ser
     int r = SOAPY_T_FAIL;
 
     if (!verbose) SoapySDR::registerLogHandler(quietLog);
+
+    /* the device string's IF: one not listed is refused at open, not thrown */
+    if (!strcmp(which, "regress"))
+    {
+        SoapySDR::Kwargs extra;
+
+        extra["if_freq"] = "AUTO";
+        if (!(d = openDev(module, serial, nullptr, say, extra))) return SOAPY_T_FAIL;
+        Dev::unmake(d);
+        extra["if_freq"] = "bogus";
+        if (!(d = openDev(module, serial, nullptr, say, extra))) return SOAPY_T_FAIL;
+        Dev::unmake(d);
+    }
+
     if (!(d = openDev(module, serial, strcmp(which, "bandranges") ? nullptr : "band", say))) return SOAPY_T_FAIL;
 
     try
@@ -375,6 +504,7 @@ extern "C" int soapy_test(const char *which, const char *module, const char *ser
         else if (!strcmp(which, "cycles")) r = cycles(d, say, note);
         else if (!strcmp(which, "retune")) r = retune(d, say, note);
         else if (!strcmp(which, "bandranges")) r = bandRanges(d, say, note);
+        else if (!strcmp(which, "regress")) r = regress(d, module, serial, say, note);
     }
     catch (const std::exception &e) { say("%s", e.what()); r = SOAPY_T_FAIL; }
 
