@@ -34,7 +34,7 @@ static bool isTrue(const std::string &v)
 
 SoapyMiriSDR::SoapyMiriSDR(const SoapySDR::Kwargs &args):
     dev(nullptr), flavour(MIRISDR_HW_DEFAULT), ifFreq(0), ifMode("auto"), converters(MIRISDR_IQ_BOTH),
-    baseband(true), wantRate(2048000), wantBw(0),
+    baseband(true), wantRate(2048000), wantBw(0), argBw(0),
     freqMin(0), freqMax(0), rateMin(0), rateMax(0),
     stopping(false), rxDone(true), rxResult(0), outFormat(0),
     ringHead(0), ringTail(0), ringCount(0), dropPending(false), slotPos(0), gapPos(0),
@@ -59,8 +59,15 @@ SoapyMiriSDR::SoapyMiriSDR(const SoapySDR::Kwargs &args):
         converters = args.at("converters") == "I" ? MIRISDR_IQ_ONLY_I :
                      args.at("converters") == "Q" ? MIRISDR_IQ_ONLY_Q : MIRISDR_IQ_BOTH;
     if (args.count("baseband")) baseband = isTrue(args.at("baseband"));
+    /* the filter, for programs that have no field for it */
+    if (args.count("bandwidth"))
+    {
+        try { argBw = (uint32_t) std::stoul(args.at("bandwidth")); }
+        catch (const std::exception &) { SoapySDR_logf(SOAPY_SDR_ERROR, "mirisdr: bandwidth %s is not a number of Hz", args.at("bandwidth").c_str()); }
+        wantBw = argBw;
+    }
 
-    /* the library's defaults, the widest filter and a known gain, the ranges at zero IF */
+    /* the library's defaults, its filter and a known gain, the ranges at zero IF */
     mirisdr_get_stream(dev, &streamCfg, NULL);
     streamCfg.rate = 2048000;
     streamCfg.baseband = 0;
@@ -227,9 +234,7 @@ void SoapyMiriSDR::configure(uint32_t rate)
     tc.iq = ifHz ? converters : MIRISDR_IQ_BOTH;
     tc.low_if_auto = 0;
     tc.lo_offset = 0;
-    tc.bandwidth = 0;
-    for (uint32_t b : bandwidthsFor(ifHz))
-        if (wantBw && b >= wantBw) { tc.bandwidth = b; break; }
+    tc.bandwidth = pickBandwidth(ifHz);
     tc.gain.mode = MIRISDR_GAIN_KEEP;
     if (mirisdr_tune(dev, 0, &tc, NULL) < 0)
     {
@@ -598,21 +603,29 @@ std::vector<uint32_t> SoapyMiriSDR::bandwidthsFor(uint32_t ifHz) const
     return bws;
 }
 
-/* the narrowest filter that passes bw, else the widest */
+/* the narrowest filter of the IF that passes wantBw, else its widest. 0 when
+   nothing is asked: the library picks */
+uint32_t SoapyMiriSDR::pickBandwidth(uint32_t ifHz) const
+{
+    std::vector<uint32_t> bws = bandwidthsFor(ifHz);
+
+    if (!wantBw || bws.empty()) return 0;
+    for (uint32_t b : bws)
+        if (b >= wantBw) return b;
+    return bws.back();
+}
+
 void SoapyMiriSDR::setBandwidth(const int direction, const size_t channel, const double bw)
 {
     std::lock_guard<std::recursive_mutex> lock(devMutex);
-    std::vector<uint32_t> bws = bandwidthsFor(ifFreq);
     mirisdr_tune_config_t tc;
-    uint32_t pick = 0;
 
-    /* remembered, so a change of IF takes the nearest it has */
-    wantBw = bw > 0 ? (uint32_t) bw : 0;
-    for (uint32_t b : bws)
-        if (wantBw && b >= wantBw) { pick = b; break; }
+    /* remembered, so a change of IF takes the nearest it has. 0 is the device
+       string's, or else the library's choice */
+    wantBw = bw > 0 ? (uint32_t) bw : argBw;
 
     mirisdr_get_tune(dev, 0, &tc, NULL);
-    tc.bandwidth = pick;
+    tc.bandwidth = pickBandwidth(ifFreq);
     tc.gain.mode = MIRISDR_GAIN_KEEP;
     applyTune(tc);
 }
@@ -729,8 +742,16 @@ SoapySDR::ArgInfoList SoapyMiriSDR::getSettingInfo(void) const
 
         a = SoapySDR::ArgInfo();
         a.key = "fm_notch";
-        a.name = "Broadcast notch";
-        a.description = "Notch for the FM band (85-100 MHz) and MW (0.4-1.6 MHz).";
+        a.name = "FM notch";
+        a.description = "Notch for the FM band (85-100 MHz).";
+        a.type = SoapySDR::ArgInfo::BOOL;
+        a.value = "false";
+        list.push_back(a);
+
+        a = SoapySDR::ArgInfo();
+        a.key = "mw_notch";
+        a.name = "MW notch";
+        a.description = "Notch for medium wave (0.4-1.6 MHz).";
         a.type = SoapySDR::ArgInfo::BOOL;
         a.value = "false";
         list.push_back(a);
@@ -803,9 +824,9 @@ void SoapyMiriSDR::writeSetting(const std::string &key, const std::string &value
         if (mirisdr_set_bias(dev, isTrue(value)) < 0)
             SoapySDR_log(SOAPY_SDR_ERROR, "mirisdr: bias-T refused");
     }
-    else if (key == "fm_notch" || key == "dab_notch")
+    else if (key == "fm_notch" || key == "mw_notch" || key == "dab_notch")
     {
-        int bit = key == "fm_notch" ? MIRISDR_NOTCH_FM : MIRISDR_NOTCH_DAB;
+        int bit = key == "fm_notch" ? MIRISDR_NOTCH_FM : key == "mw_notch" ? MIRISDR_NOTCH_MW : MIRISDR_NOTCH_DAB;
 
         n = mirisdr_get_notch(dev);
         if (n < 0) n = 0;
@@ -834,11 +855,12 @@ std::string SoapyMiriSDR::readSetting(const std::string &key) const
     if (key == "decimation_bypass") return bypassSetting.empty() ? "AUTO" : bypassSetting;
     if (key == "gap_fill") return streamCfg.gap_fill ? "true" : "false";
     if (key == "biastee") return mirisdr_get_bias(dev) > 0 ? "true" : "false";
-    if (key == "fm_notch" || key == "dab_notch")
+    if (key == "fm_notch" || key == "mw_notch" || key == "dab_notch")
     {
         n = mirisdr_get_notch(dev);
         if (n < 0) return "false";
-        return (n & (key == "fm_notch" ? MIRISDR_NOTCH_FM : MIRISDR_NOTCH_DAB)) ? "true" : "false";
+        return (n & (key == "fm_notch" ? MIRISDR_NOTCH_FM : key == "mw_notch" ? MIRISDR_NOTCH_MW :
+                     MIRISDR_NOTCH_DAB)) ? "true" : "false";
     }
     return "";
 }

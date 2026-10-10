@@ -2637,7 +2637,7 @@ static tres_t t_plan_tune (void)
     mirisdr_tune_config_default(&c);
     plan_tune(n, "the default", &c, 1, &r);
     if (mirisdr_tune_check(n, 1, &c, &r) == 0) { plan_bad++; say("a second tuner accepted"); }
-    if (r.bandwidth != 8000000) { plan_bad++; say("default bandwidth %u", r.bandwidth); }
+    if (r.bandwidth != 5000000) { plan_bad++; say("default bandwidth %u at 2.048 Msps", r.bandwidth); }
     plan_near(r.offset, 0, 10, "default offset");
 
     /* the bandwidths each IF allows */
@@ -2874,6 +2874,208 @@ static int plan_label (const char *format)
     free(b);
 
     return label_n ? label_adc : -2;
+}
+
+/* The frontend goes with the tune: refused as a whole where a board has no notch,
+ * reported in the result, kept by the single setters, and carried by scan hops */
+static tres_t t_plan_frontend (void)
+{
+    mirisdr_dev_t *n;
+    mirisdr_tune_config_t c, got, h[3];
+    mirisdr_tune_result_t r;
+    mirisdr_scan_t *s;
+    mirisdr_scan_hop_t hb, hc;
+
+    plan_bad = 0;
+
+    if (mirisdr_open_null(&n, "252_S16") < 0) { say("no null device"); return T_FAIL; }
+
+    /* a board without notches: the bias-T only */
+    mirisdr_tune_config_default(&c);
+    c.frequency = 100000000; c.frontend.notch = MIRISDR_NOTCH_FM;
+    plan_tune(n, "a notch on a plain board", &c, 0, &r);
+    if (mirisdr_set_notch(n, MIRISDR_NOTCH_FM) == 0) { plan_bad++; say("set_notch on a plain board accepted"); }
+    c.frontend.notch = 0; c.frontend.bias = 1;
+    plan_tune(n, "the bias-T on a plain board", &c, 1, &r);
+    if (mirisdr_tune(n, 0, &c, &r) < 0) { plan_bad++; say("bias-T tune refused"); }
+    if (!r.frontend.bias || mirisdr_get_bias(n) != 1) { plan_bad++; say("bias-T not in force"); }
+
+    /* the RSP1B */
+    mirisdr_set_hw_flavour(n, MIRISDR_HW_RSP1B);
+    c.frontend.notch = MIRISDR_NOTCH_FM | MIRISDR_NOTCH_DAB; c.frontend.bias = 0;
+    plan_tune(n, "both notches on the RSP1B", &c, 1, &r);
+    if (mirisdr_tune(n, 0, &c, &r) < 0) { plan_bad++; say("notch tune refused"); }
+    if (r.frontend.notch != (MIRISDR_NOTCH_FM | MIRISDR_NOTCH_DAB | MIRISDR_NOTCH_MW) || r.frontend.bias) { plan_bad++; say("result notch %x bias %d", r.frontend.notch, r.frontend.bias); }
+    c.frontend.notch = 0x08;
+    plan_tune(n, "an unknown notch", &c, 0, &r);
+
+    /* FM and MW share a switch: either one asked, both in force */
+    c.frontend.notch = MIRISDR_NOTCH_MW;
+    plan_tune(n, "the MW notch", &c, 1, &r);
+    if (r.frontend.notch != (MIRISDR_NOTCH_FM | MIRISDR_NOTCH_MW)) { plan_bad++; say("MW asked, %x in force", r.frontend.notch); }
+
+    /* a check leaves what is in force */
+    c.frontend.notch = 0;
+    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.frontend.notch) { plan_bad++; say("check notch %x", r.frontend.notch); }
+    if (mirisdr_get_notch(n) != (MIRISDR_NOTCH_FM | MIRISDR_NOTCH_DAB)) { plan_bad++; say("a check changed the notch"); }
+
+    /* the single setters change the tune's frontend and nothing else */
+    if (mirisdr_set_notch(n, MIRISDR_NOTCH_DAB) < 0 || mirisdr_set_bias(n, 1) < 0) { plan_bad++; say("setters refused"); }
+    mirisdr_get_tune(n, 0, &got, &r);
+    if (got.frontend.notch != MIRISDR_NOTCH_DAB || !got.frontend.bias || got.frequency != 100000000 ||
+        r.frontend.notch != MIRISDR_NOTCH_DAB || !r.frontend.bias) { plan_bad++; say("after the setters: notch %x bias %d at %u", got.frontend.notch, got.frontend.bias, got.frequency); }
+
+    /* a hop that changes only the notch writes the expander, the same again does not */
+    h[0] = h[1] = h[2] = got;
+    h[0].frontend.notch = 0; h[1].frontend.notch = h[2].frontend.notch = MIRISDR_NOTCH_FM;
+    if (mirisdr_scan_compile(n, 0, h, 3, 4, &s) < 0) { plan_bad++; say("scan with notches refused"); }
+    else
+    {
+        mirisdr_scan_hop(s, 1, &hb);
+        mirisdr_scan_hop(s, 2, &hc);
+        if (hb.pre_entries <= hc.pre_entries || hb.res.frontend.notch != (MIRISDR_NOTCH_FM | MIRISDR_NOTCH_MW)) { plan_bad++; say("hop entries before register 2: %u then %u, notch %x", hb.pre_entries, hc.pre_entries, hb.res.frontend.notch); }
+        mirisdr_scan_free(s);
+    }
+
+    mirisdr_close(n);
+    if (!plan_bad) say("refused on a plain board, both notches and the bias-T on the RSP1B, the setters, scan hops");
+    return plan_bad ? T_FAIL : T_PASS;
+}
+
+/* Bandwidth 0 at zero IF: the narrowest filter as wide as the rate, 8 MHz at most,
+ * and it follows the rate. One asked for stays */
+static tres_t t_plan_bw_auto (void)
+{
+    static const struct { uint32_t rate, bw; } want[] = {
+        { 1300000, 1536000 }, { 1536000, 1536000 }, { 2048000, 5000000 }, { 5000000, 5000000 },
+        { 5500000, 6000000 }, { 7000000, 7000000 }, { 8000000, 8000000 }, { 10000000, 8000000 },
+    };
+    mirisdr_dev_t *n;
+    mirisdr_tune_config_t c, got;
+    mirisdr_tune_result_t r;
+    mirisdr_stream_config_t sc;
+    unsigned i;
+
+    plan_bad = 0;
+
+    if (mirisdr_open_null(&n, "252_S16") < 0) { say("no null device"); return T_FAIL; }
+
+    /* as opened: 2.048 Msps */
+    mirisdr_get_tune(n, 0, &got, &r);
+    if (got.bandwidth || r.bandwidth != 5000000) { plan_bad++; say("as opened: asked %u, in force %u", got.bandwidth, r.bandwidth); }
+
+    /* the stream's rate moves it, in either order */
+    for (i = 0; i < sizeof want / sizeof want[0]; i++)
+    {
+        mirisdr_get_stream(n, &sc, NULL);
+        sc.rate = want[i].rate;
+        if (mirisdr_set_stream(n, &sc, NULL) < 0) { plan_bad++; say("%u sps refused", want[i].rate); continue; }
+        mirisdr_get_tune(n, 0, &got, &r);
+        if (r.bandwidth != want[i].bw || mirisdr_get_bandwidth(n) != want[i].bw)
+        { plan_bad++; say("%u sps: %u Hz, want %u", want[i].rate, r.bandwidth, want[i].bw); }
+        note("%8u sps -> %8u Hz", want[i].rate, r.bandwidth);
+    }
+
+    /* asked for: kept at any rate, and get_tune gives it back */
+    c = got;
+    c.bandwidth = 8000000;
+    if (mirisdr_tune(n, 0, &c, &r) < 0) { plan_bad++; say("8 MHz refused"); }
+    mirisdr_set_sample_rate(n, 2048000);
+    mirisdr_get_tune(n, 0, &got, &r);
+    if (got.bandwidth != 8000000 || r.bandwidth != 8000000) { plan_bad++; say("8 MHz asked, %u then %u", got.bandwidth, r.bandwidth); }
+
+    /* 0 again: from the rate */
+    c.bandwidth = 0;
+    if (mirisdr_tune(n, 0, &c, &r) < 0 || r.bandwidth != 5000000) { plan_bad++; say("back to 0: %u", r.bandwidth); }
+
+    /* a low IF: its widest. Then to zero IF with a baseband stream at 256 ksps, which
+       the tune moves up to the zero IF rates: the filter is the new rate's */
+    c.if_freq = 2048000; c.low_if_auto = 1;
+    mirisdr_get_stream(n, &sc, NULL);
+    sc.baseband = 1; sc.rate = 256000;
+    if (mirisdr_tune(n, 0, &c, &r) < 0 || r.bandwidth != 1536000) { plan_bad++; say("2048 kHz IF: %u", r.bandwidth); }
+    if (mirisdr_set_stream(n, &sc, NULL) < 0) { plan_bad++; say("baseband 256 ksps refused"); }
+    c.if_freq = 0; c.low_if_auto = 0;
+    if (mirisdr_tune(n, 0, &c, &r) < 0) { plan_bad++; say("back to zero IF refused"); }
+    else
+    {
+        uint32_t rate = mirisdr_get_sample_rate(n);
+        uint32_t bw = rate <= 1536000 ? 1536000 : 5000000;
+
+        if (r.bandwidth != bw) { plan_bad++; say("zero IF at %u sps: %u, want %u", rate, r.bandwidth, bw); }
+        note("baseband to zero IF: %u sps, %u Hz", rate, r.bandwidth);
+    }
+
+    mirisdr_close(n);
+    if (!plan_bad) say("zero IF follows the rate from 1.536 to 8 MHz, an asked filter stays, a low IF gets its widest");
+    return plan_bad ? T_FAIL : T_PASS;
+}
+
+/* Room to grow: a config with its reserved part set is refused, results come back
+ * with it at 0 whatever the memory held */
+static int all_zero (const uint32_t *r, size_t n)
+{
+    while (n--) if (*r++) return 0;
+    return 1;
+}
+
+static tres_t t_plan_reserved (void)
+{
+    mirisdr_dev_t *n, *o;
+    mirisdr_tune_config_t c;
+    mirisdr_tune_result_t r;
+    mirisdr_stream_config_t s;
+    mirisdr_stream_result_t sr;
+    mirisdr_open_config_t oc;
+    mirisdr_scan_status_t ss;
+
+    plan_bad = 0;
+
+    if (mirisdr_open_null(&n, "252_S16") < 0) { say("no null device"); return T_FAIL; }
+
+    mirisdr_get_tune(n, 0, &c, NULL);
+    plan_tune(n, "a tune config as it came", &c, 1, &r);
+    c.reserved[MIRISDR_RESERVED - 1] = 1;
+    plan_tune(n, "a tune config with reserved set", &c, 0, &r);
+    mirisdr_get_tune(n, 0, &c, NULL);
+    c.gain.reserved[0] = 1;
+    plan_tune(n, "its gain with reserved set", &c, 0, &r);
+    mirisdr_get_tune(n, 0, &c, NULL);
+    c.frontend.reserved[0] = 1;
+    plan_tune(n, "its frontend with reserved set", &c, 0, &r);
+    mirisdr_get_tune(n, 0, &c, NULL);
+    c.override.reserved[0] = 1;
+    plan_tune(n, "its override with reserved set", &c, 0, &r);
+
+    mirisdr_get_stream(n, &s, NULL);
+    s.reserved[3] = 7;
+    if (mirisdr_stream_check(n, &s, &sr) == 0) { plan_bad++; say("a stream config with reserved set accepted"); }
+
+    mirisdr_open_config_default(&oc);
+    oc.reserved[0] = 1;
+    o = NULL;
+    if (mirisdr_open_ex(&o, &oc) == 0) { plan_bad++; say("an open config with reserved set accepted"); mirisdr_close(o); }
+
+    /* results over dirty memory */
+    memset(&r, 0xA5, sizeof r);
+    memset(&sr, 0xA5, sizeof sr);
+    memset(&ss, 0xA5, sizeof ss);
+    mirisdr_get_tune(n, 0, NULL, &r);
+    mirisdr_get_stream(n, NULL, &sr);
+    mirisdr_get_scan_status(n, &ss);
+    if (!all_zero(r.reserved, MIRISDR_RESERVED) || !all_zero(r.gain.reserved, MIRISDR_RESERVED_NESTED) ||
+        !all_zero(r.frontend.reserved, MIRISDR_RESERVED_NESTED)) { plan_bad++; say("tune result reserved not cleared"); }
+    if (!all_zero(sr.reserved, MIRISDR_RESERVED)) { plan_bad++; say("stream result reserved not cleared"); }
+    if (!all_zero(ss.reserved, MIRISDR_RESERVED)) { plan_bad++; say("scan status reserved not cleared"); }
+
+    memset(&r, 0xA5, sizeof r);
+    mirisdr_get_tune(n, 0, &c, NULL);
+    mirisdr_tune_check(n, 0, &c, &r);
+    if (!all_zero(r.reserved, MIRISDR_RESERVED)) { plan_bad++; say("check result reserved not cleared"); }
+
+    mirisdr_close(n);
+    if (!plan_bad) say("set reserved refused in the tune, its gain, frontend and override, the stream and the open config; results cleared");
+    return plan_bad ? T_FAIL : T_PASS;
 }
 
 static tres_t t_plan_follow (void)
@@ -3323,7 +3525,7 @@ static tres_t t_scan_run (void)
     mirisdr_tune_result_t r;
     mirisdr_scan_t *s;
     mirisdr_scan_status_t st;
-    uint32_t nh, k, passes = 2, learned = 0, bad = 0, flagged = 0, pkt, late = 0, shorted = 0;
+    uint32_t nh, k, passes = 2, learned = 0, bad = 0, flagged = 0, pkt, late = 0, shorted = 0, fl[3] = { 0 };
     int64_t shortest = INT64_MAX, longest = 0;
     int fr = 1, loops = 0;
     tres_t res = T_PASS;
@@ -3370,6 +3572,9 @@ static tres_t t_scan_run (void)
         int64_t len;
 
         if (a->flags) flagged++;
+        if (a->flags & MIRISDR_SCAN_MISSED) fl[0]++;
+        if (a->flags & MIRISDR_SCAN_RESTART) fl[1]++;
+        if (a->flags & MIRISDR_SCAN_LOST) fl[2]++;
         if (a->hop != k % nh || a->pass != k / nh) bad++;
         if (!k || (k == nh) || (k + 1 >= scan_logged)) continue;
 
@@ -3391,7 +3596,7 @@ static tres_t t_scan_run (void)
     if (fr != 0) { say("the feed ended with %d", fr); res = T_FAIL; }
     else if (scan_logged != nh * passes) { say("%u reports for %u hops", scan_logged, nh * passes); res = T_FAIL; }
     else if (bad) { say("%u reports out of order", bad); res = T_FAIL; }
-    else if (flagged) { say("%u reports flagged", flagged); res = T_FAIL; }
+    else if (flagged) { say("%u reports flagged: %u missed packets, %u restarts, %u lost", flagged, fl[0], fl[1], fl[2]); res = T_FAIL; }
     else if (shorted) { say("%u hops shorter than their dwell allows", shorted); res = T_FAIL; }
     else say("%u hops x %u passes reported in order, %lld to %lld packets for a dwell of 32, %u restarts",
              nh, passes, (long long) shortest, (long long) longest, st.restarts);
@@ -3900,6 +4105,9 @@ static const struct {
     { "plan",     "tune config rules",          t_plan_tune           },
     { "plan",     "stream config rules",        t_plan_stream         },
     { "plan",     "stream following the tune",  t_plan_follow         },
+    { "plan",     "frontend with the tune",     t_plan_frontend       },
+    { "plan",     "reserved room to grow",      t_plan_reserved       },
+    { "plan",     "automatic filter",           t_plan_bw_auto        },
     { "plan",     "scan lists",                 t_plan_scan           },
 
     { "baseband", "rates, IF moves and the LO",  t_bb_plan             },

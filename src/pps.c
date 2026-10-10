@@ -278,6 +278,7 @@ int mirisdr_get_pps (mirisdr_dev_t *p, mirisdr_pps_t *out)
     at = p->pps_base + (int64_t) (edge * group)
        + (int64_t) ((turns * (double) group) / expect);
 
+    memset(out, 0, sizeof *out);
     out->sample  = at < 0 ? 0 : (uint64_t) at;
     out->edges   = t.edges;
     out->trusted = !t.guard;

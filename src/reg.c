@@ -135,6 +135,7 @@ int mirisdr_get_list_status (mirisdr_dev_t *p, mirisdr_list_status_t *st)
 
     if (mirisdr_read_mem(p, p->fw_list_at, b, sizeof b, MIRISDR_MEM_IRAM) < 0) return -1;
 
+    memset(st, 0, sizeof *st);
     st->running     = b[0];
     st->waiting     = b[1];
     st->pps_paused  = b[2];

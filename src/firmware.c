@@ -317,7 +317,7 @@ int mirisdr_fw_get (const uint8_t *image, uint32_t size, mirisdr_fw_patch_t *out
 
 int mirisdr_fw_patch (uint8_t *image, uint32_t size, const mirisdr_fw_patch_t *p)
 {
-    if (!image || !p) return -1;
+    if (!image || !p || MIRISDR_RESERVED_SET(*p)) return -1;
 
     if ((p->fields & MIRISDR_FW_PATCH_IDS)
         && mirisdr_fw_set_ids(image, size, p->vid, p->pid)) return -1;
@@ -517,6 +517,12 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
     int r = -1;
 
     if (!out || !cfg) return -1;
+
+    if (MIRISDR_RESERVED_SET(*cfg) || MIRISDR_RESERVED_SET(cfg->firmware_patch))
+    {
+        fprintf(stderr, "libmirisdr: " MIRISDR_RESERVED_MSG, "the open config");
+        return -1;
+    }
 
     index = at = cfg->index;
     path.valid = 0;

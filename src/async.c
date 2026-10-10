@@ -382,6 +382,17 @@ static int mirisdr_async_drain (mirisdr_dev_t *p, int rounds) {
     return 0;
 }
 
+/* A failed transfer ends the stream with an error: failed has absolute precedence
+   while there is a stream, and read_async takes it up */
+static void mirisdr_async_fail (mirisdr_dev_t *p) {
+    int s;
+
+    do {
+        s = mirisdr_async_get(p);
+        if ((s == MIRISDR_ASYNC_INACTIVE) || (s == MIRISDR_ASYNC_FAILED)) return;
+    } while (!mirisdr_async_move(p, s, MIRISDR_ASYNC_FAILED));
+}
+
 /* volání pro zasílání dat */
 static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
     size_t i;
@@ -515,7 +526,7 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
 
         if (bytes > 0 || p->fills_n) mirisdr_feed_converted(p, samples, bytes);
         /* draining: the transfer is done, and should not be reused */
-        if (p->xfer_draining || (p->async_status != MIRISDR_ASYNC_RUNNING)) return;
+        if (p->xfer_draining || (mirisdr_async_get(p) != MIRISDR_ASYNC_RUNNING)) return;
 
         /* with the stamp: back onto the grid once the queue has drained of the old phase */
         if ((xfer->type == LIBUSB_TRANSFER_TYPE_BULK) && p->fw_ours)
@@ -571,33 +582,27 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
     return;
 
 failed:
-    mirisdr_cancel_async(p);
-    /* stav failed má absolutní přednost */
-    p->async_status = MIRISDR_ASYNC_FAILED;
+    if (p) mirisdr_async_fail(p);
 }
 
-/* ukončení async části */
+/* ukončení async části: one step, so the stream that runs takes it, or none runs */
 int mirisdr_cancel_async (mirisdr_dev_t *p) {
+    int s;
+
     if (!p) goto failed;
 
-    switch (p->async_status) {
-    case MIRISDR_ASYNC_INACTIVE:
-        if (p->async_starting) {
-            p->cancel_pending = 1;
-            return 0;
+    for (;;) {
+        switch (s = mirisdr_async_get(p)) {
+        case MIRISDR_ASYNC_INACTIVE:
+        case MIRISDR_ASYNC_CANCELING:
+            goto canceled;
+        case MIRISDR_ASYNC_FAILED:
+            goto failed;
         }
-        goto canceled;
-    case MIRISDR_ASYNC_CANCELING:
-        goto canceled;
-    case MIRISDR_ASYNC_RUNNING:
-    case MIRISDR_ASYNC_PAUSED:
-        p->async_status = MIRISDR_ASYNC_CANCELING;
-        break;
-    case MIRISDR_ASYNC_FAILED:
-        goto failed;
-    }
 
-    return 0;
+        /* starting, running or paused: the run stops it */
+        if (mirisdr_async_move(p, s, MIRISDR_ASYNC_CANCELING)) return 0;
+    }
 
 failed:
     return -1;
@@ -606,40 +611,22 @@ canceled:
     return -2;
 }
 
-/* ukončení async části včetně čekání */
+/* ukončení async části včetně čekání, until read_async has returned. Not from
+   the callback, which would wait for itself */
 int mirisdr_cancel_async_now (mirisdr_dev_t *p) {
-    if (!p) goto failed;
+    if (!p) return -1;
 
-    switch (p->async_status) {
-    case MIRISDR_ASYNC_INACTIVE:
-        if (!p->async_starting) goto done;
-        p->cancel_pending = 1;
-        break;
-    case MIRISDR_ASYNC_CANCELING:
-        break;
-    case MIRISDR_ASYNC_RUNNING:
-    case MIRISDR_ASYNC_PAUSED:
-        p->async_status = MIRISDR_ASYNC_CANCELING;
-        break;
-    case MIRISDR_ASYNC_FAILED:
-        goto failed;
-    }
+    mirisdr_cancel_async(p);
 
     /* cyklujeme dokud není vše ukončeno */
-    while (p->async_starting ||
-           ((p->async_status != MIRISDR_ASYNC_INACTIVE) &&
-            (p->async_status != MIRISDR_ASYNC_FAILED)))
+    while (mirisdr_async_get(p) != MIRISDR_ASYNC_INACTIVE)
 #if defined (_WIN32) && !defined(__MINGW32__)
     Sleep(20);
 #else
     usleep(20000);
 #endif
 
-done:
     return 0;
-
-failed:
-    return -1;
 }
 
 /* alokace asynchronních bufferů */
@@ -820,18 +807,17 @@ static int mirisdr_async_free (mirisdr_dev_t *p) {
 /* spuštění async části */
 static int mirisdr_read_async_run (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx, uint32_t num, uint32_t len);
 
-/* TODO: this cancel_pending is a slight race condition, it solves the test problem now but I will fix properly later */
+/* From inactive to starting in one step, so only one stream starts. A cancel from
+   then on is kept: it moves the state to canceling, for the run to take up once its
+   transfers are in. The state is inactive again only when this returns */
 int mirisdr_read_async (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx, uint32_t num, uint32_t len) {
     int r;
 
     if (!p) return -1;
-    if (p->async_status != MIRISDR_ASYNC_INACTIVE) return -1;
+    if (!mirisdr_async_move(p, MIRISDR_ASYNC_INACTIVE, MIRISDR_ASYNC_STARTING)) return -1;
 
-    p->cancel_pending = 0;
-    p->async_starting = 1;
     r = mirisdr_read_async_run(p, cb, ctx, num, len);
-    p->async_starting = 0;
-    p->cancel_pending = 0;
+    mirisdr_async_set(p, MIRISDR_ASYNC_INACTIVE);
 
     return r;
 }
@@ -845,9 +831,6 @@ static int mirisdr_read_async_run (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb,
 
     if (!p) goto failed;
     if (!p->dh) goto failed;
-
-    /* nedovolíme spustit jiný stav než neaktivní */
-    if (p->async_status != MIRISDR_ASYNC_INACTIVE) goto failed;
 
     p->cb = cb;
     p->cb_ctx = ctx;
@@ -947,32 +930,30 @@ static int mirisdr_read_async_run (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb,
         p->xfer_inflight++;
     }
 
-    /* spustíme streamování dat */
+    /* spustíme streamování dat; a cancel while starting has made it canceling */
     p->xfer_draining = 0;
     mirisdr_iso_settle(p);
     mirisdr_streaming_start(p);
-    p->async_status = MIRISDR_ASYNC_RUNNING;
+    mirisdr_async_move(p, MIRISDR_ASYNC_STARTING, MIRISDR_ASYNC_RUNNING);
 
-    while (p->async_status != MIRISDR_ASYNC_INACTIVE) {
-        if (p->cancel_pending) {
-            p->cancel_pending = 0;
-            if (p->async_status != MIRISDR_ASYNC_FAILED) p->async_status = MIRISDR_ASYNC_CANCELING;
+    for (;;) {
+        int s = mirisdr_async_get(p);
+
+        if (s == MIRISDR_ASYNC_FAILED) {
+            /* Do NOT free the transfers here: on this path some of them are
+             * still submitted, and libusb_free_transfer() on an in-flight
+             * transfer corrupts memory (it crashed the host process every time
+             * a bulk endpoint stalled). Convert the failure into a normal
+             * cancel so the branch below drains every transfer properly, and
+             * remember that it failed so we still return an error. */
+            transfer_failed = 1;
+            if (!mirisdr_async_move(p, MIRISDR_ASYNC_FAILED, MIRISDR_ASYNC_CANCELING)) continue;
+            s = MIRISDR_ASYNC_CANCELING;
         }
-
-        /* počkáme na další událost */
-        if ((r = libusb_handle_events_timeout(p->ctx, &tv)) < 0) {
-            fprintf( stderr, "libusb_handle_events returned: %d\n", r);
-            if (r == LIBUSB_ERROR_INTERRUPTED) continue; /* stray */
-            goto failed_free;
-        }
-
 
         /* dochází k ukončení */
-        if (p->async_status == MIRISDR_ASYNC_CANCELING) {
-            if (!p->xfer) {
-                p->async_status = MIRISDR_ASYNC_INACTIVE;
-                break;
-            }
+        if (s == MIRISDR_ASYNC_CANCELING) {
+            if (!p->xfer) break;
 
             /* Ask the firmware to stop while the transfers are still queued,
              * so the engine can drain */
@@ -987,24 +968,20 @@ static int mirisdr_read_async_run (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb,
              * are still owned by libusb, and freeing an in-flight transfer
              * corrupts memory. libusb_close()/libusb_exit() in mirisdr_close()
              * cleans up from here. */
-                        if (mirisdr_async_drain(p, 5) < 0) {
+            if (mirisdr_async_drain(p, 5) < 0) {
                 fprintf(stderr, "libmirisdr: transfers would not cancel, "
                                 "abandoning them\n");
-                p->async_status = MIRISDR_ASYNC_INACTIVE;
                 return -1;
             }
             /* every completion is in: nothing of ours is on libusb's list */
-            p->async_status = MIRISDR_ASYNC_INACTIVE;
             break;
-        } else if (p->async_status == MIRISDR_ASYNC_FAILED) {
-            /* Do NOT free the transfers here: on this path some of them are
-             * still submitted, and libusb_free_transfer() on an in-flight
-             * transfer corrupts memory (it crashed the host process every time
-             * a bulk endpoint stalled). Convert the failure into a normal
-             * cancel so the branch above drains every transfer properly, and
-             * remember that it failed so we still return an error. */
-            transfer_failed = 1;
-            p->async_status = MIRISDR_ASYNC_CANCELING;
+        }
+
+        /* počkáme na další událost */
+        if ((r = libusb_handle_events_timeout(p->ctx, &tv)) < 0) {
+            fprintf( stderr, "libusb_handle_events returned: %d\n", r);
+            if (r == LIBUSB_ERROR_INTERRUPTED) continue; /* stray */
+            goto failed_free;
         }
     }
 
@@ -1020,12 +997,7 @@ static int mirisdr_read_async_run (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb,
     mirisdr_streaming_stop(p);
     /* je vhodné ukončit i adc, jenže pak by při dalším otevření bylo nutné provést inicializaci */
 
-    if (transfer_failed) {
-        p->async_status = MIRISDR_ASYNC_INACTIVE;
-        return -1;
-    }
-
-    return 0;
+    return transfer_failed ? -1 : 0;
 
 failed_free:
     mirisdr_async_free(p);
@@ -1039,7 +1011,7 @@ int mirisdr_start_async (mirisdr_dev_t *p) {
     size_t i;
 
     /* nedovolíme jiný stav než pozastavený */
-    if (p->async_status != MIRISDR_ASYNC_PAUSED) goto failed;
+    if (mirisdr_async_get(p) != MIRISDR_ASYNC_PAUSED) goto failed;
 
         /* reset interního bufferu */
     p->xfer_out_pos = 0;
@@ -1053,13 +1025,14 @@ int mirisdr_start_async (mirisdr_dev_t *p) {
         p->xfer_inflight++;
     }
 
-    if (p->async_status != MIRISDR_ASYNC_PAUSED) goto failed;
+    if (mirisdr_async_get(p) != MIRISDR_ASYNC_PAUSED) goto failed;
 
     mirisdr_bb_restart(p);
     mirisdr_iso_settle(p);
     mirisdr_streaming_start(p);
 
-    p->async_status = MIRISDR_ASYNC_RUNNING;
+    /* a cancel meanwhile is the run's to finish, these transfers with it */
+    if (!mirisdr_async_move(p, MIRISDR_ASYNC_PAUSED, MIRISDR_ASYNC_RUNNING)) goto failed;
 
     return 0;
 
@@ -1092,7 +1065,7 @@ static void mirisdr_cb_rebase (mirisdr_dev_t *p) {
 int mirisdr_stop_async (mirisdr_dev_t *p) {
 
     /* nedovolíme jiný stav než spuštěný */
-    if (p->async_status != MIRISDR_ASYNC_RUNNING) goto failed;
+    if (mirisdr_async_get(p) != MIRISDR_ASYNC_RUNNING) goto failed;
 
     /* ask the firmware to stop while transfers are still queued, as otherwise the ISR never
      * fires, and we can't disable the capture engine */
@@ -1110,11 +1083,12 @@ int mirisdr_stop_async (mirisdr_dev_t *p) {
         /* every transfer back from libusb before the pause is declared */
     if (mirisdr_async_drain(p, 10) < 0) goto failed;
 
-    if (p->async_status != MIRISDR_ASYNC_RUNNING) goto failed;
+    if (mirisdr_async_get(p) != MIRISDR_ASYNC_RUNNING) goto failed;
 
     mirisdr_cb_rebase(p);
 
-    p->async_status = MIRISDR_ASYNC_PAUSED;
+    /* a cancel meanwhile is the run's to finish */
+    if (!mirisdr_async_move(p, MIRISDR_ASYNC_RUNNING, MIRISDR_ASYNC_PAUSED)) goto failed;
 
     return 0;
 

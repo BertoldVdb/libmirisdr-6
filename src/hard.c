@@ -226,6 +226,7 @@ typedef struct mirisdr_stream_plan
 } mirisdr_stream_plan_t;
 
 int mirisdr_set_soft (mirisdr_dev_t *p);
+static int mirisdr_bw_auto (int ifm, uint32_t rate);
 
 /* Baseband with a low IF: the ADC at 4 x IF, the output that rate (both outputs)
    or half of it (one), halved stages times. Rates must come out whole. Returns the
@@ -258,6 +259,12 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 	unsigned i;
 
 	pl->cfg = *c;
+
+	if (MIRISDR_RESERVED_SET(*c))
+	{
+		mirisdr_refuse(p, MIRISDR_RESERVED_MSG, "the stream config");
+		return -1;
+	}
 
 	/* formats: one, or with follow_tune one for each kind */
 	if ((mirisdr_parse_format(c->format, "AUTO", &pl->format_auto, &pl->format, &pl->cfg.format) < 0) ||
@@ -465,6 +472,7 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 static void mirisdr_stream_result_of (uint32_t rate, int format, int swap, int decim, uint32_t cap,
                                       int bb_path, uint32_t bb_rate, mirisdr_stream_result_t *res)
 {
+	memset(res, 0, sizeof *res);
 	res->rate = bb_path ? bb_rate : rate;
 	res->adc_rate = rate;
 	res->baseband = bb_path;
@@ -584,7 +592,7 @@ static void mirisdr_stream_regs (mirisdr_dev_t *p, const mirisdr_stream_plan_t *
 /* stopped and started around it if it runs; returns whether it ran */
 static int mirisdr_stream_pause (mirisdr_dev_t *p)
 {
-	if (p->async_status != MIRISDR_ASYNC_RUNNING) return 0;
+	if (mirisdr_async_get(p) != MIRISDR_ASYNC_RUNNING) return 0;
 
 	return ((mirisdr_stop_async(p) < 0) || (mirisdr_adc_stop(p) < 0)) ? -1 : 1;
 }
@@ -624,7 +632,10 @@ static int mirisdr_stream_apply (mirisdr_dev_t *p, const mirisdr_stream_config_t
 	}
 	else if (mirisdr_stream_send(p, &pl) < 0) return -1;
 
-	/* baseband on or off with a low IF moves the LO */
+	/* baseband on or off with a low IF moves the LO, and at zero IF a filter the tune
+	   left to the library follows the rate */
+	if (!p->tune.bandwidth && (p->if_freq == MIRISDR_IF_ZERO) &&
+	    (mirisdr_bw_auto(MIRISDR_IF_ZERO, p->rate) != (int) p->bandwidth)) moved = 1;
 	if (moved && (mirisdr_set_soft(p) < 0)) return -1;
 
 	if (res) mirisdr_stream_result_of(p->rate, p->format, p->swap_iq, p->decim_on, pl.cap,

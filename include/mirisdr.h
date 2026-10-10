@@ -54,6 +54,10 @@ typedef enum
 
 typedef struct mirisdr_dev mirisdr_dev_t;
 
+/* Some padding in the external structs */
+#define MIRISDR_RESERVED        32
+#define MIRISDR_RESERVED_NESTED 8
+
 /* devices */
 MIRISDR_API uint32_t mirisdr_get_device_count (void);
 MIRISDR_API const char *mirisdr_get_device_name (uint32_t index);
@@ -153,6 +157,7 @@ typedef struct mirisdr_stream_stats
 	uint64_t resyncs;   /* byte alignment recoveries */
 	uint64_t index;     /* absolute index of the first sample in the buffer */
 	uint64_t filled;    /* samples gap fill put in the stream, counted in samples, not in lost */
+	uint32_t reserved[MIRISDR_RESERVED];
 } mirisdr_stream_stats_t;
 
 MIRISDR_API int mirisdr_get_stream_stats (mirisdr_dev_t *p, mirisdr_stream_stats_t *s); /* extra */
@@ -188,6 +193,7 @@ typedef struct mirisdr_buffer_info
 	                           MIRISDR_IQ_ONLY_I or _ONLY_Q for real */
 	uint32_t rate;          /* samples per second */
 	int      type;          /* MIRISDR_SAMPLE_* */
+	uint32_t reserved[MIRISDR_RESERVED];
 } mirisdr_buffer_info_t;
 
 #define MIRISDR_SAMPLE_S16      0       /* int16, full scale 32768 */
@@ -253,6 +259,7 @@ typedef struct mirisdr_stream_config
 	                                   NULL for "AUTO_REAL" */
 	uint32_t    usb_capacity;       /* B/s the automatic choice may plan on, 0 for the default */
 	int         baseband;           /* complex float centred on the tune's frequency, see above */
+	uint32_t reserved[MIRISDR_RESERVED];
 } mirisdr_stream_config_t;
 
 typedef struct mirisdr_stream_result
@@ -266,6 +273,7 @@ typedef struct mirisdr_stream_result
 	int         baseband;           /* MIRISDR_BASEBAND_*: baseband output type */
 	uint32_t    adc_rate;           /* the converters' samples per second */
 	uint32_t    decimation;         /* converter samples per output sample, 1 without baseband */
+	uint32_t reserved[MIRISDR_RESERVED];
 } mirisdr_stream_result_t;
 
 #define MIRISDR_BASEBAND_OFF     0      /* raw samples */
@@ -345,7 +353,17 @@ typedef struct mirisdr_gain_config
 	int      mixer;         /* on or off: 19 dB */
 	int      mixbuffer;     /* dB, the AM ports only: 0, 6, 12 or 18 on AM1, 0 or 24 on AM2 */
 	int      baseband;      /* dB, 0-59 */
+	uint32_t reserved[MIRISDR_RESERVED_NESTED];
 } mirisdr_gain_config_t;
+
+/* The front end before the tuner, part of a tune so it goes out with it. The tune
+ * result reports what is in force. A notch on a board without one is refused */
+typedef struct mirisdr_frontend_config
+{
+	int      bias;          /* bias-T: power on the antenna input */
+	int      notch;         /* MIRISDR_NOTCH_*, RSP1B only */
+	uint32_t reserved[MIRISDR_RESERVED]; /* Not using _NESTED here as I think this could grow a lot */
+} mirisdr_frontend_config_t;
 
 /* Force specific tuner calibration codes instead of autodetection.
  * A held code is kept across retunes, so clear the holds when adjusting the frequency a lot.
@@ -365,6 +383,7 @@ typedef struct mirisdr_tuner_override
 	uint8_t  hold_filter; /* the status still reads the calibrated code */
 	uint8_t  filter;      /* IF filter code, 0-31, 0 the widest. With the
 	                         bandwidth at MIRISDR_BW_MAX is this held at 0 */
+	uint32_t reserved[MIRISDR_RESERVED_NESTED];
 } mirisdr_tuner_override_t;
 
 typedef struct mirisdr_tune_config
@@ -378,12 +397,14 @@ typedef struct mirisdr_tune_config
 	int      low_if_auto;   /* low IF: put the LO if_freq above frequency */
 	int      iq;            /* MIRISDR_IQ_*: low IF only, the output not requested is switched off */
 	mirisdr_gain_config_t gain;
+	mirisdr_frontend_config_t frontend;
 	mirisdr_tuner_override_t override; /* all holds off by default */
 	uint32_t synth_thresh;  /* 0: the LO set to ~1 Hz. 1-4095: the synthesizer's fraction denominator
 	                           fixed at this and no AFC, so the LO lands on a grid of 3 MHz (VHF),
 	                           6 MHz (AM, band III), 24 MHz (band IV/V) or 48 MHz (L) divided by it
 	                           and tunes in one band differ in register 2 only. For fast hopping or
-                               better control of fractional spurious tones. */
+                               better control of fractional spurious tones. */ 
+	uint32_t reserved[MIRISDR_RESERVED];
 } mirisdr_tune_config_t;
 
 typedef struct mirisdr_tune_result
@@ -395,7 +416,9 @@ typedef struct mirisdr_tune_result
 	int      iq;            /* the outputs running, MIRISDR_IQ_* */
 	uint32_t bandwidth;     /* Hz in force */
 	mirisdr_gain_config_t gain; /* in force: each stage and the total */
+	mirisdr_frontend_config_t frontend; /* in force */
 	mirisdr_band_t band;
+	uint32_t reserved[MIRISDR_RESERVED];
 } mirisdr_tune_result_t;
 
 MIRISDR_API void mirisdr_tune_config_default (mirisdr_tune_config_t *cfg); /* extra */
@@ -436,11 +459,12 @@ MIRISDR_API int mirisdr_get_baseband_gain (mirisdr_dev_t *p);           /* extra
 MIRISDR_API int mirisdr_set_bias (mirisdr_dev_t *p, int bias);          /* extra */
 MIRISDR_API int mirisdr_get_bias (mirisdr_dev_t *p);                    /* extra */
 
-/* Switchable notch filters, RSP1B only (-1 elsewhere),
+/* The single setters for the tune's frontend. Switchable notch filters, RSP1B only (-1 elsewhere),
  * enabling these filters can improve or reduce signal quality depending on your
  * specific scenario, so probably just have to try. */
-#define MIRISDR_NOTCH_FM        0x01    /* 85-100 MHz; on the RSP1B also MW, 0.4-1.6 MHz */
+#define MIRISDR_NOTCH_FM        0x01    /* 85-100 MHz */
 #define MIRISDR_NOTCH_DAB       0x02    /* 165-230 MHz */
+#define MIRISDR_NOTCH_MW        0x04    /* 0.4-1.6 MHz.*/
 MIRISDR_API int mirisdr_set_notch (mirisdr_dev_t *p, int notches);      /* extra */
 MIRISDR_API int mirisdr_get_notch (mirisdr_dev_t *p);                   /* extra */
 
@@ -470,6 +494,7 @@ typedef struct mirisdr_fw_patch
 	uint16_t       vid;
 	uint16_t       pid;
 	char           serial[MIRISDR_FW_SERIAL_MAX + 1];
+	uint32_t reserved[MIRISDR_RESERVED_NESTED];
 } mirisdr_fw_patch_t;
 
 MIRISDR_API int mirisdr_fw_get (const uint8_t *image, uint32_t size, mirisdr_fw_patch_t *out); /* extra */
@@ -502,6 +527,7 @@ typedef struct mirisdr_open_config
 	int            hw_flavour;      /* the board, a mirisdr_hw_flavour_t. Settings this wrong
                                      * could in theory cause damage (eg bias-T on).
 	                                 * MIRISDR_HW_AUTO by default */
+	uint32_t reserved[MIRISDR_RESERVED];
 } mirisdr_open_config_t;
 
 /* Please fill in the open_config struct using mirisdr_open_config_default(&cfg) and only
@@ -578,6 +604,7 @@ typedef struct mirisdr_pps
 	uint8_t  guard;     /* why, if trusted is 0: see MIRISDR_PPS_GUARD_* below */
 	int      gapless;   /* nothing lost since the anchor, ignore sample if 0. Self repairs */
 	uint16_t frame;     /* USB frame the edge fell in, 11 bits, wraps every 2.048 s */
+	uint32_t reserved[MIRISDR_RESERVED];
 } mirisdr_pps_t;
 
 /* This field explains the reason why a sample is untrustworthy. Mostly for debug. */
@@ -662,6 +689,7 @@ typedef struct mirisdr_tuner_status
 	                        XTALSEL sets. Higher is narrower */
 	uint8_t  top;        /* bits 27:26, so far always 3 */
 	uint8_t  flags;      /* MIRISDR_TUNER_* */
+	uint32_t reserved[MIRISDR_RESERVED];
 } mirisdr_tuner_status_t;
 
 MIRISDR_API int mirisdr_get_tuner_status (mirisdr_dev_t *p, int tuner, mirisdr_tuner_status_t *st); /* extra */
@@ -687,6 +715,7 @@ typedef struct mirisdr_list_entry {
 typedef struct mirisdr_list_status {
     uint8_t running, waiting, queued, bank, pps_paused, spi_timeout, entry;
     uint16_t passes;
+    uint32_t reserved[MIRISDR_RESERVED];
 } mirisdr_list_status_t;
 
 MIRISDR_API int mirisdr_load_list (mirisdr_dev_t *p, int bank, int flags, const mirisdr_list_entry_t *e, int n); /* extra */
@@ -735,6 +764,7 @@ typedef struct mirisdr_scan_hop
 	uint16_t pre_entries;    /* entries before its register 2 */
 	uint16_t pre_words;      /* of which tuner words, ~5.6 us each */
 	mirisdr_tune_result_t res;
+	uint32_t reserved[MIRISDR_RESERVED];
 } mirisdr_scan_hop_t;
 
 #define MIRISDR_SCAN_MISSED     0x01    /* packets were lost since the hop before */
@@ -762,6 +792,7 @@ typedef struct mirisdr_scan_status
 	uint32_t pass;           /* of the chunk last loaded */
 	uint32_t loaded;         /* chunks loaded */
 	uint32_t restarts;       /* amount of underflows */
+	uint32_t reserved[MIRISDR_RESERVED];
 } mirisdr_scan_status_t;
 
 /* Tune cfg with nothing held, read back what the tuner found and fill cfg->override

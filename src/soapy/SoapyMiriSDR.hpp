@@ -141,7 +141,8 @@ private:
     std::string ifMode;     /* "auto": zero IF from rateMin up, a low IF below; or a fixed one */
     int converters;         /* MIRISDR_IQ_BOTH, _ONLY_I or _ONLY_Q */
     bool baseband;          /* the band at 0 Hz in complex float, whatever the IF */
-    uint32_t wantRate, wantBw;  /* as asked, wantBw 0 for the widest */
+    uint32_t wantRate, wantBw;  /* as asked, wantBw 0 for the library's choice */
+    uint32_t argBw;             /* the device string's bandwidth, what 0 falls back to */
 
     /* ranges found at open */
     double freqMin, freqMax, rateMin, rateMax;
@@ -169,6 +170,7 @@ private:
     void applyTune(const mirisdr_tune_config_t &cfg);
     StageRanges stageRanges(void) const;
     std::vector<uint32_t> bandwidthsFor(uint32_t ifHz) const;
+    uint32_t pickBandwidth(uint32_t ifHz) const;
     void probeRanges(void);
     long long indexToNs(uint64_t index, uint32_t rate) const;
 };

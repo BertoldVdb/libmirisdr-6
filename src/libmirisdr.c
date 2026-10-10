@@ -55,6 +55,16 @@ static void mirisdr_refuse (mirisdr_dev_t *p, const char *fmt, ...)
     va_end(ap);
 }
 
+/* A config with its reserved part set was written for a newer libmirisdr */
+static int mirisdr_reserved_set (const uint32_t *r, size_t n)
+{
+    while (n--) if (*r++) return 1;
+    return 0;
+}
+
+#define MIRISDR_RESERVED_SET(s) mirisdr_reserved_set((s).reserved, sizeof (s).reserved / sizeof (s).reserved[0])
+#define MIRISDR_RESERVED_MSG    "%s sets fields this libmirisdr does not have: the program needs a newer one\n"
+
 #include "reg.c"
 #include "debug.c"
 #include "gpio.c"

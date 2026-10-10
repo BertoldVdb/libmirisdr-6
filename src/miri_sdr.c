@@ -417,7 +417,7 @@ int main(int argc, char **argv)
 		fprintf(stderr, "Failed to tune.\n");
 		exit(1);
 	}
-	fprintf(stderr, "Tuned to %u Hz (LO %u Hz), bandwidth %u Hz.\n", frequency, tr.lo, tr.bandwidth);
+	fprintf(stderr, "Tuned to %u Hz (LO %u Hz).\n", frequency, tr.lo);
 	fprintf(stderr, "Tuner gain %d dB: LNA %s, mixer %s, mixbuffer %d dB, baseband %d dB.\n", tr.gain.total,
 	        tr.gain.lna ? "on" : "off", tr.gain.mixer ? "on" : "off", tr.gain.mixbuffer, tr.gain.baseband);
 
@@ -444,8 +444,10 @@ int main(int argc, char **argv)
 	}
 	samp_rate = sr.rate;
 	fprintf(stderr, "Sample rate is set to %u Hz.\n", samp_rate);
+	/* the filter the library picks follows the rate */
+	mirisdr_get_tune(dev, 0, NULL, &tr);
+	fprintf(stderr, "Tuner filter is %u Hz.\n", tr.bandwidth);
 	if (baseband) {
-		mirisdr_get_tune(dev, 0, NULL, &tr);
 		fprintf(stderr, "Baseband, complex float: %s, converters at %u Hz, LO %u Hz.\n",
 		        sr.baseband == MIRISDR_BASEBAND_REAL ? "one converter" :
 		        sr.baseband == MIRISDR_BASEBAND_COMPLEX ? "both converters" : "zero IF",

@@ -92,7 +92,7 @@ static int mirisdr_ee_begin (mirisdr_dev_t *p)
     if (!p || !p->dh) return -1;
 
     /* the tuner is programmed over this same port */
-    if (p->async_status != MIRISDR_ASYNC_INACTIVE) return -1;
+    if (mirisdr_async_get(p) != MIRISDR_ASYNC_INACTIVE) return -1;
 
     /* set GPIO for EEPROM access */
     if (mirisdr_write_reg(p, 0x08, (p->hw_flavour == MIRISDR_HW_RSP1B) ? 0x00AA80 : 0x002280) < 0) return -1;

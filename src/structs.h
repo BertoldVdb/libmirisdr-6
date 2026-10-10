@@ -25,6 +25,15 @@ typedef struct mirisdr_device {
     int                 flavour;        /* mirisdr_hw_flavour_t picked by MIRISDR_HW_AUTO */
 } mirisdr_device_t;
 
+enum {
+    MIRISDR_ASYNC_INACTIVE = 0,
+    MIRISDR_ASYNC_CANCELING,
+    MIRISDR_ASYNC_RUNNING,
+    MIRISDR_ASYNC_PAUSED,
+    MIRISDR_ASYNC_FAILED,
+    MIRISDR_ASYNC_STARTING      /* read_async entered, the transfers not yet running */
+};
+
 struct mirisdr_dev {
     libusb_context      *ctx;
     struct libusb_device_handle *dh;
@@ -97,16 +106,9 @@ struct mirisdr_dev {
     } transfer;
     uint8_t             alt_setting;    /* the one streaming actually selects */
 
-    /* async */
-    enum {
-        MIRISDR_ASYNC_INACTIVE = 0,
-        MIRISDR_ASYNC_CANCELING,
-        MIRISDR_ASYNC_RUNNING,
-        MIRISDR_ASYNC_PAUSED,
-        MIRISDR_ASYNC_FAILED
-    } async_status;
-    volatile int        async_starting; /* read_async entered, transfers not yet running */
-    volatile int        cancel_pending; /* a cancel came while starting */
+    /* async: MIRISDR_ASYNC_*, changed from more than one thread, so only through
+       mirisdr_async_get(), _set() and _move() below */
+    int                 async_status;
     int                 checking;       /* in a *_check(): refusals are not printed */
 
     /* the down-converter in front of the callback (baseband.c): NULL without baseband */
@@ -268,3 +270,33 @@ struct mirisdr_dev {
     int                 dc_period;  // refresh period
 };
 
+/* A change of the stream state that depends on the state it leaves is one compare
+   and swap, so a cancel cannot land between the check and the change */
+#if defined(_MSC_VER)
+#include <intrin.h>
+static int mirisdr_async_get (mirisdr_dev_t *p)
+{
+    return (int) _InterlockedCompareExchange((volatile long *) &p->async_status, 0, 0);
+}
+static void mirisdr_async_set (mirisdr_dev_t *p, int s)
+{
+    _InterlockedExchange((volatile long *) &p->async_status, s);
+}
+static int mirisdr_async_move (mirisdr_dev_t *p, int from, int to)
+{
+    return _InterlockedCompareExchange((volatile long *) &p->async_status, to, from) == from;
+}
+#else
+static int mirisdr_async_get (mirisdr_dev_t *p)
+{
+    return __atomic_load_n(&p->async_status, __ATOMIC_SEQ_CST);
+}
+static void mirisdr_async_set (mirisdr_dev_t *p, int s)
+{
+    __atomic_store_n(&p->async_status, s, __ATOMIC_SEQ_CST);
+}
+static int mirisdr_async_move (mirisdr_dev_t *p, int from, int to)
+{
+    return __atomic_compare_exchange_n(&p->async_status, &from, to, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+}
+#endif

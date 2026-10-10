@@ -394,9 +394,42 @@ static const uint16_t mirisdr_if_bws[] = {
 static const uint8_t mirisdr_if_bw_widest[] = { MIRISDR_BW_8MHZ, MIRISDR_BW_600KHZ,
                                                 MIRISDR_BW_1536KHZ, MIRISDR_BW_1536KHZ };
 
+/* The rate the stream runs at after a tune to zero IF. One that follows the tune
+   may change it there, a baseband one from its low IF rate. Without a stream yet
+   (the null device), the rate a device opens with */
+static uint32_t mirisdr_zero_if_rate (mirisdr_dev_t *p)
+{
+    mirisdr_stream_plan_t spl;
+    uint32_t rate = p->rate ? p->rate : DEFAULT_RATE;
+    int checking = p->checking, r;
+
+    if ((p->if_freq == MIRISDR_IF_ZERO) || !(p->stream.follow_tune || p->stream.baseband)) return rate;
+
+    p->checking = 1;
+    r = mirisdr_stream_plan(p, &p->stream, MIRISDR_STREAM_ADJUST, MIRISDR_IQ_BOTH, 0, &spl);
+    p->checking = checking;
+
+    return (r < 0) ? rate : spl.rate;
+}
+
+/* Bandwidth 0: at zero IF the narrowest filter as wide as the rate, which passes the
+   whole stream and keeps out what the converter would only have to filter away. 8 MHz
+   at most, as the wider setting has no filter. A low IF filters in software, so its
+   widest */
+static int mirisdr_bw_auto (int ifm, uint32_t rate)
+{
+    int b = MIRISDR_BW_1536KHZ;
+
+    if (ifm != MIRISDR_IF_ZERO) return mirisdr_if_bw_widest[ifm];
+
+    while ((b < MIRISDR_BW_8MHZ) && (mirisdr_bw_hz[b] < rate)) b++;
+
+    return b;
+}
+
 typedef struct mirisdr_tune_plan
 {
-    mirisdr_tune_config_t cfg;  /* as asked, the bandwidth filled in */
+    mirisdr_tune_config_t cfg;  /* as asked, bandwidth 0 kept */
     int ifm, bw, iq;
     uint32_t lo, ovr13, ovr14;
     mirisdr_tune_words_t w;
@@ -411,13 +444,20 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
 
     pl->cfg = *c;
 
+    if (MIRISDR_RESERVED_SET(*c) || MIRISDR_RESERVED_SET(c->gain) || MIRISDR_RESERVED_SET(c->frontend) ||
+        MIRISDR_RESERVED_SET(c->override))
+    {
+        mirisdr_refuse(p, MIRISDR_RESERVED_MSG, "the tune config");
+        return -1;
+    }
+
     if ((pl->ifm = mirisdr_if_mode(c->if_freq)) < 0)
     {
         mirisdr_refuse(p, "unsupported if frequency: %u Hz\n", c->if_freq);
         return -1;
     }
 
-    if (!c->bandwidth) pl->bw = mirisdr_if_bw_widest[pl->ifm];
+    if (!c->bandwidth) pl->bw = mirisdr_bw_auto(pl->ifm, (pl->ifm == MIRISDR_IF_ZERO) ? mirisdr_zero_if_rate(p) : 0);
     else
     {
         for (i = 0; (i < (int) (sizeof mirisdr_bw_hz / sizeof mirisdr_bw_hz[0])) &&
@@ -432,11 +472,9 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
         pl->bw = i;
     }
 
-    pl->cfg.bandwidth = mirisdr_bw_hz[pl->bw];
-
     if (!adjust && !(mirisdr_if_bws[pl->ifm] & (1 << pl->bw)))
     {
-        mirisdr_refuse(p, "a %u Hz bandwidth is not available with a %u Hz IF\n", pl->cfg.bandwidth, c->if_freq);
+        mirisdr_refuse(p, "a %u Hz bandwidth is not available with a %u Hz IF\n", mirisdr_bw_hz[pl->bw], c->if_freq);
         return -1;
     }
 
@@ -481,6 +519,13 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
         return -1;
     }
 
+    if ((c->frontend.notch & ~(MIRISDR_NOTCH_FM | MIRISDR_NOTCH_DAB | MIRISDR_NOTCH_MW)) ||
+        (c->frontend.notch && (p->hw_flavour != MIRISDR_HW_RSP1B)))
+    {
+        mirisdr_refuse(p, "unsupported notch 0x%x: the notches are on the RSP1B only\n", c->frontend.notch);
+        return -1;
+    }
+
     if ((c->gain.mode < MIRISDR_GAIN_KEEP) || (c->gain.mode > MIRISDR_GAIN_STAGES) ||
         ((c->gain.mode == MIRISDR_GAIN_TOTAL) && (c->gain.total < 0)))
     {
@@ -520,12 +565,20 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
 }
 
 /* Where the received frequency lands, given what the stream captures */
+/* The notches a request turns on: the RSP1B's FM and MW share a switch */
+static int mirisdr_notch_in_force (int notch)
+{
+    if (notch & (MIRISDR_NOTCH_FM | MIRISDR_NOTCH_MW)) notch |= MIRISDR_NOTCH_FM | MIRISDR_NOTCH_MW;
+    return notch;
+}
+
 static void mirisdr_tune_result_of (int adc, uint32_t rx, uint32_t lo, int iq, uint32_t bw,
                                     mirisdr_band_t band, const mirisdr_gr_t *gr, mirisdr_tune_result_t *res)
 {
     int64_t off = (int64_t) rx - lo;
     int real = (iq != MIRISDR_IQ_BOTH) || (adc != MIRISDR_IQ_BOTH);
 
+    memset(res, 0, sizeof *res);
     res->lo = lo;
     res->iq = iq;
     res->bandwidth = bw;
@@ -582,6 +635,10 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
     p->tuner_ovr13 = pl.ovr13;
     p->tuner_ovr14 = pl.ovr14;
 
+    /* the expander (RSP1B) and register 8 go out with the tune, these included */
+    p->bias = c->frontend.bias ? 1 : 0;
+    p->notch = c->frontend.notch;
+
     r = mirisdr_lna_calibrate(p, pl.w.row, c->frequency, pl.ifm, pl.bw, pl.iq);
     r += mirisdr_tune_send(p, &pl.w);
 
@@ -622,8 +679,10 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
 
         mirisdr_gr_get(p, &gr);
         mirisdr_tune_result_of(mirisdr_stream_adc(p), c->frequency, p->tune_lo, p->tune_iq,
-                               pl.cfg.bandwidth, p->band, &gr, res);
+                               mirisdr_bw_hz[pl.bw], p->band, &gr, res);
         mirisdr_tune_result_bb(p->bb_path, mirisdr_if_hz[pl.ifm], c->frequency, p->tune_lo, res);
+        res->frontend.bias = p->bias;
+        res->frontend.notch = mirisdr_notch_in_force(p->notch);
     }
 
     return r;
@@ -641,7 +700,7 @@ static void mirisdr_tuner_defaults (mirisdr_dev_t *p)
     p->gain_reduction_mixer = 0;
     p->gain_reduction_baseband = 43;
     p->if_freq = MIRISDR_IF_ZERO;
-    p->bandwidth = MIRISDR_BW_8MHZ;
+    p->bandwidth = mirisdr_bw_auto(MIRISDR_IF_ZERO, DEFAULT_RATE);    /* as the first tune picks it */
     p->xtal = MIRISDR_XTAL_24M;
     p->bias = 0;
     p->dc_mode = MIRISDR_DC_PERIODIC2;
@@ -691,8 +750,10 @@ int mirisdr_tune_check (mirisdr_dev_t *p, int tuner, const mirisdr_tune_config_t
                  MIRISDR_BASEBAND_REAL;
 
         mirisdr_tune_result_of(mirisdr_tune_adc(p, pl.iq), cfg->frequency, pl.w.lo_real, pl.iq,
-                               pl.cfg.bandwidth, pl.w.band, &pl.gr, res);
+                               mirisdr_bw_hz[pl.bw], pl.w.band, &pl.gr, res);
         mirisdr_tune_result_bb(bb, mirisdr_if_hz[pl.ifm], cfg->frequency, pl.w.lo_real, res);
+        res->frontend.bias = cfg->frontend.bias ? 1 : 0;
+        res->frontend.notch = mirisdr_notch_in_force(cfg->frontend.notch);
     }
 
     return 0;
@@ -708,8 +769,10 @@ int mirisdr_get_tune (mirisdr_dev_t *p, int tuner, mirisdr_tune_config_t *cfg, m
     if (cfg) *cfg = p->tune;
     if (res) {
         mirisdr_tune_result_of(mirisdr_stream_adc(p), p->tune.frequency, p->tune_lo, p->tune_iq,
-                               p->tune.bandwidth, p->band, &gr, res);
+                               mirisdr_bw_hz[p->bandwidth], p->band, &gr, res);
         mirisdr_tune_result_bb(p->bb_path, mirisdr_if_hz[p->if_freq], p->tune.frequency, p->tune_lo, res);
+        res->frontend.bias = p->bias;
+        res->frontend.notch = mirisdr_notch_in_force(p->notch);
     }
 
     return 0;
@@ -911,24 +974,25 @@ mirisdr_band_t mirisdr_get_band (mirisdr_dev_t *p)
     return p->band;
 }
 
+/* The tune in force with its frontend changed */
 int mirisdr_set_bias (mirisdr_dev_t *p, int bias)
 {
-	p->bias=bias;
+	mirisdr_tune_config_t c;
 
-	/* the RSP1B's is on its expander, which the band plan writes */
-	if (p->hw_flavour == MIRISDR_HW_RSP1B) return mirisdr_set_soft(p);
-
-	update_reg_8(p);
-	return 0;
+	if (!p) return -1;
+	c = p->tune;
+	c.frontend.bias = bias ? 1 : 0;
+	return mirisdr_tune_apply(p, &c, MIRISDR_TUNE_ADJUST, NULL);
 }
 
 int mirisdr_set_notch (mirisdr_dev_t *p, int notches)
 {
-	if (!p || (p->hw_flavour != MIRISDR_HW_RSP1B)) return -1;
-	if (notches & ~(MIRISDR_NOTCH_FM | MIRISDR_NOTCH_DAB)) return -1;
+	mirisdr_tune_config_t c;
 
-	p->notch = notches;
-	return mirisdr_set_soft(p);
+	if (!p) return -1;
+	c = p->tune;
+	c.frontend.notch = notches;
+	return mirisdr_tune_apply(p, &c, MIRISDR_TUNE_ADJUST, NULL);
 }
 
 int mirisdr_get_notch (mirisdr_dev_t *p)

@@ -23,7 +23,7 @@ Other modules also drive these receivers. These are the Debian package `soapysdr
   - Sample rates from 1.3 Msps at zero IF. The highest rate depends on the USB transfer. Isochronous mode reaches 12 Msps. Bulk mode reaches about 27 Msps, with 8-bit samples above 15.75 Msps, but the computer then has to keep up with up to 55 MB/s. If it cannot, samples go missing, and a lower rate or isochronous mode is the answer. Above 14.5 Msps the receiver's own filter is bypassed, so the program has to filter.
   - Lower rates, down to about 28 ksps, through a low IF. The receiver tunes a low IF and the library shifts the band back to the centre in software, then filters it down to the rate. The rates come from a list: 900, 450, 225 ksps and lower from the 450 kHz IF, 810, 405 ksps and lower from 1620 kHz, and 1024, 512, 256 ksps and lower from 2048 kHz. A rate that is not on the list gives the nearest one.
   - Gain as one total, which the library splits over the stages the way it works best. The stages can also be set one by one: `LNA`, `MIX`, `MIXBUF` (only on the AM inputs) and `BB`. Their ranges follow the band you are tuned to.
-  - Bandwidths are the tuner's filters. A request picks the narrowest filter that is at least as wide.
+  - Bandwidths are the tuner's filters. A request picks the narrowest filter that is at least as wide. With none asked for, zero IF takes the narrowest filter as wide as the sample rate, up to 8 MHz. For programs without a bandwidth field, such as GQRX, the device string takes `bandwidth=` in Hz.
   - Time stamps on every read, counted in samples from the start of the stream.
   - Samples lost on the USB are replaced with zeros when `baseband` or `gap_fill` is on, which keeps the timing of the stream. This covers gaps of up to 16 USB packets, which is 2 ms at 2 Msps and less at higher rates. A longer gap, or any gap with both settings off, is reported as an overflow at the place where samples are missing. The next read's time stamp shows how many. An overflow is also reported when the program reads too slowly and the module's buffers run full.
 
@@ -36,7 +36,7 @@ Other modules also drive these receivers. These are the Debian package `soapysdr
   - `transfer`: BULK, ISOC, ISOC1 or ISOC2.
   - `decimation_bypass`: AUTO, ON or OFF.
   - `gap_fill`: put zeros where samples were lost, so the timing of the stream stays right. It covers gaps of up to 16 USB packets. `baseband` always does this, because its filters need the timing.
-  - On the RSP1B: `biastee`, `fm_notch` (FM and MW) and `dab_notch`.
+  - On the RSP1B: `biastee`, `fm_notch`, `mw_notch` and `dab_notch`. The FM and MW notches are one switch on this board, so either turns both on.
 
 A setting the receiver cannot do is refused and logged, and the receiver keeps what it had.
 

@@ -72,7 +72,7 @@ static int mirisdr_rsp1b_frontend (mirisdr_dev_t *p, uint16_t word)
 
     if (!w) return 0;
 
-    if (p->notch & MIRISDR_NOTCH_FM) w &= (uint16_t) ~RSP1B_A4;
+    if (p->notch & (MIRISDR_NOTCH_FM | MIRISDR_NOTCH_MW)) w &= (uint16_t) ~RSP1B_A4;
     if (p->notch & MIRISDR_NOTCH_DAB) w &= (uint16_t) ~RSP1B_A6;
 
     if (p->bias) w &= (uint16_t) ~RSP1B_A1;
