@@ -280,6 +280,10 @@ typedef struct mirisdr_stream_result
 	int         baseband;           /* MIRISDR_BASEBAND_*: baseband output type */
 	uint32_t    adc_rate;           /* the converters' samples per second */
 	uint32_t    decimation;         /* converter samples per output sample, 1 without baseband */
+	uint32_t    group_delay;        /* the baseband filters' delay in converter samples: output
+	                                   sample m is centred on converter sample
+	                                   m x decimation - group_delay (the count the stream stats,
+	                                   events, PPS and scan reports use). 0 without filters */
 	uint32_t reserved[MIRISDR_RESERVED];
 } mirisdr_stream_result_t;
 

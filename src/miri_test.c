@@ -4140,6 +4140,85 @@ static tres_t t_bb_timing (void)
     return bad ? T_FAIL : T_PASS;
 }
 
+/* A tone burst at -IF + delta under a Gaussian envelope centred on converter sample
+   n0 (sigma converter samples wide), blocks as bb_gen's */
+static uint8_t *bb_gen_pulse (int real, double fs, double ifhz, double delta, double n0, double sigma,
+                              int blocks, uint32_t *len)
+{
+    int spb = real ? 504 : 252, k, i;
+    uint8_t *data = calloc((size_t) blocks, 1024);
+    uint64_t idx = 0;
+
+    for (k = 0; k < blocks; k++) {
+        uint8_t *h = data + 1024 * k;
+        h[0] = (uint8_t) idx; h[1] = (uint8_t) (idx >> 8); h[2] = (uint8_t) (idx >> 16); h[3] = (uint8_t) (idx >> 24);
+        memcpy(h + 8, "BVDB", 4);
+        for (i = 0; i < spb; i++) {
+            double n = (double) (idx + (uint64_t) i), e = (n - n0) / sigma;
+            double a = 0.5 * exp(-0.5 * e * e), p = 2 * M_PI * (-ifhz + delta) * n / fs;
+
+            if (real) bb_put14(h + 16 + 2 * i, a * cos(p));
+            else {
+                bb_put14(h + 16 + 4 * i, a * cos(p));
+                bb_put14(h + 18 + 4 * i, a * sin(p));
+            }
+        }
+        idx += (uint64_t) spb;
+    }
+    *len = (uint32_t) blocks * 1024;
+    return data;
+}
+
+/* The group delay the stream result reports, against where a burst's envelope comes
+   out: output m is to be centred on converter sample m x decimation - group_delay */
+static tres_t t_bb_delay (void)
+{
+    static const struct { uint32_t ifhz; int real; uint32_t rate; } cases[] = {
+        { 450000, 0, 900000 }, { 450000, 0, 450000 }, { 450000, 0, 225000 }, { 450000, 0, 56250 },
+        { 2048000, 0, 2048000 }, { 2048000, 0, 256000 },
+        { 450000, 1, 900000 }, { 450000, 1, 225000 }, { 2048000, 1, 2048000 }, { 2048000, 1, 128000 } };
+    mirisdr_stream_result_t sr;
+    unsigned i;
+    int bad = 0;
+    double worst = 0;
+
+    for (i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        uint32_t len;
+        uint8_t *data;
+        size_t m, n;
+        int spb = cases[i].real ? 504 : 252, blocks;
+        double fs = 4.0 * cases[i].ifhz, sum = 0, msum = 0, n0, sigma, got, err;
+
+        if (bb_open(cases[i].real, cases[i].ifhz, cases[i].rate, &sr) < 0) { say("case %u: no stream", i); return T_FAIL; }
+        /* 8 output samples wide, in the middle of 200 of them each side */
+        sigma = 8.0 * sr.decimation;
+        n0 = 200.5 * sr.decimation + 0.37 * sr.decimation;
+        blocks = (int) ((400.0 * sr.decimation + 2 * sr.group_delay) / spb) + 2;
+        data = bb_gen_pulse(cases[i].real, fs, cases[i].ifhz, 0.1 * sr.rate, n0, sigma, blocks, &len);
+        bb_feed(data, len, 0);
+        free(data);
+        mirisdr_close(bbo.d);
+
+        n = bbo.n / 2;
+        for (m = 0; m < n; m++) {
+            double p = (double) bbo.x[2 * m] * bbo.x[2 * m] + (double) bbo.x[2 * m + 1] * bbo.x[2 * m + 1];
+            sum += p;
+            msum += p * (double) m;
+        }
+        got = sum > 0 ? msum / sum * sr.decimation - n0 : -1e9;
+        err = got - sr.group_delay;
+        note("IF %u, %s output, %u sps, decimation %u: group delay %u, the burst %.2f converter samples late",
+             cases[i].ifhz, cases[i].real ? "one" : "both", sr.rate, sr.decimation, sr.group_delay, got);
+        if (fabs(err) > 0.25 || bbo.bad_info)
+        { say("IF %u %s %u: reported %u, measured %.2f", cases[i].ifhz, cases[i].real ? "one" : "both",
+              sr.rate, sr.group_delay, got); bad++; }
+        if (fabs(err) > worst) worst = fabs(err);
+    }
+
+    if (!bad) say("10 paths, decimation 2 to 64: each burst where the reported group delay puts it, within %.3f converter samples", worst);
+    return bad ? T_FAIL : T_PASS;
+}
+
 /* how fast each path runs here, against what it has to keep up with */
 static tres_t t_bb_speed (void)
 {
@@ -4617,6 +4696,7 @@ static const struct {
     { "baseband", "rates, IF moves and the LO",  t_bb_plan             },
     { "baseband", "tone, mirror and image",     t_bb_tone             },
     { "baseband", "counts, buffers and gaps",   t_bb_timing           },
+    { "baseband", "the filters' group delay",   t_bb_delay            },
     { "baseband", "speed against real time",    t_bb_speed            },
 
     { "regress",  "open config refusals",       t_reg_open            },

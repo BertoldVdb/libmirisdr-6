@@ -360,11 +360,12 @@ A tune that changes the IF while the stream runs moves the rate to the nearest o
   - `rate`: the output rate the callback gets.
   - `adc_rate`: the converters' rate.
   - `decimation`: converter samples per output sample.
+  - `group_delay`: the filters' delay in converter samples. Output sample m is centred on converter sample m × `decimation` − `group_delay`, so a time stamp counted in converter samples, such as a PPS, is output sample (sample + `group_delay`) / `decimation`. 0 at zero IF.
 
 <h4>Things to know</h4>
 
   - The LO moves one IF above `frequency` when the stream starts. Set `low_if_auto` in the tune and it is there from the start, and the tune result shows the right LO.
-  - Buffer information counts output samples. Gaps are placed to within the filters' delay. Stream statistics, stream events, PPS and scan reports still count converter samples. Divide by `decimation` to compare.
+  - Buffer information counts output samples. Gaps are placed to within the filters' delay. Stream statistics, stream events, PPS and scan reports still count converter samples. Add `group_delay` and divide by `decimation` to compare.
   - Gap fill is always on, because the filters need the timing. A gap longer than gap fill covers still makes the time line jump.
   - `swap_iq` still mirrors the spectrum.
   - A buffer length given to `mirisdr_read_async()` is in output bytes, 8 bytes for each complex sample.

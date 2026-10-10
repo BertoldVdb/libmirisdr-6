@@ -479,6 +479,7 @@ static void mirisdr_stream_result_of (uint32_t rate, int format, int swap, int d
 	res->adc_rate = rate;
 	res->baseband = bb_path;
 	res->decimation = (bb_path && bb_rate) ? rate / bb_rate : 1;
+	res->group_delay = mirisdr_bb_delay(bb_path, res->decimation);
 	res->format = mirisdr_format_name(format);
 	res->adc = !mirisdr_format_real(format) ? MIRISDR_IQ_BOTH : swap ? MIRISDR_IQ_ONLY_Q : MIRISDR_IQ_ONLY_I;
 	res->decimation_bypassed = decim;

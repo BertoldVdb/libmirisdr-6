@@ -78,6 +78,22 @@ static int mirisdr_hb_size (mirisdr_hb_t *h, int cap)
     return 0;
 }
 
+/* The filters' delay in converter samples. A half-band stage's output m is centred on its
+   input 2m - C, C its kernel's half-length, and the real to I/Q converter of the one
+   output path is one more such halving, its output pair m on real samples 2m - C. With
+   the long kernel last, S halvings put output m on converter sample 2^S m - D, D the sum
+   of C 2^i over them from the first */
+static uint32_t mirisdr_bb_delay (int path, uint32_t decim)
+{
+    uint32_t d = 0, w = 1;
+
+    if (path != MIRISDR_BASEBAND_COMPLEX && path != MIRISDR_BASEBAND_REAL) return 0;
+    for (; w < decim; w <<= 1)
+        d += w * (uint32_t) (((w << 1) < decim ? MIRISDR_HB_SHORT_LEN : MIRISDR_HB_KERNEL_LEN) / 2);
+
+    return d;
+}
+
 static int mirisdr_hb_init (mirisdr_hb_t *h, int cap, int last)
 {
     h->k = last ? mirisdr_hb_kernel : mirisdr_hb_short;
