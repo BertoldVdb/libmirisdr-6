@@ -742,7 +742,7 @@ static void mirisdr_tuner_defaults (mirisdr_dev_t *p)
 }
 
 /* the stored tune again, for what changes the front end or the stream's view of it */
-int mirisdr_set_soft(mirisdr_dev_t *p)
+static int mirisdr_set_soft(mirisdr_dev_t *p)
 {
     return mirisdr_tune_apply(p, &p->tune, MIRISDR_TUNE_ADJUST, NULL);
 }

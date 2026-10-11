@@ -33,7 +33,7 @@ failed:
     return -1;
 }
 
-int mirisdr_adc_stop (mirisdr_dev_t *p) {
+static int mirisdr_adc_stop (mirisdr_dev_t *p) {
     if (!p) goto failed;
 
     /* uspíme USB IF a ADC */

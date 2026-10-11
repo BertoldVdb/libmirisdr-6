@@ -47,11 +47,9 @@ typedef struct {
 	float *delay_line;
 } iqconverter_float_t;
 
-iqconverter_float_t *iqconverter_float_create(const float *hb_kernel, int len);
-void iqconverter_float_free(iqconverter_float_t *cnv);
-void iqconverter_float_reset(iqconverter_float_t *cnv);
-void iqconverter_float_process(iqconverter_float_t *cnv, float *samples, int len);
-void iqconverter_float_process_first(iqconverter_float_t *cnv, float *samples, int len);
-void iqconverter_float_process_second(iqconverter_float_t *cnv, float *samples, int len);
+static iqconverter_float_t *iqconverter_float_create(const float *hb_kernel, int len);
+static void iqconverter_float_free(iqconverter_float_t *cnv);
+static void iqconverter_float_reset(iqconverter_float_t *cnv);
+static void iqconverter_float_process(iqconverter_float_t *cnv, float *samples, int len);
 
 #endif // IQCONVERTER_FLOAT_H

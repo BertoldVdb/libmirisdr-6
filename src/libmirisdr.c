@@ -77,6 +77,7 @@ static int mirisdr_reserved_set (const uint32_t *r, size_t n)
 #include "events.c"
 #include "adc.c"
 #include "convert/base.c"
+#include "iqconverter_float.c"
 #include "baseband.c"
 #include "async.c"
 #include "devices.c"
@@ -90,7 +91,7 @@ static int mirisdr_reserved_set (const uint32_t *r, size_t n)
 #include "sync.c"
 #include "null.c"
 
-int mirisdr_setup (mirisdr_dev_t **out_dev, mirisdr_dev_t *dev) {
+static int mirisdr_setup (mirisdr_dev_t **out_dev, mirisdr_dev_t *dev) {
     int r;
 
     mirisdr_xfer_lock_init(dev);

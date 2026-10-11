@@ -52,7 +52,7 @@ static int update_reg_8 (mirisdr_dev_t *p)
     return (mirisdr_write_reg(p, 0x08, val) < 0) ? -1 : 0;
 }
 
-void mirisdr_gpio_hold_input (mirisdr_dev_t *p, uint8_t mask)
+static void mirisdr_gpio_hold_input (mirisdr_dev_t *p, uint8_t mask)
 {
     if (!p || !mask) return;
 

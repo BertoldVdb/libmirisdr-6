@@ -53,7 +53,7 @@ THE SOFTWARE.
   #endif
   #define _inline inline
   #define _aligned_free(mem) free(mem)
-void *_aligned_malloc(size_t size, size_t alignment)
+static void *_aligned_malloc(size_t size, size_t alignment)
 {
     void *result;
     if (posix_memalign(&result, alignment, size) == 0)
@@ -98,7 +98,7 @@ static _inline void store4(float *p, v4sf v) { memcpy(p, &v, sizeof(v)); }
 	#define ALIGNED
 #endif
 
-iqconverter_float_t *iqconverter_float_create(const float *hb_kernel, int len)
+static iqconverter_float_t *iqconverter_float_create(const float *hb_kernel, int len)
 {
 	int i, j;
 	size_t buffer_size;
@@ -141,7 +141,7 @@ iqconverter_float_t *iqconverter_float_create(const float *hb_kernel, int len)
 	return cnv;
 }
 
-void iqconverter_float_free(iqconverter_float_t *cnv)
+static void iqconverter_float_free(iqconverter_float_t *cnv)
 {
 	if (cnv == NULL)
 	{
@@ -156,7 +156,7 @@ void iqconverter_float_free(iqconverter_float_t *cnv)
 	_aligned_free(cnv);
 }
 
-void iqconverter_float_reset(iqconverter_float_t *cnv)
+static void iqconverter_float_reset(iqconverter_float_t *cnv)
 {
 	cnv->avg = 0.0f;
 	cnv->phase = 0;
@@ -374,19 +374,7 @@ static void remove_dc_translate_fs_4(iqconverter_float_t *cnv, float *samples, i
 	cnv->phase = (ph + (len & 3)) & 3;
 }
 
-/* The two halves of iqconverter_float_process(), for running them on two threads: they use
-   separate parts of the state */
-void iqconverter_float_process_first(iqconverter_float_t *cnv, float *samples, int len)
-{
-	remove_dc_translate_fs_4(cnv, samples, len);
-}
-
-void iqconverter_float_process_second(iqconverter_float_t *cnv, float *samples, int len)
-{
-	fir_delay_interleaved(cnv, samples, len);
-}
-
-void iqconverter_float_process(iqconverter_float_t *cnv, float *samples, int len)
+static void iqconverter_float_process(iqconverter_float_t *cnv, float *samples, int len)
 {
 	remove_dc_translate_fs_4(cnv, samples, len);
 	fir_delay_interleaved(cnv, samples, len);

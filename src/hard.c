@@ -225,7 +225,7 @@ typedef struct mirisdr_stream_plan
 	uint32_t bb_rate;               /* what the callback gets a second */
 } mirisdr_stream_plan_t;
 
-int mirisdr_set_soft (mirisdr_dev_t *p);
+static int mirisdr_set_soft (mirisdr_dev_t *p);
 static int mirisdr_bw_auto (int ifm, uint32_t rate);
 
 /* Baseband with a low IF: the ADC at 4 x IF, the output that rate (both outputs)
@@ -658,7 +658,7 @@ static int mirisdr_stream_apply (mirisdr_dev_t *p, const mirisdr_stream_config_t
 	return 0;
 }
 
-int mirisdr_set_hard(mirisdr_dev_t *p)
+static int mirisdr_set_hard(mirisdr_dev_t *p)
 {
 	return mirisdr_stream_apply(p, &p->stream, MIRISDR_STREAM_ADJUST | MIRISDR_STREAM_FORCE, NULL);
 }

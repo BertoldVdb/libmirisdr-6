@@ -22,7 +22,6 @@
 ########################################################################
 add_library(mirisdr_shared SHARED
     libmirisdr.c
-    iqconverter_float.c
 )
 
 target_link_libraries(mirisdr_shared
@@ -37,7 +36,6 @@ set_target_properties(mirisdr_shared PROPERTIES VERSION ${LIBVER})
 
 add_library(mirisdr_static STATIC
     libmirisdr.c
-    iqconverter_float.c
 )
 
 if(WIN32)
