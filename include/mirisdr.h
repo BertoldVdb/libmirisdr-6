@@ -294,6 +294,7 @@ typedef struct mirisdr_stream_result
 	                                   sample m is centred on converter sample
 	                                   m x decimation - group_delay (the count the stream stats,
 	                                   events, PPS and scan reports use). 0 without filters */
+	int         gap_fill;           /* in effect: as asked, and always under baseband */
 	uint32_t reserved[MIRISDR_RESERVED];
 } mirisdr_stream_result_t;
 

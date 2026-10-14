@@ -806,7 +806,7 @@ SoapySDR::ArgInfoList SoapyMiriSDR::getSettingInfo(void) const
     a = SoapySDR::ArgInfo();
     a.key = "gap_fill";
     a.name = "Gap fill";
-    a.description = "Put zeros where samples were lost on the USB, so the timing stays right.";
+    a.description = "Put zeros where samples were lost on the USB, so the timing stays right. Always on with baseband, the default.";
     a.type = SoapySDR::ArgInfo::BOOL;
     a.value = "false";
     list.push_back(a);
@@ -933,7 +933,12 @@ std::string SoapyMiriSDR::readSetting(const std::string &key) const
         return c.transfer ? c.transfer : "";
     }
     if (key == "decimation_bypass") return bypassSetting.empty() ? "AUTO" : bypassSetting;
-    if (key == "gap_fill") return streamCfg.gap_fill ? "true" : "false";
+    if (key == "gap_fill")
+    {
+        mirisdr_stream_result_t r;
+        mirisdr_get_stream(dev, NULL, &r);
+        return r.gap_fill ? "true" : "false";
+    }
     if (key == "biastee") return mirisdr_get_bias(dev) > 0 ? "true" : "false";
     if (key == "fm_notch" || key == "mw_notch" || key == "dab_notch")
     {

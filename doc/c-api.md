@@ -275,6 +275,7 @@ The receiver normally samples at twice the rate and filters down. Its clock reac
   - `decimation_bypassed`: whether the bypass is on.
   - `usb_bytes`: bytes per second on the USB.
   - `usb_capacity`: what the automatic choice planned on.
+  - `gap_fill`: whether gap fill is in effect: as set, and always under baseband.
   - `baseband`, `adc_rate` and `decimation`: see the baseband section.
 
 `mirisdr_stream_check()` gives the result without changing anything.

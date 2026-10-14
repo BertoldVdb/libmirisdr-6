@@ -472,7 +472,7 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 }
 
 static void mirisdr_stream_result_of (uint32_t rate, int format, int swap, int decim, uint32_t cap,
-                                      int bb_path, uint32_t bb_rate, mirisdr_stream_result_t *res)
+                                      int bb_path, uint32_t bb_rate, int gap_fill, mirisdr_stream_result_t *res)
 {
 	memset(res, 0, sizeof *res);
 	res->rate = bb_path ? bb_rate : rate;
@@ -480,6 +480,7 @@ static void mirisdr_stream_result_of (uint32_t rate, int format, int swap, int d
 	res->baseband = bb_path;
 	res->decimation = (bb_path && bb_rate) ? rate / bb_rate : 1;
 	res->group_delay = mirisdr_bb_delay(bb_path, res->decimation);
+	res->gap_fill = gap_fill || (bb_path != MIRISDR_BASEBAND_OFF);
 	res->format = mirisdr_format_name(format);
 	res->adc = !mirisdr_format_real(format) ? MIRISDR_IQ_BOTH : swap ? MIRISDR_IQ_ONLY_Q : MIRISDR_IQ_ONLY_I;
 	res->decimation_bypassed = decim;
@@ -653,7 +654,7 @@ static int mirisdr_stream_apply (mirisdr_dev_t *p, const mirisdr_stream_config_t
 	if (moved && (mirisdr_set_soft(p) < 0)) return -1;
 
 	if (res) mirisdr_stream_result_of(p->rate, p->format, p->swap_iq, p->decim_on, pl.cap,
-	                                  p->bb_path, p->bb_rate, res);
+	                                  p->bb_path, p->bb_rate, p->stream.gap_fill, res);
 
 	return 0;
 }
@@ -687,7 +688,8 @@ int mirisdr_stream_check (mirisdr_dev_t *p, const mirisdr_stream_config_t *cfg, 
 	p->checking = 0;
 	if (r < 0) return -1;
 
-	if (res) mirisdr_stream_result_of(pl.rate, pl.format, pl.swap, pl.decim, pl.cap, pl.bb_path, pl.bb_rate, res);
+	if (res) mirisdr_stream_result_of(pl.rate, pl.format, pl.swap, pl.decim, pl.cap, pl.bb_path, pl.bb_rate,
+	                                  pl.cfg.gap_fill, res);
 
 	return 0;
 }
@@ -699,7 +701,7 @@ int mirisdr_get_stream (mirisdr_dev_t *p, mirisdr_stream_config_t *cfg, mirisdr_
 	if (cfg) *cfg = p->stream;
 	if (res) mirisdr_stream_result_of(p->rate, p->format, p->swap_iq, p->decim_on,
 	                                  mirisdr_stream_cap(p->transfer, p->alt_setting, p->stream.usb_capacity),
-	                                  p->bb_path, p->bb_rate, res);
+	                                  p->bb_path, p->bb_rate, p->stream.gap_fill, res);
 
 	return 0;
 }

@@ -172,7 +172,7 @@ Programs show these as device settings. With SoapySDR's API they are `writeSetti
 | `format` | `AUTO`, `252_S16`, `336_S16`, `384_S16`, `504_S16`, `504_S8` | `AUTO` | How samples cross the USB. `AUTO` picks the most bits that fit. |
 | `transfer` | `ISOC`, `ISOC1`, `ISOC2`, `BULK` | `ISOC` on Linux, `BULK` on Windows | The USB transfer type. |
 | `decimation_bypass` | `AUTO`, `ON`, `OFF` | `AUTO` | Skip the receiver's own filter. `AUTO` does this above 14.5 Msps. |
-| `gap_fill` | `true`, `false` | `false` | Put zeros where samples were lost, for gaps of up to 16 USB packets. Always on with `baseband`. |
+| `gap_fill` | `true`, `false` | `false` | Put zeros where samples were lost, for gaps of up to 16 USB packets. Always on with `baseband`, and then read back as `true`. |
 | `biastee` | `true`, `false` | `false` | RSP1B only. Power on the antenna input. |
 | `fm_notch` | `true`, `false` | `false` | RSP1B only. Notch for FM broadcast (85 to 100 MHz). |
 | `mw_notch` | `true`, `false` | `false` | RSP1B only. Notch for medium wave (0.4 to 1.6 MHz). |

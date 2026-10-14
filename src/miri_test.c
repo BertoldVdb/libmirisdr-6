@@ -4589,6 +4589,16 @@ static tres_t t_reg_baseband (void)
     bb_feed_cb(data, len, 0, reg_cb);
     free(data);
     REG_CHECK(rg.gap_filled, "set_gap_fill(0) turned the fill off under baseband");
+    /* and the result says so; raw, it is as asked */
+    mirisdr_get_stream(bbo.d, &sc, &sr);
+    REG_CHECK(sr.gap_fill, "the result reads gap fill off under baseband");
+    sc.baseband = 0;
+    sc.rate = 2048000;
+    for (k = 0; k < 2; k++) {
+        sc.gap_fill = k;
+        REG_CHECK(!mirisdr_stream_check(bbo.d, &sc, &sr) && sr.gap_fill == k,
+                  "raw with gap_fill %d, the result reads %d", k, sr.gap_fill);
+    }
     mirisdr_close(bbo.d);
 
     /* 100 gaps waiting for one big buffer: all counted */

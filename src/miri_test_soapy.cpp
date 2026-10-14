@@ -165,10 +165,14 @@ static int probe(Dev *d, soapy_say_t say, soapy_say_t note)
     d->writeSetting("converters", "both");
     d->writeSetting("if_freq", "auto");
     if (d->getNativeStreamFormat(SOAPY_SDR_RX, 0, full) != SOAPY_SDR_CS16 || full != 32768) { say("raw native not CS16"); bad++; }
+    /* gap fill reads back as it runs: as set when raw, on under baseband */
+    d->writeSetting("gap_fill", "false");
+    if (d->readSetting("gap_fill") != "false") { say("raw gap fill off reads %s", d->readSetting("gap_fill").c_str()); bad++; }
     d->writeSetting("baseband", "true");
+    if (d->readSetting("gap_fill") != "true") { say("baseband gap fill reads %s", d->readSetting("gap_fill").c_str()); bad++; }
     d->setSampleRate(SOAPY_SDR_RX, 0, 2e6);
 
-    if (!bad) say("ranges, gain stages, filters, a low IF below 1.3 Msps, fixed IFs, one converter, raw");
+    if (!bad) say("ranges, gain stages, filters, a low IF below 1.3 Msps, fixed IFs, one converter, raw, gap fill");
     return bad ? SOAPY_T_FAIL : SOAPY_T_PASS;
 }
 
