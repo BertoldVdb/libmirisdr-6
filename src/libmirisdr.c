@@ -16,7 +16,7 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-/* potřebné funkce */
+/* system headers */
 #include <errno.h>
 #include <stdarg.h>
 #include <signal.h>
@@ -36,14 +36,14 @@
 #define LIBUSB_CALL
 #endif
 
-/* hlavní hlavičkový soubor */
+/* the public header */
 #include "mirisdr.h"
 
-/* interní definice */
+/* internal definitions */
 #include "constants.h"
 #include "structs.h"
 
-/* interní funkce - inline */
+/* internal functions, included */
 /* why a stream or tune is refused, unless only checking */
 static void mirisdr_refuse (mirisdr_dev_t *p, const char *fmt, ...)
 {
@@ -131,14 +131,14 @@ static int mirisdr_setup (mirisdr_dev_t **out_dev, mirisdr_dev_t *dev) {
         goto failed;
     }
 
-    /* reset je potřeba, jinak občas zařízení odmítá komunikovat */
+    /* the reset is needed, otherwise the device at times refuses to communicate */
     mirisdr_reset(dev);
 
-    /* ještě je třeba vždy ukončit i streamování, které může být při otevření aktivní */
+    /* and always stop streaming, which can still be running when opening */
     mirisdr_streaming_stop(dev);
     mirisdr_adc_stop(dev);
 
-    /* inicializace tuneru */
+    /* initialise the tuner */
     mirisdr_tuner_defaults(dev);
     dev->rate = DEFAULT_RATE;
     dev->format_auto = MIRISDR_FORMAT_AUTO_ON;
@@ -189,7 +189,7 @@ static int mirisdr_open_raw (mirisdr_dev_t **p, uint32_t index, const char *seri
 
     memset(dev, 0, sizeof(*dev));
 
-    /* ostatní parametry */
+    /* the other parameters */
     dev->index = index;
 
 #ifdef __ANDROID__
@@ -211,7 +211,7 @@ static int mirisdr_open_raw (mirisdr_dev_t **p, uint32_t index, const char *seri
     device = mirisdr_pick(list, i_max, index, serial, usb_port, &at);
     dev->index = (uint32_t) at;
 
-    /* nenašli jsme zařízení */
+    /* no device found */
     if (!device) {
         libusb_free_device_list(list, 1);
         if (serial || usb_port) fprintf(stderr, "no miri device %s%s%s found\n", serial ? serial : "",
@@ -220,7 +220,7 @@ static int mirisdr_open_raw (mirisdr_dev_t **p, uint32_t index, const char *seri
         goto failed;
     }
 
-    /* otevření zařízení */
+    /* open the device */
     if ((r = libusb_open(device, &dev->dh)) < 0) {
         libusb_free_device_list(list, 1);
         fprintf( stderr, "failed to open miri usb device %u with code %d\n", dev->index, r);
@@ -307,7 +307,7 @@ int mirisdr_open_fd (mirisdr_dev_t **p, int fd) {
 int mirisdr_close (mirisdr_dev_t *p) {
     if (!p) goto failed;
 
-    /* ukončení async čtení okamžitě */
+    /* stop the async read right away */
     mirisdr_cancel_async_now(p);
 
     // similar to rtl-sdr
@@ -317,7 +317,7 @@ int mirisdr_close (mirisdr_dev_t *p) {
             usleep(1000);
 #endif
 
-    /* deinicializace tuneru */
+    /* deinitialise the tuner */
     if (p->dh)
     {
         libusb_release_interface(p->dh, 0);
@@ -361,7 +361,7 @@ int mirisdr_reset (mirisdr_dev_t *p) {
     if (!p) goto failed;
     if (!p->dh) goto failed;
 
-    /* měli bychom uvolnit zařízení předem? */
+    /* should we release the device first? */
 
     /* the part may come back with its registers at their defaults */
     p->reg8_valid = 0;
@@ -390,7 +390,7 @@ int mirisdr_reset_buffer (mirisdr_dev_t *p) {
     if (!p) goto failed;
     if (!p->dh) goto failed;
 
-    /* zatím není jasné k čemu by bylo, proto pouze provedeme reset async části */
+    /* not yet clear what this would be for, so only restart the async part */
     mirisdr_stop_async(p);
     mirisdr_start_async(p);
 

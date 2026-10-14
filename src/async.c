@@ -72,29 +72,29 @@ static void mirisdr_cb_call (mirisdr_dev_t *p, unsigned char *buf, uint32_t len)
     p->cb_bytes = end;
 }
 
-/* uložení dat */
+/* store the data */
 static int mirisdr_feed_async (mirisdr_dev_t *p, unsigned char *samples, uint32_t bytes) {
     uint32_t i;
 
     if (!p) goto failed;
     if (!p->cb) goto failed;
 
-    /* automatická velikost */
+    /* automatic size */
     if (!p->xfer_out_len) {
-        /* přímé zaslání */
+        /* pass it on directly */
         mirisdr_cb_call(p, samples, bytes);
-    /* fixní velikost bufferu bez předchozích dat */
+    /* fixed buffer size, nothing held from before */
     } else if (p->xfer_out_pos == 0) {
-        /* buffer přesně odpovídá - málo časté, přímé zaslání */
+        /* the buffer fits exactly: rare, pass it on directly */
         if (bytes == p->xfer_out_len) {
             mirisdr_cb_call(p, samples, bytes);
-        /* buffer je kratší */
+        /* the buffer is shorter */
         } else if (bytes < p->xfer_out_len) {
             memcpy(p->xfer_out, samples, bytes);
             p->xfer_out_pos = bytes;
-        /* buffer je delší */
+        /* the buffer is longer */
         } else {
-            /* muže být i x násobkem délky */
+            /* it can be a multiple of the length too */
             for (i = 0;; i+= p->xfer_out_len) {
                 if (i + p->xfer_out_len > bytes) {
                     if (bytes > i) {
@@ -106,16 +106,16 @@ static int mirisdr_feed_async (mirisdr_dev_t *p, unsigned char *samples, uint32_
                 mirisdr_cb_call(p, samples + i, p->xfer_out_len);
             }
         }
-    /* data jsou přesně, využije se interní buffer */
+    /* the data fills it exactly, the internal buffer is used */
     } else if (p->xfer_out_pos + bytes == p->xfer_out_len) {
         memcpy(p->xfer_out + p->xfer_out_pos, samples, bytes);
         mirisdr_cb_call(p, p->xfer_out, p->xfer_out_len);
         p->xfer_out_pos = 0;
-    /* není dostatek dat */
+    /* not enough data */
     } else if (p->xfer_out_pos + bytes < p->xfer_out_len) {
         memcpy(p->xfer_out + p->xfer_out_pos, samples, bytes);
         p->xfer_out_pos+= bytes;
-    /* dat je více než potřebujeme, nejsložitější případ */
+    /* more data than we need, the hardest case */
     } else {
         memcpy(p->xfer_out + p->xfer_out_pos, samples, p->xfer_out_len - p->xfer_out_pos);
         mirisdr_cb_call(p, p->xfer_out, p->xfer_out_len);
@@ -393,7 +393,7 @@ static void mirisdr_async_fail (mirisdr_dev_t *p) {
     } while (!mirisdr_async_move(p, s, MIRISDR_ASYNC_FAILED));
 }
 
-/* volání pro zasílání dat */
+/* the transfer callback, which passes the data on */
 static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
     size_t i;
     int len, bytes = 0, s;
@@ -404,16 +404,15 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
     if (!p) return;
     samples = p->samples;
 
-    /* zpracujeme pouze kompletní přenos */
+    /* only a completed transfer is processed */
     if (xfer->status == LIBUSB_TRANSFER_COMPLETED) {
         p->stats_head = 1;
         p->conv_samples = p->stats.samples;
         p->conv_filled = 0;
         p->fills_n = 0;
         /*
-         * Určení správné velikosti bufferu, tato část musí být provedena
-         * v jednom kroku, jinak může dojít ke změně formátu uprostřed procesu,
-         * druhá možnost je používat lock.
+         * Find the right buffer size. This has to be done in one step, otherwise
+         * the format can change halfway through; the other option is a lock.
          */
         switch (xfer->type) {
         case LIBUSB_TRANSFER_TYPE_ISOCHRONOUS:
@@ -423,10 +422,10 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
                 for (i = 0; i < DEFAULT_ISO_PACKETS; i++) {
                     struct libusb_iso_packet_descriptor *packet = &xfer->iso_packet_desc[i];
 
-                    /* buffer_simple je pouze pro stejně velké pakety */
+                    /* buffer_simple is only for packets of the same size */
                     if ((packet->actual_length > 0) &&
                         (iso_packet_buf = libusb_get_iso_packet_buffer_simple(xfer, i))) {
-                        /* menší velikost než 3072 nevadí, je běžný násobek 1024, cokoliv jiného je chyba */
+                        /* less than 3072 is fine as a multiple of 1024, anything else is an error */
                         len = mirisdr_samples_convert_252_s16(p, iso_packet_buf, samples + bytes, packet->actual_length);
                         bytes+= len;
                     }
@@ -570,7 +569,7 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
             }else
                 xfer->length = DEFAULT_BULK_BUFFER;
         }
-                /* pokračujeme dalším přenosem */
+                /* go on with the next transfer */
         if (libusb_submit_transfer(xfer) < 0) {
             fprintf( stderr, "error re-submitting URB on device %u\n", p->index);
             goto failed;
@@ -593,7 +592,7 @@ failed:
     mirisdr_async_fail(p);
 }
 
-/* ukončení async části: one step, so the stream that runs takes it, or none runs */
+/* cancel the async part: one step, so the stream that runs takes it, or none runs */
 int mirisdr_cancel_async (mirisdr_dev_t *p) {
     int s;
 
@@ -616,14 +615,14 @@ failed:
     return -1;
 }
 
-/* ukončení async části včetně čekání, until read_async has returned. Not from
+/* cancel the async part and wait until read_async has returned. Not from
    the callback, which would wait for itself */
 int mirisdr_cancel_async_now (mirisdr_dev_t *p) {
     if (!p) return -1;
 
     mirisdr_cancel_async(p);
 
-    /* cyklujeme dokud není vše ukončeno */
+    /* loop until everything has stopped */
     while (mirisdr_async_get(p) != MIRISDR_ASYNC_INACTIVE)
 #if defined (_WIN32) && !defined(__MINGW32__)
     Sleep(20);
@@ -634,7 +633,7 @@ int mirisdr_cancel_async_now (mirisdr_dev_t *p) {
     return 0;
 }
 
-/* alokace asynchronních bufferů */
+/* allocate the async buffers */
 /* Byte reads from a usbfs buffer cost less than a nanosecond where the controller
    is IO coherent and hundreds where it is not. The platform does not expose this
    information to the application, so we have to measure it. */
@@ -777,7 +776,7 @@ failed:
     return -1;
 }
 
-/* uvolnění asynchronních bufferů */
+/* free the async buffers */
 /* The only place the transfers are freed: under the lock, so not while a stop or a
    restart in another thread is using them */
 static int mirisdr_async_free (mirisdr_dev_t *p) {
@@ -903,7 +902,7 @@ static void mirisdr_async_rewind (mirisdr_dev_t *p) {
     p->addr_dropped = 0;
 }
 
-/* spuštění async části */
+/* run the async part */
 static int mirisdr_read_async_run (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx, uint32_t num, uint32_t len);
 
 /* From inactive to starting in one step, so only one stream starts. A cancel from
@@ -934,7 +933,7 @@ static int mirisdr_read_async_run (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb,
     p->cb_ctx = ctx;
 
     p->xfer_buf_num = (num == 0) ? DEFAULT_BUF_NUMBER : num;
-    /* jde o fixní velikost výstupního bufferu; baseband keeps its own */
+    /* a fixed output buffer size; baseband keeps its own */
     p->user_out_len = len;
     p->xfer_out_len = p->bb ? 0 : len;
     mirisdr_bb_start(p);
@@ -966,12 +965,12 @@ static int mirisdr_read_async_run (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb,
 #if MIRISDR_DEBUG >= 1
     fprintf( stderr, ", transfer: %s\n", (p->transfer == MIRISDR_TRANSFER_BULK) ? "bulk" : "isochronous");
 #endif
-    /* použití správného rozhraní které zasílá data - není kritické */
+    /* use the right interface setting for the data, not critical */
     mirisdr_async_alt(p);
 
     if (mirisdr_async_alloc(p) < 0) goto failed;
 
-    /* spustíme přenosy */
+    /* submit the transfers */
     for (i = 0; i < p->xfer_buf_num; i++) {
         if (mirisdr_async_fill(p, i) < 0) goto failed_free;
 
@@ -985,7 +984,7 @@ static int mirisdr_read_async_run (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb,
         p->xfer_inflight++;
     }
 
-    /* spustíme streamování dat; a cancel while starting has made it canceling */
+    /* start streaming; a cancel while starting has made it canceling */
     p->xfer_draining = 0;
     mirisdr_iso_settle(p);
     mirisdr_streaming_start(p);
@@ -1006,14 +1005,14 @@ static int mirisdr_read_async_run (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb,
             s = MIRISDR_ASYNC_CANCELING;
         }
 
-        /* dochází k ukončení: drained and freed under the lock, after a stop or
+        /* stopping: drained and freed under the lock, after a stop or
            restart in another thread is through with the transfers */
         if (s == MIRISDR_ASYNC_CANCELING) {
             if (mirisdr_async_finish(p) < 0) return -1;
             break;
         }
 
-        /* počkáme na další událost; on an error the transfers are still out, so
+        /* wait for the next event; on an error the transfers are still out, so
            they are drained as for a failed one, not freed */
         if ((r = libusb_handle_events_timeout(p->ctx, &tv)) < 0) {
             fprintf( stderr, "libusb_handle_events returned: %d\n", r);
@@ -1022,17 +1021,17 @@ static int mirisdr_read_async_run (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb,
         }
     }
 
-    /* dealokujeme buffer */
+    /* free the buffers */
     mirisdr_async_free(p);
 
-    /* ukončíme streamování dat */
+    /* stop streaming */
 #if defined (_WIN32) && !defined(__MINGW32__)
     Sleep(20);
 #else
     usleep(20000);
 #endif
     mirisdr_streaming_stop(p);
-    /* je vhodné ukončit i adc, jenže pak by při dalším otevření bylo nutné provést inicializaci */
+    /* stopping the ADC too would be better, but then the next open would have to initialise it */
 
     return transfer_failed ? -1 : 0;
 
@@ -1043,14 +1042,14 @@ failed:
     return -1;
 }
 
-/* spuštění streamování */
+/* start streaming */
 static int mirisdr_start_async_held (mirisdr_dev_t *p) {
     size_t i;
 
-    /* nedovolíme jiný stav než pozastavený */
+    /* only from paused */
     if (mirisdr_async_get(p) != MIRISDR_ASYNC_PAUSED) goto failed;
 
-        /* reset interního bufferu */
+        /* reset the internal buffer */
     p->xfer_out_pos = 0;
 
     /* all of it before the transfers go out: their completions feed the filters */
@@ -1124,10 +1123,10 @@ static void mirisdr_cb_rebase (mirisdr_dev_t *p) {
     p->xfer_out_pos = 0;
 }
 
-/* zastavení streamování */
+/* stop streaming */
 static int mirisdr_stop_async_held (mirisdr_dev_t *p) {
 
-    /* nedovolíme jiný stav než spuštěný */
+    /* only from running */
     if (mirisdr_async_get(p) != MIRISDR_ASYNC_RUNNING) goto failed;
 
     /* ask the firmware to stop while transfers are still queued, as otherwise the ISR never

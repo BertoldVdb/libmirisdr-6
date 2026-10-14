@@ -97,13 +97,13 @@ static int mirisdr_set_gain_words(mirisdr_dev_t *p)
 //    mirisdr_write_reg(p, 0x08, 0xf380);
 
     /* Receiver Gain Control */
-    /* datové bity, bez adresy */
-    /* 0-5 => baseband, 0 - 59, 60-63 je stejné jako 59 */
-    /* 6-7 => mixer gain reduction pouze pro AM režim */
+    /* data bits, without the address */
+    /* 0-5 => baseband, 0 - 59, 60-63 is the same as 59 */
+    /* 6-7 => mixer gain reduction, AM mode only */
     /* 8 => mixer gain reduction -19dB */
     /* 9 => lna gain reduction -24dB */
-    /* 10-12 => DC kalibrace */
-    /* 13 => zrychlená DC kalibrace */
+    /* 10-12 => DC calibration */
+    /* 13 => fast DC calibration */
     reg1 |= p->gain_reduction_baseband;
 
     // Mixbuffer is on AM1 and AM2 inputs only

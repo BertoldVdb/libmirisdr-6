@@ -900,7 +900,7 @@ uint32_t mirisdr_get_xtal_freq(mirisdr_dev_t *p)
         return 22000000;
     case MIRISDR_XTAL_24M:
     case MIRISDR_XTAL_24_576M:
-        /* realně 24 MHz ??? */
+        /* really 24 MHz ??? */
         return 24000000;
     case MIRISDR_XTAL_26M:
         return 26000000;

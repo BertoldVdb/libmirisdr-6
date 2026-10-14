@@ -68,7 +68,6 @@ static unsigned mirisdr_pll_candidates (uint32_t pll_rate, uint64_t *out)
 	return n;
 }
 
-/* nastavení parametrů které vyžadují restart */
 /* parameters that require restart */
 /* The converters a stream captures, MIRISDR_IQ_* */
 static int mirisdr_stream_adc (mirisdr_dev_t *p)

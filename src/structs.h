@@ -46,7 +46,7 @@ struct mirisdr_dev {
     libusb_context      *ctx;
     struct libusb_device_handle *dh;
 
-    /* parametry */
+    /* parameters */
     uint32_t            index;
     uint32_t            freq;
     uint32_t            rate;

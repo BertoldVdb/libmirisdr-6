@@ -1,10 +1,10 @@
 
 /*
- * 8 bitový formát
- * 1024 bajtů odpovídá 1008 hodnotám
- * struktura:
- *   16b hlavička
- *  1008b bloků obsahujících 1008 8b hodnot
+ * 8 bit format
+ * 1024 bytes hold 1008 values
+ * structure:
+ *   16b header
+ *  1008b of blocks holding 1008 8b values
  */
 static int mirisdr_samples_convert_504_s8 (mirisdr_dev_t *p, unsigned char* src, uint8_t *dst, int cnt) {
     int i, ret = 0;
@@ -14,7 +14,7 @@ static int mirisdr_samples_convert_504_s8 (mirisdr_dev_t *p, unsigned char* src,
     for (i = 0; i + 1024 <= cnt; i+= 1024) {
         unsigned char *b = src + i;
 
-        /* ztracená data */
+        /* lost data */
         if (mirisdr_addr_next(p, b, p->addr_step)) continue;
 
         memcpy(dst + ret, b + 16, 1008);

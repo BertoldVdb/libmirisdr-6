@@ -80,7 +80,7 @@ static ssize_t mirisdr_list_devices (libusb_context **ctx, libusb_device ***list
     return n;
 }
 
-/* počet dostupných zařízení */
+/* the number of devices available */
 uint32_t mirisdr_get_device_count (void) {
     ssize_t i, i_max;
     uint32_t ret = 0;
@@ -103,7 +103,7 @@ uint32_t mirisdr_get_device_count (void) {
     return ret;
 }
 
-/* název zařízení */
+/* the device name */
 const char *mirisdr_get_device_name (uint32_t index) {
     ssize_t i, i_max;
     size_t j = 0;
@@ -210,7 +210,7 @@ static void mirisdr_port_name (libusb_device *d, char *serial)
     *(cursor - 1) = '\0'; // remove last dot or :
 }
 
-/* vlastní implementace */
+/* our own implementation */
 int mirisdr_get_device_usb_strings (uint32_t index, char *manufact, char *product, char *serial) {
     ssize_t i, i_max;
     size_t j = 0;

@@ -18,7 +18,7 @@
 int mirisdr_adc_init (mirisdr_dev_t *p) {
     if (!p) goto failed;
 
-    /* inicializace - statická */
+    /* initialisation, fixed values */
     p->reg8 = 0x006080;                   /* kernel driver */
     update_reg_8(p);
     mirisdr_write_reg(p, 0x05, 0x00000c);
@@ -36,7 +36,7 @@ failed:
 static int mirisdr_adc_stop (mirisdr_dev_t *p) {
     if (!p) goto failed;
 
-    /* uspíme USB IF a ADC */
+    /* put the USB interface and the ADC to sleep */
     mirisdr_write_reg(p, 0x03, 0x010000);
 
     return 0;
