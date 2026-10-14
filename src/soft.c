@@ -410,6 +410,17 @@ static const uint16_t mirisdr_if_bws[] = {
 static const uint8_t mirisdr_if_bw_widest[] = { MIRISDR_BW_8MHZ, MIRISDR_BW_600KHZ,
                                                 MIRISDR_BW_1536KHZ, MIRISDR_BW_1536KHZ };
 
+/* the widest filter of a low IF, in Hz: what a baseband stream's converters must hold */
+static uint32_t mirisdr_if_widest_hz (uint32_t if_hz)
+{
+    unsigned i;
+
+    for (i = 1; i < sizeof mirisdr_if_hz / sizeof mirisdr_if_hz[0]; i++)
+        if (mirisdr_if_hz[i] == if_hz) return mirisdr_bw_hz[mirisdr_if_bw_widest[i]];
+
+    return 0;
+}
+
 /* The rate the stream runs at after a tune to zero IF. One that follows the tune
    may change it there, a baseband one from its low IF rate. Without a stream yet
    (the null device), the rate a device opens with */
@@ -537,6 +548,12 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
         return -1;
     }
 
+    if ((c->dc_removal < MIRISDR_DC_AUTO) || (c->dc_removal > MIRISDR_DC_OFF))
+    {
+        mirisdr_refuse(p, "unsupported DC removal: %d\n", c->dc_removal);
+        return -1;
+    }
+
     if (mirisdr_override_words(&c->override, &pl->ovr13, &pl->ovr14) < 0)
     {
         mirisdr_refuse(p, "tuner override code out of range\n");
@@ -557,7 +574,7 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
         return -1;
     }
 
-    lo = (int64_t) c->frequency + c->lo_offset;
+    lo = (int64_t) c->frequency;
     /* a baseband stream wants the band the IF below the LO, as low_if_auto */
     if (c->low_if_auto || (p->stream.baseband && (pl->ifm != MIRISDR_IF_ZERO))) lo += mirisdr_if_hz[pl->ifm];
 
@@ -655,7 +672,8 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
 
         restream = (spl.format != (int) p->format) || (spl.swap != p->swap_iq) || (spl.rate != p->rate) ||
                    (spl.decim != p->decim_on) || (spl.bb_path != p->bb_path) ||
-                   (spl.bb_stages != p->bb_stages) || (spl.bb_rate != p->bb_rate);
+                   (spl.bb_stages != p->bb_stages) || (spl.bb_rate != p->bb_rate) ||
+                   (spl.bb_if != p->bb_if);
         if (restream && ((streaming = mirisdr_stream_pause(p)) < 0)) return -1;
     }
 
@@ -845,7 +863,6 @@ int mirisdr_set_center_freq(mirisdr_dev_t *p, uint32_t freq)
     c = p->tune;
     c.frequency = freq;
     c.low_if_auto = 0;
-    c.lo_offset = 0;
 
     return mirisdr_tune_apply(p, &c, MIRISDR_TUNE_ADJUST, NULL);
 }

@@ -940,7 +940,9 @@ static tres_t t_bb_device (void)
     static const struct { uint32_t ifhz; int iq; uint32_t rate; } cases[] = {
         { 0, MIRISDR_IQ_BOTH, 2000000 }, { 450000, MIRISDR_IQ_BOTH, 900000 }, { 450000, MIRISDR_IQ_ONLY_Q, 225000 },
         { 1620000, MIRISDR_IQ_ONLY_I, 1620000 }, { 2048000, MIRISDR_IQ_BOTH, 2048000 },
-        { 2048000, MIRISDR_IQ_ONLY_I, 4096000 }, { 2048000, MIRISDR_IQ_BOTH, 256000 } };
+        { 2048000, MIRISDR_IQ_ONLY_I, 4096000 }, { 450000, MIRISDR_IQ_BOTH, 250000 },    /* resampled */
+        { 2048000, MIRISDR_IQ_ONLY_I, 1000000 }, { 1620000, MIRISDR_IQ_BOTH, 3000000 },
+        { 2048000, MIRISDR_IQ_BOTH, 256000 } };
     mirisdr_tune_config_t tc;
     mirisdr_stream_config_t sc;
     mirisdr_stream_result_t sr;
@@ -967,7 +969,8 @@ static tres_t t_bb_device (void)
         usleep(700000);
         sps = bbd.pairs / (now() - t0);
 
-        /* a tune to the 450 kHz IF while it runs: the rate moves to the nearest that has */
+        /* a tune to the 450 kHz IF while it runs: the rate stays, the converters going to
+           4 x IF and the resampler making it */
         if (i == sizeof cases / sizeof cases[0] - 1) {
             tc.if_freq = 450000;
             if (mirisdr_tune(dev, 0, &tc, NULL) < 0) { say("the tune to 450 kHz refused"); bad++; }
@@ -976,7 +979,8 @@ static tres_t t_bb_device (void)
             t0 = now();
             usleep(500000);
             mirisdr_get_stream(dev, &sc, &sr);
-            if (sr.rate != 225000 || !within(bbd.pairs / (now() - t0), 225000, 0.03) || bbd.rate != 225000)
+            if (sr.rate != 256000 || sr.adc_rate != 1800000 || !sr.resampled || !within(bbd.pairs / (now() - t0), 256000, 0.03) ||
+                bbd.rate != 256000)
             { say("after the tune to 450 kHz: %u planned, %u in the infos, %.0f sps", sr.rate, bbd.rate,
                   bbd.pairs / (now() - t0)); bad++; }
         }
@@ -996,7 +1000,7 @@ static tres_t t_bb_device (void)
     sc.baseband = 0; sc.rate = 2000000;
     mirisdr_set_stream(dev, &sc, NULL);
 
-    if (!bad) say("7 paths at their rates, float buffers, a tune to another IF moving the rate while streaming");
+    if (!bad) say("10 paths at their rates, 3 resampled, float buffers, a tune to another IF keeping the rate while streaming");
     return bad ? T_FAIL : T_PASS;
 }
 
@@ -2863,15 +2867,8 @@ static tres_t t_plan_tune (void)
     plan_near(r.offset, 450000, 20, "single output IF");
     if (!r.inverted || r.iq != MIRISDR_IQ_ONLY_I) { plan_bad++; say("I only: inverted %d, iq %d", r.inverted, r.iq); }
 
-    /* an offset moves the LO */
-    mirisdr_tune_config_default(&c);
-    c.frequency = 433920000; c.lo_offset = 200000;
-    plan_tune(n, "zero IF, 200 kHz offset", &c, 1, &r);
-    plan_near(r.lo, 434120000, 20, "offset LO");
-    plan_near(r.offset, -200000, 20, "offset");
-
     /* past the plan, and the gain each band reaches */
-    c.lo_offset = 0;
+    mirisdr_tune_config_default(&c);
     c.frequency = 2500000000U;
     plan_tune(n, "2.5 GHz", &c, 0, &r);
     c.frequency = 1500000000; c.gain.mode = MIRISDR_GAIN_TOTAL; c.gain.total = 200;
@@ -3439,7 +3436,7 @@ static tres_t t_tune_api (void)
         mirisdr_get_if_freq(dev) != 450000)
     { say("set_center_freq gave LO %u, IF %u", mirisdr_get_center_freq(dev), mirisdr_get_if_freq(dev)); return T_FAIL; }
     mirisdr_get_tune(dev, 0, &got, NULL);
-    if (got.low_if_auto || got.lo_offset) { say("set_center_freq kept low_if_auto or lo_offset"); return T_FAIL; }
+    if (got.low_if_auto) { say("set_center_freq kept low_if_auto"); return T_FAIL; }
 
     /* the stream's converter and the tuner's output: refused both ways */
     mirisdr_get_stream(dev, &s, NULL);
@@ -3607,6 +3604,14 @@ static tres_t t_plan_scan (void)
     plan_near(r.offset, -200000, 0, "grid offset");
     c.synth_thresh = 4096;
     plan_tune(n, "threshold 4096", &c, 0, &r);
+
+    /* the DC removal: its three values, nothing past them */
+    c.synth_thresh = 0;
+    c.dc_removal = MIRISDR_DC_ON;
+    plan_tune(n, "DC removal on", &c, 1, &r);
+    c.dc_removal = MIRISDR_DC_OFF + 1;
+    plan_tune(n, "DC removal past its values", &c, 0, &r);
+    c.dc_removal = MIRISDR_DC_AUTO;
 
     /* 52 MHz to 948 MHz in 8 MHz hops */
     nh = scan_hops(h, 300, 52000000, 948000000, 8000000, 6);
@@ -3895,6 +3900,8 @@ static void bb_cb (unsigned char *buf, uint32_t len, void *ctx)
 }
 
 static int bb_swap;      /* I and Q swapped by the receiver: the band at +IF */
+static double bb_dc;     /* a DC offset on both converters, full scale 1 */
+static int bb_dc_mode;   /* the tune's dc_removal in bb_open */
 
 static void bb_put14 (uint8_t *b, double v)
 {
@@ -3925,6 +3932,8 @@ static uint8_t *bb_gen (int real, double fs, double ifhz, double delta, double a
 
             /* swapped, the receiver hands Q as I: the spectrum mirrored */
             if (bb_swap) { double t = re; re = im; im = t; }
+            re += bb_dc;
+            im += bb_dc;
 
             if (real) bb_put14(h + 16 + 2 * i, re);
             else {
@@ -3966,6 +3975,7 @@ static int bb_open (int real, uint32_t ifhz, uint32_t rate, mirisdr_stream_resul
     tc.if_freq = ifhz;
     tc.bandwidth = 0;
     tc.iq = real ? MIRISDR_IQ_ONLY_I : MIRISDR_IQ_BOTH;
+    tc.dc_removal = bb_dc_mode;
     if (mirisdr_tune(bbo.d, 0, &tc, NULL) < 0) return -1;
     mirisdr_get_stream(bbo.d, &sc, NULL);
     sc.baseband = 1;
@@ -4011,12 +4021,18 @@ static tres_t t_bb_plan (void)
     mirisdr_stream_config_t s;
     mirisdr_stream_result_t sr;
     mirisdr_tune_result_t tr;
-    static const struct { uint32_t ifhz; int real; uint32_t rate; uint32_t adc; uint32_t decim; } ok[] = {
+    static const struct { uint32_t ifhz; int real; uint32_t rate; uint32_t adc; double decim; } ok[] = {
         { 450000, 0, 1800000, 1800000, 1 }, { 450000, 0, 900000, 1800000, 2 }, { 450000, 0, 28125, 1800000, 64 },
         { 450000, 1, 900000, 1800000, 2 },  { 450000, 1, 225000, 1800000, 8 },
         { 1620000, 0, 6480000, 6480000, 1 }, { 1620000, 0, 810000, 6480000, 8 }, { 1620000, 1, 3240000, 6480000, 2 },
         { 2048000, 0, 8192000, 8192000, 1 }, { 2048000, 0, 2048000, 8192000, 4 }, { 2048000, 0, 32000, 8192000, 256 },
-        { 2048000, 1, 4096000, 8192000, 2 }, { 2048000, 1, 1024000, 8192000, 8 } };
+        { 2048000, 1, 4096000, 8192000, 2 }, { 2048000, 1, 1024000, 8192000, 8 },
+        /* not 4 x IF divided down: still 4 x IF up to 7 Msps, the resampler making the
+           rest; at 2048 kHz the least the IF takes, 2.4 x (IF + half the widest filter),
+           with the NCO too; above those, the output rate itself with the NCO */
+        { 450000, 0, 250000, 1800000, 7.2 }, { 450000, 1, 250000, 1800000, 7.2 }, { 450000, 0, 2000000, 2000000, 1 },
+        { 1620000, 1, 1000000, 6480000, 6.48 }, { 2048000, 0, 1000000, 6758400, 6.7584 },
+        { 2048000, 0, 6000000, 6758400, 1.1264 }, { 2048000, 0, 7000000, 7000000, 1 }, { 450000, 0, 3516, 1800000, 1800000.0 / 3516 } };
     unsigned i;
     int bad = 0;
 
@@ -4031,22 +4047,28 @@ static tres_t t_bb_plan (void)
         s.baseband = 1; s.rate = ok[i].rate; s.transfer = "BULK"; s.format = NULL; s.format_single = NULL;
         if (mirisdr_set_stream(n, &s, &sr) < 0 || sr.rate != ok[i].rate || sr.adc_rate != ok[i].adc ||
             sr.decimation != ok[i].decim || sr.baseband != (ok[i].real ? MIRISDR_BASEBAND_REAL : MIRISDR_BASEBAND_COMPLEX))
-        { say("IF %u %s %u: rate %u adc %u decimation %u", ok[i].ifhz, ok[i].real ? "one" : "both", ok[i].rate,
+        { say("IF %u %s %u: rate %u adc %u decimation %.4f", ok[i].ifhz, ok[i].real ? "one" : "both", ok[i].rate,
               sr.rate, sr.adc_rate, sr.decimation); bad++; continue; }
+        if (sr.nco != (ok[i].adc != 4 * ok[i].ifhz) || sr.resampled != (ok[i].decim != (double) (1u << (int) log2(ok[i].decim))))
+        { say("IF %u at %u: nco %d, resampled %d", ok[i].ifhz, ok[i].rate, sr.nco, sr.resampled); bad++; }
         mirisdr_get_tune(n, 0, NULL, &tr);
         if (tr.lo != 100000000 + ok[i].ifhz || tr.offset || tr.inverted)
         { say("IF %u: LO %u, offset %d", ok[i].ifhz, tr.lo, tr.offset); bad++; }
     }
 
-    /* refused: not a power of 2 down, too far down, one output at the full rate */
-    s.rate = 1000000;
-    if (mirisdr_set_stream(n, &s, NULL) == 0) { say("1 MHz from a 2048 kHz IF accepted"); bad++; }
-    s.rate = 16000;
-    if (mirisdr_set_stream(n, &s, NULL) == 0) { say("1/512 accepted"); bad++; }
-    s.rate = 8192000;
-    if (mirisdr_set_stream(n, &s, NULL) == 0) { say("one output at 8192 ksps accepted"); bad++; }
+    /* refused, one output at 2048 kHz: a decimation of 512 or more (13200 from 6.7584 Msps),
+       past the converters' 30 Msps (16 Msps out of 32) */
+    mirisdr_get_tune(n, 0, &c, NULL);
+    c.if_freq = 2048000; c.bandwidth = 0; c.iq = MIRISDR_IQ_ONLY_I;
+    mirisdr_tune(n, 0, &c, NULL);
+    s.rate = 13200;
+    if (mirisdr_set_stream(n, &s, NULL) == 0) { say("13200 sps of one output at 2048 kHz accepted"); bad++; }
+    s.rate = 13201;
+    if (mirisdr_set_stream(n, &s, NULL) < 0) { say("13201 sps of one output at 2048 kHz refused"); bad++; }
+    s.rate = 16000000;
+    if (mirisdr_set_stream(n, &s, NULL) == 0) { say("one output at 16 Msps accepted"); bad++; }
 
-    /* a tune to another IF takes the stream's rate to the nearest it has */
+    /* a tune to another IF keeps the stream's rate where that IF has it... */
     mirisdr_get_tune(n, 0, &c, NULL);
     c.iq = MIRISDR_IQ_BOTH; c.if_freq = 2048000; c.bandwidth = 0;
     mirisdr_tune(n, 0, &c, NULL);
@@ -4055,14 +4077,24 @@ static tres_t t_bb_plan (void)
     c.if_freq = 450000; c.bandwidth = 0;
     if (mirisdr_tune(n, 0, &c, NULL) < 0) { say("a tune to 450 kHz refused"); bad++; }
     mirisdr_get_stream(n, &s, &sr);
-    if (sr.rate != 900000 || sr.adc_rate != 1800000) { say("1024 ksps at 2048 kHz became %u at 450 kHz", sr.rate); bad++; }
+    if (sr.rate != 1024000 || sr.adc_rate != 1800000 || sr.nco || !sr.resampled)
+    { say("1024 ksps at 2048 kHz became %u from %u at 450 kHz", sr.rate, sr.adc_rate); bad++; }
+
+    /* ...and takes it to the nearest it has where not: 8 ksps at 450 kHz is 13201 at
+       2048 kHz, its least (just over 6.7584 Msps / 512) */
+    s.rate = 8000;
+    if (mirisdr_set_stream(n, &s, &sr) < 0 || sr.adc_rate != 1800000) { say("8 ksps at 450 kHz: %u", sr.adc_rate); bad++; }
+    c.if_freq = 2048000; c.bandwidth = 0;
+    if (mirisdr_tune(n, 0, &c, NULL) < 0) { say("a tune to 2048 kHz refused"); bad++; }
+    mirisdr_get_stream(n, &s, &sr);
+    if (sr.rate != 13201 || sr.adc_rate != 6758400) { say("8 ksps at 450 kHz became %u from %u at 2048 kHz", sr.rate, sr.adc_rate); bad++; }
 
     /* zero IF: float as it comes, any rate; the LO on the frequency */
     c.if_freq = 0; c.bandwidth = 0;
     mirisdr_tune(n, 0, &c, NULL);
     s.rate = 3000000;
     if (mirisdr_set_stream(n, &s, &sr) < 0 || sr.baseband != MIRISDR_BASEBAND_ZERO_IF || sr.rate != 3000000 ||
-        sr.decimation != 1) { say("zero IF baseband: %d at %u", sr.baseband, sr.rate); bad++; }
+        sr.decimation != 1 || sr.nco) { say("zero IF baseband: %d at %u", sr.baseband, sr.rate); bad++; }
     mirisdr_get_tune(n, 0, NULL, &tr);
     if (tr.lo != 100000000) { say("zero IF LO %u", tr.lo); bad++; }
 
@@ -4075,33 +4107,64 @@ static tres_t t_bb_plan (void)
     if (tr.lo != 100000000) { say("without baseband the LO is at %u", tr.lo); bad++; }
 
     mirisdr_close(n);
-    if (!bad) say("rates for each IF and output, refusals, a tune moving the rate, zero IF, the LO");
+    if (!bad) say("rates for each IF and output, at 4 x IF and not, refusals, a tune keeping and moving the rate, zero IF, the LO");
     return bad ? T_FAIL : T_PASS;
 }
 
-/* each IF and output: the tone at +delta at its level, the mirror and the image down */
+/* where a converter frequency lands at the output: folded by each halving, then by the
+   resampler's rate, as the stages pass on what they let through */
+static double bb_fold (double f, double adc, int real, double rate)
+{
+    double r = real ? adc / 2 : adc;
+
+    f = f - r * floor(f / r + 0.5);
+    while (r / 2 >= rate - 0.5) {
+        r /= 2;
+        f = f - r * floor(f / r + 0.5);
+    }
+    if (fabs(r - rate) > 0.5) f = f - rate * floor(f / rate + 0.5);
+    return f;
+}
+
+/* each IF and output: the tone at +delta at its level, the mirror and the image down.
+   Where the converters do not run at 4 x IF the NCO is in the path, and where the rate
+   is not theirs divided by a power of 2 the resampler: the tone must also be clean, as
+   a phase jump or a poor interpolation would spread its power */
 static tres_t t_bb_tone (void)
 {
-    static const struct { uint32_t ifhz; int real; uint32_t rate; double delta, img; } cases[] = {
-        { 450000, 0, 1800000, 50000, 0 },   { 450000, 0, 900000, 50000, 120000 }, { 450000, 0, 225000, 20000, 30000 },
-        { 450000, 1, 900000, 50000, 0 },    { 450000, 1, 112500, -20000, 0 },
-        { 1620000, 0, 1620000, -300000, 400000 }, { 1620000, 1, 3240000, 600000, 0 },
-        { 2048000, 0, 2048000, 300000, 500000 },  { 2048000, 1, 2048000, -700000, 0 },
-        { 2048000, 1, 256000, 60000, 0 }, { 450000, 0, 900000, 70000, 0 }, { 2048000, 0, 2048000, -400000, 0 } };
+    static const struct { uint32_t ifhz; int real; uint32_t rate; double delta, img; int swap; } cases[] = {
+        { 450000, 0, 1800000, 50000, 0, 0 },   { 450000, 0, 900000, 50000, 120000, 0 }, { 450000, 0, 225000, 20000, 30000, 0 },
+        { 450000, 1, 900000, 50000, 0, 0 },    { 450000, 1, 112500, -20000, 0, 0 },
+        { 1620000, 0, 1620000, -300000, 400000, 0 }, { 1620000, 1, 3240000, 600000, 0, 0 },
+        { 2048000, 0, 2048000, 300000, 500000, 0 },  { 2048000, 1, 2048000, -700000, 0, 0 },
+        { 2048000, 1, 256000, 60000, 0, 0 }, { 450000, 0, 900000, 70000, 0, 1 }, { 2048000, 0, 2048000, -400000, 0, 1 },
+        /* resampled (the NCO too at 2048 kHz, and alone at 7 Msps); 250001 interpolates */
+        { 450000, 0, 250000, 30000, 0, 0 },  { 450000, 0, 250000, -45000, 80000, 0 }, { 450000, 1, 250000, -40000, 0, 0 },
+        { 1620000, 1, 1000000, 150000, 0, 0 }, { 2048000, 0, 1000000, 200000, 300000, 0 },
+        { 2048000, 0, 7000000, -500000, 0, 0 }, { 450000, 0, 250000, 30000, 0, 1 }, { 450000, 0, 250001, 61000, 0, 0 },
+        /* the NCO alone, with a step of a long period */
+        { 2048000, 0, 7000001, 900000, 0, 0 }, { 2048000, 1, 7000001, -1200000, 0, 0 },
+        { 1620000, 0, 3000000, -1100000, 0, 0 } };
+    /* a tone just past the band, which only the resampler keeps out: where it folds to */
+    static const struct { uint32_t ifhz; int real; uint32_t rate; } alias[] = {
+        { 450000, 0, 250000 }, { 450000, 1, 250000 }, { 450000, 0, 250001 }, { 1620000, 0, 3000000 }, { 2048000, 0, 1000000 } };
+    double worst_alias = 1e9;
     mirisdr_stream_result_t sr;
-    unsigned i;
+    unsigned i, nco = 0;
     int bad = 0;
-    double worst_mirror = 1e9, worst_image = 1e9;
+    double worst_mirror = 1e9, worst_image = 1e9, worst_clean = 1e9;
 
     for (i = 0; i < sizeof cases / sizeof cases[0]; i++) {
         uint32_t len;
         uint8_t *data;
-        size_t m, s0;
-        double a, mir, img = 0, fs = 4.0 * cases[i].ifhz;
+        size_t m, s0, k;
+        double a, mir, img = 0, clean = 0, fs, at, pw = 0, ws = 0, w;
 
-        /* the last two with I and Q swapped */
-        bb_swap = i >= sizeof cases / sizeof cases[0] - 2;
+        /* swapped, the receiver hands Q as I */
+        bb_swap = cases[i].swap;
         if (bb_open(cases[i].real, cases[i].ifhz, cases[i].rate, &sr) < 0) { say("case %u: no stream", i); return T_FAIL; }
+        fs = sr.adc_rate;
+        if (sr.nco || sr.resampled) nco++;
         data = bb_gen(cases[i].real, fs, cases[i].ifhz, cases[i].delta, 0.5, cases[i].img, cases[i].img ? 0.5 : 0,
                       (int) (0.2 * fs / (cases[i].real ? 504 : 252)) + 64, -1, 0, &len);
         bb_feed(data, len, 0);
@@ -4113,42 +4176,150 @@ static tres_t t_bb_tone (void)
         s0 = bbo.n / 2 - m;
         a = bb_tone(bbo.x + 2 * s0, m, bb_swap ? -cases[i].delta : cases[i].delta, sr.rate);
         mir = 20 * log10(a / (bb_tone(bbo.x + 2 * s0, m, bb_swap ? cases[i].delta : -cases[i].delta, sr.rate) + 1e-12));
-        if (cases[i].img && sr.decimation > 1)
-            img = 20 * log10(a / (bb_tone(bbo.x + 2 * s0, m, cases[i].img, sr.rate) + 1e-12));
 
-        if (bb_swap) note("swapped, so the tone is looked for mirrored:");
-        if (img) note("IF %u, %s output, %u sps: tone at %+.0f Hz %.2f dBFS, mirror %.1f dB down, image %.1f dB down",
-                      cases[i].ifhz, cases[i].real ? "one" : "both", sr.rate, cases[i].delta, 20 * log10(a), mir, img);
-        else note("IF %u, %s output, %u sps: tone at %+.0f Hz %.2f dBFS, mirror %.1f dB down", cases[i].ifhz,
-                  cases[i].real ? "one" : "both", sr.rate, cases[i].delta, 20 * log10(a), mir);
+        /* the image at +IF + img comes out 2 x IF + img up, where the stages fold it */
+        if (cases[i].img && sr.decimation > 1) {
+            at = bb_fold(2.0 * cases[i].ifhz + cases[i].img, sr.adc_rate, cases[i].real, sr.rate);
+            img = 20 * log10(a / (bb_tone(bbo.x + 2 * s0, m, at, sr.rate) + 1e-12));
+        }
 
-        if (fabs(20 * log10(a) + 6.02) > 0.3 || mir < (cases[i].real ? 60 : 90) || (img && img < 58) || bbo.bad_info)
-        { say("IF %u %s %u: %.2f dBFS, mirror %.1f dB, image %.1f dB, %d bad infos", cases[i].ifhz,
-              cases[i].real ? "one" : "both", sr.rate, 20 * log10(a), mir, img, bbo.bad_info); bad++; }
+        /* a lone tone: all of the power in it, with the same window */
+        if (!cases[i].img) {
+            for (k = 0; k < m; k++) {
+                w = 0.5 - 0.5 * cos(2 * M_PI * k / m);
+                pw += w * ((double) bbo.x[2 * (s0 + k)] * bbo.x[2 * (s0 + k)] +
+                           (double) bbo.x[2 * (s0 + k) + 1] * bbo.x[2 * (s0 + k) + 1]);
+                ws += w;
+            }
+            pw /= ws;
+            clean = 10 * log10(a * a / (pw > a * a ? pw - a * a : 1e-15));
+        }
+
+        note("IF %u, %s output%s, %u sps from %u: tone at %+.0f Hz %.2f dBFS, mirror %.1f dB down%s%s",
+             cases[i].ifhz, cases[i].real ? "one" : "both", bb_swap ? " swapped" : "", sr.rate, sr.adc_rate,
+             cases[i].delta, 20 * log10(a), mir, sr.nco ? ", NCO" : "", sr.resampled ? ", resampled" : "");
+        if (img) note("  image %.1f dB down", img);
+        if (clean) note("  the rest %.1f dB under the tone", clean);
+
+        if (fabs(20 * log10(a) + 6.02) > 0.3 || mir < (cases[i].real ? 60 : 90) || (img && img < 58) ||
+            (clean && clean < 60) || bbo.bad_info)
+        { say("IF %u %s %u: %.2f dBFS, mirror %.1f dB, image %.1f dB, the rest %.1f dB down, %d bad infos", cases[i].ifhz,
+              cases[i].real ? "one" : "both", sr.rate, 20 * log10(a), mir, img, clean, bbo.bad_info); bad++; }
         if (mir < worst_mirror) worst_mirror = mir;
         if (img && img < worst_image) worst_image = img;
+        if (clean && clean < worst_clean) worst_clean = clean;
     }
 
     bb_swap = 0;
-    if (!bad) say("12 cases, 2 with I/Q swapped: each tone at its offset within 0.3 dB, mirrors >= %.0f dB down, images >= %.0f dB",
-                  worst_mirror, worst_image);
+
+    /* a tone at 0.7 of the output rate, past the 0.6 the band ends at, at -6 dBFS */
+    for (i = 0; i < sizeof alias / sizeof alias[0]; i++) {
+        uint32_t len;
+        uint8_t *data;
+        size_t m, s0;
+        double delta, at, down;
+
+        if (bb_open(alias[i].real, alias[i].ifhz, alias[i].rate, &sr) < 0) { say("alias %u: no stream", i); return T_FAIL; }
+        delta = 0.7 * sr.rate;
+        data = bb_gen(alias[i].real, sr.adc_rate, alias[i].ifhz, delta, 0.5, 0, 0,
+                      (int) (0.2 * sr.adc_rate / (alias[i].real ? 504 : 252)) + 64, -1, 0, &len);
+        bb_feed(data, len, 0);
+        free(data);
+        mirisdr_close(bbo.d);
+
+        m = bbo.n / 2 / 2;
+        s0 = bbo.n / 2 - m;
+        at = delta - sr.rate * floor(delta / sr.rate + 0.5);
+        down = 20 * log10(0.5 / (bb_tone(bbo.x + 2 * s0, m, at, sr.rate) + 1e-12));
+        note("IF %u, %s output, %u sps from %u: a tone at %+.0f Hz folds to %+.0f Hz %.1f dB down", alias[i].ifhz,
+             alias[i].real ? "one" : "both", sr.rate, sr.adc_rate, delta, at, down);
+        if (down < 60) { say("IF %u %s %u: the tone at %.0f Hz folds in %.1f dB down", alias[i].ifhz,
+                              alias[i].real ? "one" : "both", sr.rate, delta, down); bad++; }
+        if (down < worst_alias) worst_alias = down;
+    }
+
+    if (!bad) say("%u cases, %u resampled or with the NCO, 3 with I/Q swapped: each tone at its offset within 0.3 dB, "
+                  "mirrors >= %.0f dB down, images >= %.0f dB, lone tones >= %.0f dB over the rest; past the band "
+                  ">= %.0f dB down", (unsigned) (sizeof cases / sizeof cases[0]), nco, worst_mirror, worst_image,
+                  worst_clean, worst_alias);
+    return bad ? T_FAIL : T_PASS;
+}
+
+/* The DC offset in software, as the tune's dc_removal has it: kept at zero IF unless on,
+   taken off at a low IF unless off, on each path. A DC of 0.1 on both converters and a
+   tone; the DC is looked for where it comes out (0 Hz at zero IF, +IF at a low IF) in the
+   last 40% of 0.6 s, after the 50 ms estimate has settled */
+static tres_t t_bb_dc (void)
+{
+    static const struct { uint32_t ifhz; int real; uint32_t rate; int kept, gone; } cases[] = {
+        { 0, 0, 2000000, MIRISDR_DC_AUTO, MIRISDR_DC_ON },
+        { 450000, 0, 1800000, MIRISDR_DC_OFF, MIRISDR_DC_AUTO },
+        { 450000, 1, 1000000, MIRISDR_DC_OFF, MIRISDR_DC_AUTO } };
+    mirisdr_stream_result_t sr;
+    unsigned i, j;
+    int bad = 0;
+    double worst = 1e9;
+
+    for (i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        double dc[2], tone[2];
+
+        for (j = 0; j < 2; j++) {
+            uint32_t len;
+            uint8_t *data;
+            size_t m, s0;
+
+            bb_dc = 0.1;
+            bb_dc_mode = j ? cases[i].gone : cases[i].kept;
+            if (bb_open(cases[i].real, cases[i].ifhz, cases[i].rate, &sr) < 0) { say("case %u: no stream", i); bb_dc = 0; return T_FAIL; }
+            data = bb_gen(cases[i].real, sr.adc_rate, cases[i].ifhz, 100000, 0.5, 0, 0,
+                          (int) (0.6 * sr.adc_rate / (cases[i].real ? 504 : 252)) + 64, -1, 0, &len);
+            bb_feed(data, len, 0);
+            free(data);
+            mirisdr_close(bbo.d);
+
+            m = bbo.n / 2 * 2 / 5;
+            s0 = bbo.n / 2 - m;
+            dc[j] = bb_tone(bbo.x + 2 * s0, m, cases[i].ifhz, sr.rate);
+            tone[j] = bb_tone(bbo.x + 2 * s0, m, 100000, sr.rate);
+        }
+        bb_dc = 0;
+        bb_dc_mode = MIRISDR_DC_AUTO;
+
+        note("IF %u, %s output, %u sps: the DC %.1f dBFS kept, %.1f dBFS with it taken off; the tone %.2f / %.2f dBFS",
+             cases[i].ifhz, cases[i].real ? "one" : "both", sr.rate, 20 * log10(dc[0] + 1e-12), 20 * log10(dc[1] + 1e-12),
+             20 * log10(tone[0]), 20 * log10(tone[1]));
+        if (dc[0] < 0.05 || 20 * log10(dc[0] / (dc[1] + 1e-12)) < 40 || fabs(20 * log10(tone[0] / tone[1])) > 0.1 ||
+            fabs(20 * log10(tone[0]) + 6.02) > 0.3)
+        { say("IF %u %s: DC kept %.1f dBFS, off %.1f dBFS, tone %.2f / %.2f dBFS", cases[i].ifhz, cases[i].real ? "one" : "both",
+              20 * log10(dc[0] + 1e-12), 20 * log10(dc[1] + 1e-12), 20 * log10(tone[0]), 20 * log10(tone[1])); bad++; }
+        if (20 * log10(dc[0] / (dc[1] + 1e-12)) < worst) worst = 20 * log10(dc[0] / (dc[1] + 1e-12));
+    }
+
+    if (!bad) say("zero IF kept unless on, a low IF taken off unless off, both and one output: %.0f dB down at least, "
+                  "the tone untouched", worst);
     return bad ? T_FAIL : T_PASS;
 }
 
 /* sample counts, fixed-length buffers, a gap: where it lands and what fills it */
 static tres_t t_bb_timing (void)
 {
+    static const struct { int real; uint32_t rate; } cases[] = { { 0, 225000 }, { 1, 225000 }, { 0, 250000 } };
     mirisdr_stream_result_t sr;
     uint32_t len;
     uint8_t *data;
     int bad = 0, real;
+    unsigned c;
 
-    for (real = 0; real < 2; real++) {
-        int spb = real ? 504 : 252;
+    for (c = 0; c < sizeof cases / sizeof cases[0]; c++) {
+        int spb;
         uint64_t in_samples;
+        double d, slack;
 
-        /* 2000 blocks, 30 missing after block 1000, buffers of 4096 bytes */
-        if (bb_open(real, 450000, 225000, &sr) < 0) { say("no stream"); return T_FAIL; }
+        /* 2000 blocks, 30 missing after block 1000, buffers of 4096 bytes. The last at a
+           rate the resampler makes, 7.2 converter samples an output */
+        real = cases[c].real;
+        spb = real ? 504 : 252;
+        if (bb_open(real, 450000, cases[c].rate, &sr) < 0) { say("no stream"); return T_FAIL; }
         bbo.len = 4096;
         data = bb_gen(real, 1800000, 450000, 10000, 0.5, 0, 0, 2000, 1000, 30, &len);
         bb_feed(data, len, 4096);
@@ -4157,25 +4328,28 @@ static tres_t t_bb_timing (void)
 
         /* 16 of the 30 blocks are filled, the rest a jump in the index. The fill can
            reach the callback over several buffers, so one gap may come as several */
+        /* each part of a gap rounds on its own: one output each */
         in_samples = (uint64_t) (2000 + 16) * spb;
+        d = sr.decimation;
+        slack = bbo.gaps + 1;
         if (bbo.bad_info) { say("%s: %d buffers with a wrong info", real ? "one" : "both", bbo.bad_info); bad++; }
-        if (bbo.n / 2 > in_samples / sr.decimation + 2 || bbo.n / 2 + 512 + 64 < in_samples / sr.decimation)
-        { say("%s: %zu pairs out of %llu in, decimation %u", real ? "one" : "both", bbo.n / 2,
-              (unsigned long long) in_samples, sr.decimation); bad++; }
-        if (!bbo.gaps || bbo.gap_samples != (uint64_t) (30 * spb + sr.decimation - 1) / sr.decimation ||
-            bbo.gap_filled != (uint64_t) 16 * spb / sr.decimation)
-        { say("%s: %llu gaps, %llu missing %llu filled", real ? "one" : "both", (unsigned long long) bbo.gaps,
+        if (bbo.n / 2 > in_samples / d + 2 || bbo.n / 2 + 512 + 64 < in_samples / d)
+        { say("%s: %zu pairs out of %llu in, decimation %.4f", real ? "one" : "both", bbo.n / 2,
+              (unsigned long long) in_samples, d); bad++; }
+        if (!bbo.gaps || fabs((double) bbo.gap_samples - 30 * spb / d) > slack ||
+            fabs((double) bbo.gap_filled - 16 * spb / d) > slack)
+        { say("%s at %u: %llu gaps, %llu missing %llu filled", real ? "one" : "both", sr.rate, (unsigned long long) bbo.gaps,
               (unsigned long long) bbo.gap_samples, (unsigned long long) bbo.gap_filled); bad++; }
-        if (bbo.last_index_jump < (uint64_t) 14 * spb / sr.decimation - 1 || bbo.last_index_jump > (uint64_t) 14 * spb / sr.decimation + 1)
-        { say("%s: the index ran %llu ahead, not %u", real ? "one" : "both", (unsigned long long) bbo.last_index_jump,
-              14 * spb / sr.decimation); bad++; }
-        note("%s output: %zu pairs in %d buffers of 512, gap of %llu in %llu parts with %llu filled, index +%llu after it",
-             real ? "one" : "both", bbo.n / 2, bbo.calls, (unsigned long long) bbo.gap_samples,
+        if (fabs((double) bbo.last_index_jump - 14 * spb / d) > slack)
+        { say("%s at %u: the index ran %llu ahead, not %.1f", real ? "one" : "both", sr.rate,
+              (unsigned long long) bbo.last_index_jump, 14 * spb / d); bad++; }
+        note("%s output at %u: %zu pairs in %d buffers of 512, gap of %llu in %llu parts with %llu filled, index +%llu after it",
+             real ? "one" : "both", sr.rate, bbo.n / 2, bbo.calls, (unsigned long long) bbo.gap_samples,
              (unsigned long long) bbo.gaps,
              (unsigned long long) bbo.gap_filled, (unsigned long long) bbo.last_index_jump);
     }
 
-    if (!bad) say("4096 byte buffers counted in output samples; a 30 block gap: 16 filled, the rest in the index");
+    if (!bad) say("4096 byte buffers counted in output samples, one resampled; a 30 block gap: 16 filled, the rest in the index");
     return bad ? T_FAIL : T_PASS;
 }
 
@@ -4215,7 +4389,9 @@ static tres_t t_bb_delay (void)
     static const struct { uint32_t ifhz; int real; uint32_t rate; } cases[] = {
         { 450000, 0, 900000 }, { 450000, 0, 450000 }, { 450000, 0, 225000 }, { 450000, 0, 56250 },
         { 2048000, 0, 2048000 }, { 2048000, 0, 256000 },
-        { 450000, 1, 900000 }, { 450000, 1, 225000 }, { 2048000, 1, 2048000 }, { 2048000, 1, 128000 } };
+        { 450000, 1, 900000 }, { 450000, 1, 225000 }, { 2048000, 1, 2048000 }, { 2048000, 1, 128000 },
+        /* the resampler: exact phases (7.2 and 6.7584) and interpolated (1.8 Msps / 250001) */
+        { 450000, 0, 250000 }, { 2048000, 1, 1000000 }, { 450000, 0, 250001 }, { 1620000, 0, 3000000 } };
     mirisdr_stream_result_t sr;
     unsigned i;
     int bad = 0;
@@ -4226,9 +4402,10 @@ static tres_t t_bb_delay (void)
         uint8_t *data;
         size_t m, n;
         int spb = cases[i].real ? 504 : 252, blocks;
-        double fs = 4.0 * cases[i].ifhz, sum = 0, msum = 0, n0, sigma, got, err;
+        double fs, sum = 0, msum = 0, n0, sigma, got, err;
 
         if (bb_open(cases[i].real, cases[i].ifhz, cases[i].rate, &sr) < 0) { say("case %u: no stream", i); return T_FAIL; }
+        fs = sr.adc_rate;
         /* 8 output samples wide, in the middle of 200 of them each side */
         sigma = 8.0 * sr.decimation;
         n0 = 200.5 * sr.decimation + 0.37 * sr.decimation;
@@ -4246,24 +4423,32 @@ static tres_t t_bb_delay (void)
         }
         got = sum > 0 ? msum / sum * sr.decimation - n0 : -1e9;
         err = got - sr.group_delay;
-        note("IF %u, %s output, %u sps, decimation %u: group delay %u, the burst %.2f converter samples late",
+        note("IF %u, %s output, %u sps, decimation %.4f: group delay %.2f, the burst %.2f converter samples late",
              cases[i].ifhz, cases[i].real ? "one" : "both", sr.rate, sr.decimation, sr.group_delay, got);
         if (fabs(err) > 0.25 || bbo.bad_info)
-        { say("IF %u %s %u: reported %u, measured %.2f", cases[i].ifhz, cases[i].real ? "one" : "both",
+        { say("IF %u %s %u: reported %.2f, measured %.2f", cases[i].ifhz, cases[i].real ? "one" : "both",
               sr.rate, sr.group_delay, got); bad++; }
         if (fabs(err) > worst) worst = fabs(err);
     }
 
-    if (!bad) say("10 paths, decimation 2 to 64: each burst where the reported group delay puts it, within %.3f converter samples", worst);
+    if (!bad) say("14 paths, 4 resampled, decimation 2 to 64: each burst where the reported group delay puts it, "
+                  "within %.3f converter samples", worst);
     return bad ? T_FAIL : T_PASS;
 }
 
 /* how fast each path runs here, against what it has to keep up with */
 static tres_t t_bb_speed (void)
 {
-    static const struct { uint32_t ifhz; int real; uint32_t rate; } cases[] = {
-        { 2048000, 0, 8192000 }, { 2048000, 0, 2048000 }, { 2048000, 0, 256000 },
-        { 2048000, 1, 4096000 }, { 2048000, 1, 2048000 }, { 450000, 1, 112500 } };
+    /* each path at 1.5 times real time at least, here. The 2048 kHz IF off its own rates
+       runs the NCO and the resampler, at 1.2: only taken when asked for */
+    static const struct { uint32_t ifhz; int real; uint32_t rate; double least; } cases[] = {
+        { 2048000, 0, 8192000, 1.5 }, { 2048000, 0, 2048000, 1.5 }, { 2048000, 0, 256000, 1.5 },
+        { 2048000, 1, 4096000, 1.5 }, { 2048000, 1, 2048000, 1.5 }, { 450000, 1, 112500, 1.5 },
+        /* resampled: with the NCO at 2048 kHz, without at 450 and 1620 kHz */
+        { 2048000, 0, 1000000, 1.2 }, { 2048000, 1, 1000000, 1.2 }, { 450000, 0, 250000, 1.5 },
+        { 1620000, 0, 3000000, 1.5 },
+        /* the NCO alone, with a short period and a long one */
+        { 2048000, 0, 7000000, 1.5 }, { 2048000, 0, 7000001, 1.5 } };
     mirisdr_stream_result_t sr;
     unsigned i;
     int slow = 0;
@@ -4275,7 +4460,7 @@ static tres_t t_bb_speed (void)
         double t0, dt, msps;
 
         if (bb_open(cases[i].real, cases[i].ifhz, cases[i].rate, &sr) < 0) { say("no stream"); return T_FAIL; }
-        data = bb_gen(cases[i].real, 4.0 * cases[i].ifhz, cases[i].ifhz, 1000, 0.5, 0, 0, (int) blocks, -1, 0, &len);
+        data = bb_gen(cases[i].real, sr.adc_rate, cases[i].ifhz, 1000, 0.5, 0, 0, (int) blocks, -1, 0, &len);
         bb_feed_cb(data, len / 8, 0, dec_cb_count);     /* warm up: caches, clock */
         t0 = now();
         bb_feed_cb(data + len / 8, len - len / 8, 0, dec_cb_count);
@@ -4288,8 +4473,8 @@ static tres_t t_bb_speed (void)
         msps = (double) blocks * (cases[i].real ? 504 : 252) / dt / 1e6;
         note("IF %u, %s output, %u sps out: %.1f Msps of %.3f needed (%.0fx)", cases[i].ifhz,
              cases[i].real ? "one" : "both", cases[i].rate, msps, sr.adc_rate / 1e6, msps * 1e6 / sr.adc_rate);
-        snprintf(line + strlen(line), sizeof line - strlen(line), "%s%.0fx", i ? ", " : "", msps * 1e6 / sr.adc_rate);
-        if (msps * 1e6 < 1.5 * sr.adc_rate) slow++;
+        snprintf(line + strlen(line), sizeof line - strlen(line), "%s%.1fx", i ? ", " : "", msps * 1e6 / sr.adc_rate);
+        if (msps * 1e6 < cases[i].least * sr.adc_rate) slow++;
     }
 
     /* the same blocks without baseband: the unpacking every stream has */
@@ -4312,7 +4497,8 @@ static tres_t t_bb_speed (void)
         free(data);
     }
 
-    say("real time x %s (both 8192k, 2048k, 256k; one 4096k, 2048k; 112k)", line);
+    say("real time x %s (both 8192k, 2048k, 256k; one 4096k, 2048k; 112k; resampled: NCO both 1000k, one 1000k; "
+        "both 250k, 3000k; NCO both 7000k, 7000001)", line);
     return slow ? T_FAIL : T_PASS;
 }
 
@@ -4498,8 +4684,9 @@ static tres_t t_reg_stream (void)
     reg_bad = 0;
     if (mirisdr_open_null(&n, "252_S16") < 0) { say("no null device"); return T_FAIL; }
 
-    /* a baseband stream at a low IF has no other rate than 4 x IF: with the decimation
-       bypass on that is below its range, so refused rather than clamped */
+    /* a baseband stream at a low IF keeps its converters in the range the decimation
+       bypass allows (2.6 Msps up with it on): 4 Msps stays 4 Msps at 450 kHz, the NCO
+       taking the band the rest of the way, rather than 4 x IF below the range */
     mirisdr_stream_config_default(&sc);
     sc.rate = 4000000;
     sc.baseband = 1;
@@ -4510,8 +4697,8 @@ static tres_t t_reg_stream (void)
     c.if_freq = 450000;
     if (mirisdr_tune(n, 0, &c, NULL) == 0) {
         mirisdr_get_stream(n, &sc, &sr);
-        REG_CHECK(sr.adc_rate == 1800000 && sr.rate * sr.decimation == sr.adc_rate,
-                  "450 kHz IF with the bypass on: converters at %u, out %u, decimation %u", sr.adc_rate, sr.rate, sr.decimation);
+        REG_CHECK(sr.adc_rate == 4000000 && sr.rate * sr.decimation == sr.adc_rate,
+                  "450 kHz IF with the bypass on: converters at %u, out %u, decimation %.4f", sr.adc_rate, sr.rate, sr.decimation);
     }
 
     REG_CHECK(mirisdr_cancel_async(n) == -1, "cancel without a stream: %d", mirisdr_cancel_async(n));
@@ -4745,6 +4932,7 @@ static const struct {
     { "baseband", "rates, IF moves and the LO",  t_bb_plan             },
     { "baseband", "tone, mirror and image",     t_bb_tone             },
     { "baseband", "counts, buffers and gaps",   t_bb_timing           },
+    { "baseband", "DC removal as the tune has it", t_bb_dc            },
     { "baseband", "the filters' group delay",   t_bb_delay            },
     { "baseband", "speed against real time",    t_bb_speed            },
 

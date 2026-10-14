@@ -51,6 +51,12 @@ target_link_libraries(mirisdr_static
 
 set_property(TARGET mirisdr_static APPEND PROPERTY COMPILE_DEFINITIONS "mirisdr_STATIC" )
 
+# the baseband NCO's sine and cosine
+if(UNIX)
+target_link_libraries(mirisdr_shared m)
+target_link_libraries(mirisdr_static m)
+endif()
+
 if(NOT WIN32)
 # Force same library filename for static and shared variants of the library
 set_target_properties(mirisdr_static PROPERTIES OUTPUT_NAME mirisdr)

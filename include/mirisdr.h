@@ -241,16 +241,21 @@ MIRISDR_API int mirisdr_set_gap_fill (mirisdr_dev_t *p, int on); /* extra */
  * With baseband the callback gets complex float samples (MIRISDR_SAMPLE_F32) with the
  * tune's frequency at 0 Hz, and rate is that output's rate. At zero IF they are the
  * samples as they come. With a low IF the LO goes the IF above the frequency (as
- * low_if_auto) and the converters run at 4 x IF, so the band lies at a quarter of their
- * rate. Both tuner outputs are then shifted by it, which is a sign swap a sample. A
- * single output (iq) goes through a real to I/Q converter instead, at half the rate:
- * half the USB data, with more bits at high rates, for more CPU. The image rejection is
- * dominated by the tuner (about 37 dB measured). Half-band stages (flat to 0.4 of
- * their output rate, 61 dB down from 0.6) then halve the rate as often as asked: with
- * the IF at 450 kHz, 1620 kHz or 2048 kHz, rate is 1.8, 6.48 or 8.192 Msps divided by
- * a power of 2 up to 256, by 2 at least for one output.
+ * low_if_auto). Both tuner outputs are shifted by a quarter of the converters' rate,
+ * which is a sign swap a sample. A single output (iq) goes through a real to I/Q
+ * converter instead, at half the rate: half the USB data, with more bits at high rates,
+ * for more CPU. With the converters at 4 x IF that puts the band at 0 Hz; at any other
+ * rate an NCO takes it the rest of the way. The image rejection is dominated by the
+ * tuner (about 37 dB measured). Half-band stages (the last flat to 0.4 of its output
+ * rate, 63 dB down from 0.6) then halve the rate, and a resampler (the same, flat to 0.4 of
+ * the output rate, 63 dB down from 0.6) makes what halving leaves, so any rate works from just
+ * over the converter rate / 512. The converters run at 4 x IF up to 7 Msps (above it
+ * the receiver's analog performance falls off), else at the least the IF takes,
+ * 2.4 x (IF + half its widest filter), or at the output rate if higher: 1.8, 6.48 or
+ * 6.7584 Msps at 450, 1620 or 2048 kHz. 4 x IF divided by a power of 2 needs neither
+ * the resampler nor the NCO. adc_rate, nco and resampled in the result say what runs.
  * A baseband stream follows the tune as with follow_tune, and a tune that changes the
- * IF moves the rate to the nearest one that IF has. Buffer infos count in output
+ * IF keeps the rate where the new IF has it, else takes the nearest it has. Buffer infos count in output
  * samples, their gaps placed to within the filters delay. The stream stats, events,
  * PPS and scan reports still count the converters' samples, decimation (in the stream
  * result) of them to an output sample. Gap fill is always on, so the filters see time
@@ -289,12 +294,17 @@ typedef struct mirisdr_stream_result
 	uint32_t    usb_capacity;       /* B/s the automatic choice planned on */
 	int         baseband;           /* MIRISDR_BASEBAND_*: baseband output type */
 	uint32_t    adc_rate;           /* the converters' samples per second */
-	uint32_t    decimation;         /* converter samples per output sample, 1 without baseband */
-	uint32_t    group_delay;        /* the baseband filters' delay in converter samples: output
+	double      decimation;         /* converter samples per output sample, 1 without baseband;
+	                                   a fraction where the resampler runs */
+	double      group_delay;        /* the baseband filters' delay in converter samples: output
 	                                   sample m is centred on converter sample
 	                                   m x decimation - group_delay (the count the stream stats,
 	                                   events, PPS and scan reports use). 0 without filters */
 	int         gap_fill;           /* in effect: as asked, and always under baseband */
+	int         nco;                /* a low IF baseband stream runs the NCO: the converters
+	                                   are not at 4 x IF, which costs CPU (see above) */
+	int         resampled;          /* ... and the resampler: the rate is not the converters'
+	                                   divided by a power of 2, which costs CPU too */
 	uint32_t reserved[MIRISDR_RESERVED];
 } mirisdr_stream_result_t;
 
@@ -351,7 +361,7 @@ MIRISDR_API mirisdr_band_t mirisdr_get_band (mirisdr_dev_t *p);         /* extra
  * (see mirisdr_set_stream()): the tune then switches it, in one restart.
  *
  * mirisdr_get_center_freq() returns the LO.
- * mirisdr_set_center_freq() sets the LO: it clears low_if_auto and lo_offset. Under a
+ * mirisdr_set_center_freq() sets the LO: it clears low_if_auto. Under a
  * baseband stream at a low IF it sets the frequency put at 0 Hz instead, the LO going
  * the IF above it as with any tune there.
  *
@@ -417,7 +427,6 @@ typedef struct mirisdr_tune_config
 	                           with 1620 and 2048 kHz, 1536000, 5000000 to 8000000 (1 MHz steps)
 	                           or 14000000 (no filter) with zero IF. 0 is the widest */
 	uint32_t if_freq;       /* 0 (zero IF), 450000, 1620000 or 2048000 */
-	int32_t  lo_offset;     /* Hz to move the LO by, on top of low_if_auto */
 	int      low_if_auto;   /* low IF: put the LO if_freq above frequency */
 	int      iq;            /* MIRISDR_IQ_*: low IF only, the output not requested is switched off */
 	mirisdr_gain_config_t gain;
@@ -428,8 +437,15 @@ typedef struct mirisdr_tune_config
 	                           6 MHz (AM, band III), 24 MHz (band IV/V) or 48 MHz (L) divided by it
 	                           and tunes in one band differ in register 2 only. For fast hopping or
                                better control of fractional spurious tones. */ 
+	int      dc_removal;    /* MIRISDR_DC_*: under a baseband stream, the DC offset taken off
+	                           in software (an estimate over 50 ms a converter, from each
+	                           buffer's mean) */
 	uint32_t reserved[MIRISDR_RESERVED];
 } mirisdr_tune_config_t;
+
+#define MIRISDR_DC_AUTO         0       /* at a low IF, not at zero IF, where it is the band's centre */
+#define MIRISDR_DC_ON           1       /* at zero IF too: a signal right at the LO goes with it */
+#define MIRISDR_DC_OFF          2
 
 typedef struct mirisdr_tune_result
 {

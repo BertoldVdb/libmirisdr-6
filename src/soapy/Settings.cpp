@@ -236,11 +236,15 @@ void SoapyMiriSDR::probeRanges(void)
 /*******************************************************************
  * The IF and the rate. Baseband (the default) delivers the band at 0 Hz
  * whatever the IF. "auto" keeps zero IF from rateMin up, as without
- * baseband, and below it takes the low IF rate nearest to the one asked.
- * A fixed low IF has its own rates: the converters at 4 x IF, divided
- * by a power of 2, by 2 at least for a single converter
+ * baseband, and below it takes a low IF. A low IF takes any rate in a
+ * span (see the library's baseband rates): the converters at 4 x IF up
+ * to 7 Msps, else at the least the IF takes, and a resampler for what
+ * halving does not reach. The cheapest are 4 x IF divided down, which
+ * need neither the resampler nor the NCO
  ******************************************************************/
 
+/* the rates of a low IF that need no resampler or NCO: 4 x IF divided by a power of 2, by
+   2 at least for a single converter */
 std::vector<uint32_t> SoapyMiriSDR::lowIfRates(uint32_t ifHz) const
 {
     std::vector<uint32_t> rates;
@@ -251,14 +255,57 @@ std::vector<uint32_t> SoapyMiriSDR::lowIfRates(uint32_t ifHz) const
     return rates;
 }
 
+/* the converter rate a low IF runs at, as the library has it: 4 x IF up to 7 Msps, else
+   the least the IF takes, 2.4 x (IF + half its widest filter) */
+static uint64_t convPref(uint32_t ifHz)
+{
+    const uint64_t widest = ifHz > 450000 ? 1536000 : 600000;
+    const uint64_t least = std::max<uint64_t>(((2 * (uint64_t) ifHz + widest) * 6 + 4) / 5, 1300000);
+
+    return 4 * (uint64_t) ifHz <= 7000000 ? 4 * (uint64_t) ifHz : least;
+}
+
+/* the rates a low IF offers: from just above that over 512 (8 halvings and the resampler's
+   2 at most), to 4 x IF (2 x IF with one converter), past which the tuner's filter leaves
+   nothing. The library takes more, up to the converters' most */
+void SoapyMiriSDR::lowIfRange(uint32_t ifHz, uint32_t &lo, uint32_t &hi) const
+{
+    const uint64_t one = converters != MIRISDR_IQ_BOTH ? 1 : 0;
+
+    lo = (uint32_t) (convPref(ifHz) / 512 + 1);
+    hi = (uint32_t) std::min<uint64_t>((uint64_t) rateMax, 4 * (uint64_t) ifHz) / (one ? 2 : 1);
+}
+
+/* "auto" below rateMin: an IF that has this rate free, as before; else the one with the
+   least converter rate whose widest filter passes most of it */
+uint32_t SoapyMiriSDR::pickLowIf(uint32_t rate) const
+{
+    const int one = converters != MIRISDR_IQ_BOTH;
+    uint32_t pick = 0, lo, hi;
+    uint64_t best = 0;
+
+    for (uint32_t f : IFS)
+    {
+        std::vector<uint32_t> r = lowIfRates(f);
+        if (f && std::find(r.begin(), r.end(), rate) != r.end()) return f;
+    }
+
+    for (uint32_t f : IFS)
+    {
+        uint64_t widest = f > 450000 ? 1536000 : 600000, conv;
+
+        lowIfRange(f, lo, hi);
+        if (!f || rate < lo || rate > hi || (widest < 0.8 * rate && f != 2048000)) continue;
+        conv = std::max<uint64_t>(convPref(f), (uint64_t) rate << one);
+        if (!pick || conv < best) { pick = f; best = conv; }
+    }
+
+    return pick ? pick : IFS[1];
+}
+
 bool SoapyMiriSDR::realOut(void) const
 {
     return !baseband && ifFreq && converters != MIRISDR_IQ_BOTH;
-}
-
-static double ratio(double a, double b)
-{
-    return a > b ? a / b : b / a;
 }
 
 void SoapyMiriSDR::configure(uint32_t rate)
@@ -266,24 +313,20 @@ void SoapyMiriSDR::configure(uint32_t rate)
     std::lock_guard<std::recursive_mutex> lock(devMutex);
     mirisdr_tune_config_t tc;
     mirisdr_stream_config_t c = streamCfg;
-    uint32_t ifHz = 0, out = rate, pick = 0;
-    double best = 0;
+    uint32_t ifHz = 0, out = rate;
 
     ifHz = fixedIf();
 
-    if (baseband && ifMode == "auto" && rate < rateMin)
+    /* below the converters own minimum only a low IF gets there */
+    if (baseband && ifMode == "auto" && rate < rateMin) ifHz = pickLowIf(rate);
+
+    /* a low IF has a span of rates: the nearest end outside it */
+    if (baseband && ifHz)
     {
-        /* below the converters own minimum only a low IF gets there */
-        for (uint32_t f : IFS)
-            for (uint32_t r : lowIfRates(f))
-                if (f && r < rateMin && (!pick || ratio(r, rate) < best)) { pick = r; best = ratio(r, rate); ifHz = f; }
-        out = pick;
-    }
-    else if (baseband && ifHz)
-    {
-        for (uint32_t r : lowIfRates(ifHz))
-            if (!pick || ratio(r, rate) < best) { pick = r; best = ratio(r, rate); }
-        out = pick;
+        uint32_t lo, hi;
+
+        lowIfRange(ifHz, lo, hi);
+        out = std::min(std::max(rate, lo), hi);
     }
 
     /* the tune: the IF, one converter or both, the filter nearest to what was asked */
@@ -291,7 +334,6 @@ void SoapyMiriSDR::configure(uint32_t rate)
     tc.if_freq = ifHz;
     tc.iq = ifHz ? converters : MIRISDR_IQ_BOTH;
     tc.low_if_auto = 0;
-    tc.lo_offset = 0;
     tc.bandwidth = pickBandwidth(ifHz);
     tc.gain.mode = MIRISDR_GAIN_KEEP;
     if (mirisdr_tune(dev, 0, &tc, NULL) < 0)
@@ -305,6 +347,24 @@ void SoapyMiriSDR::configure(uint32_t rate)
     c.baseband = baseband;
     applyStream(c);
     if (out != rate) SoapySDR_logf(SOAPY_SDR_INFO, "mirisdr: %u S/s, the nearest to %u with a %u Hz IF", out, rate, ifHz);
+
+    /* a rate that is not the converters' halved, or with them off 4 x IF: say which
+       nearby ones need neither */
+    mirisdr_stream_result_t r;
+    if (mirisdr_get_stream(dev, NULL, &r) == 0 && (r.nco || r.resampled))
+    {
+        uint32_t below = 0, above = 0;
+
+        for (uint32_t f : lowIfRates(ifHz))
+        {
+            if (f < r.rate && f > below) below = f;
+            if (f > r.rate && (!above || f < above)) above = f;
+        }
+        SoapySDR_logf(SOAPY_SDR_WARNING, "mirisdr: %u S/s with a %u Hz IF needs the %s, the receiver at %u S/s: "
+                      "more CPU than %u%s%.0u S/s, which need neither", r.rate, ifHz,
+                      r.nco && r.resampled ? "resampler and the NCO" : r.nco ? "NCO" : "resampler", r.adc_rate,
+                      below ? below : above, below && above ? " or " : "", below && above ? above : 0);
+    }
 }
 
 /*******************************************************************
@@ -373,6 +433,38 @@ void SoapyMiriSDR::setAntenna(const int direction, const size_t channel, const s
 std::string SoapyMiriSDR::getAntenna(const int direction, const size_t channel) const
 {
     return "RX";
+}
+
+/*******************************************************************
+ * DC offset: the library takes it off in software under baseband, by
+ * default at a low IF and not at zero IF, where it is the band's
+ * centre. Setting the mode turns it on or off at every IF
+ ******************************************************************/
+
+bool SoapyMiriSDR::hasDCOffsetMode(const int direction, const size_t channel) const
+{
+    return true;
+}
+
+void SoapyMiriSDR::setDCOffsetMode(const int direction, const size_t channel, const bool automatic)
+{
+    std::lock_guard<std::recursive_mutex> lock(devMutex);
+    mirisdr_tune_config_t tc;
+
+    mirisdr_get_tune(dev, 0, &tc, NULL);
+    tc.dc_removal = automatic ? MIRISDR_DC_ON : MIRISDR_DC_OFF;
+    tc.gain.mode = MIRISDR_GAIN_KEEP;
+    applyTune(tc);
+}
+
+bool SoapyMiriSDR::getDCOffsetMode(const int direction, const size_t channel) const
+{
+    std::lock_guard<std::recursive_mutex> lock(devMutex);
+    mirisdr_tune_config_t tc;
+
+    mirisdr_get_tune(dev, 0, &tc, NULL);
+    if (!baseband || tc.dc_removal == MIRISDR_DC_OFF) return false;
+    return tc.dc_removal == MIRISDR_DC_ON || ifFreq != 0;
 }
 
 /*******************************************************************
@@ -567,7 +659,6 @@ void SoapyMiriSDR::setFrequency(const int direction, const size_t channel, const
     mirisdr_get_tune(dev, 0, &tc, NULL);
     tc.frequency = (uint32_t) std::llround(frequency);
     tc.low_if_auto = 0;
-    tc.lo_offset = 0;
     tc.gain.mode = MIRISDR_GAIN_KEEP;
     applyTune(tc);
 }
@@ -626,44 +717,63 @@ double SoapyMiriSDR::getSampleRate(const int direction, const size_t channel) co
     return r.rate;
 }
 
-/* the low IF rates a setting allows: below rateMin with "auto", all of a fixed IF's */
-static void addLowIf(std::vector<double> &v, const std::vector<uint32_t> &rates, double below)
+/* rates within a span, once each */
+static void addRates(std::vector<double> &v, const std::vector<double> &rates, double lo, double hi)
 {
-    for (uint32_t r : rates)
-        if (r < below && r >= 25000 && std::find(v.begin(), v.end(), (double) r) == v.end()) v.push_back(r);
+    for (double r : rates)
+        if (r >= lo && r <= hi && std::find(v.begin(), v.end(), r) == v.end()) v.push_back(r);
 }
 
+/* A list of the usual ones. With a low IF those needing no NCO, from 25 ksps, within
+   its span */
 std::vector<double> SoapyMiriSDR::listSampleRates(const int direction, const size_t channel) const
 {
-    static const double common[] = { 1.536e6, 2e6, 2.048e6, 2.4e6, 3e6, 4e6, 5e6, 6e6, 7e6,
-                                     8e6, 9e6, 10e6, 12e6, 14e6 };
+    static const std::vector<double> common = { 1.536e6, 2e6, 2.048e6, 2.4e6, 3e6, 4e6, 5e6, 6e6, 7e6,
+                                                8e6, 9e6, 10e6, 12e6, 14e6 };
+    static const std::vector<double> low = { 48e3, 96e3, 192e3, 250e3, 500e3, 1e6 };
     std::vector<double> rates;
-    uint32_t fixed = fixedIf();
+    uint32_t fixed = fixedIf(), lo, hi;
 
-    if (baseband && fixed) addLowIf(rates, lowIfRates(fixed), 1e12);
+    if (baseband && fixed)
+    {
+        lowIfRange(fixed, lo, hi);
+        for (uint32_t r : lowIfRates(fixed)) addRates(rates, { (double) r }, std::max<double>(lo, 25000), hi);
+        addRates(rates, low, lo, hi);
+        addRates(rates, common, lo, hi);
+    }
     else
     {
         if (baseband)
-            for (uint32_t f : IFS) if (f) addLowIf(rates, lowIfRates(f), rateMin);
-        for (double r : common)
-            if (r >= rateMin && r <= rateMax) rates.push_back(r);
+            for (uint32_t f : IFS)
+                if (f)
+                {
+                    lowIfRange(f, lo, hi);
+                    for (uint32_t r : lowIfRates(f)) addRates(rates, { (double) r }, std::max<double>(lo, 25000), rateMin - 1);
+                    addRates(rates, low, lo, rateMin - 1);
+                }
+        addRates(rates, common, rateMin, rateMax);
     }
     std::sort(rates.begin(), rates.end());
     return rates;
 }
 
+/* Any rate in a span: a low IF's, or with "auto" the lowest of them up to zero IF's most */
 SoapySDR::RangeList SoapyMiriSDR::getSampleRateRange(const int direction, const size_t channel) const
 {
     SoapySDR::RangeList out;
-    std::vector<double> low;
-    uint32_t fixed = fixedIf();
+    uint32_t fixed = fixedIf(), lo, hi;
 
-    if (baseband && fixed) addLowIf(low, lowIfRates(fixed), 1e12);
+    if (baseband && fixed)
+    {
+        lowIfRange(fixed, lo, hi);
+        out.push_back(SoapySDR::Range(lo, hi));
+    }
     else if (baseband)
-        for (uint32_t f : IFS) if (f) addLowIf(low, lowIfRates(f), rateMin);
-    std::sort(low.begin(), low.end());
-    for (double r : low) out.push_back(SoapySDR::Range(r, r));
-    if (!(baseband && fixed)) out.push_back(SoapySDR::Range(rateMin, rateMax));
+    {
+        lowIfRange(IFS[1], lo, hi);
+        out.push_back(SoapySDR::Range(std::min<double>(lo, rateMin), rateMax));
+    }
+    else out.push_back(SoapySDR::Range(rateMin, rateMax));
     return out;
 }
 

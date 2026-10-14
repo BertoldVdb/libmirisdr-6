@@ -33,6 +33,10 @@
 /* rate above which AUTO bypasses the decimator */
 #define MIRISDR_DECIMATION_AUTO_RATE    14500000
 
+/* A low IF baseband stream keeps its converters at 4 x IF up to this rate. Above about
+ * 7 Msps the receiver's analog performance falls off, gradually */
+#define MIRISDR_BB_PREFER_MAX           7000000
+
 /* What the automatic format choice plans on in bulk: 32 MB/s is reached on any host
  * tried. It only steers the choice, see mirisdr_stream_plan() */
 #define MIRISDR_BULK_CAPACITY           32000000

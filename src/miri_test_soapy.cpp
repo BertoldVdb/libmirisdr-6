@@ -66,6 +66,7 @@ static int probe(Dev *d, soapy_say_t say, soapy_say_t note)
     std::vector<std::string> f = d->getStreamFormats(SOAPY_SDR_RX, 0), g;
     SoapySDR::RangeList fr = d->getFrequencyRange(SOAPY_SDR_RX, 0), rr = d->getSampleRateRange(SOAPY_SDR_RX, 0);
     std::vector<double> bw;
+    double top;
     double full;
     int bad = 0;
 
@@ -74,17 +75,19 @@ static int probe(Dev *d, soapy_say_t say, soapy_say_t note)
     if (!has(f, SOAPY_SDR_CS16) || !has(f, SOAPY_SDR_CF32) || !has(f, SOAPY_SDR_CS8)) { say("formats missing"); bad++; }
     if (d->getNativeStreamFormat(SOAPY_SDR_RX, 0, full) != SOAPY_SDR_CF32 || full != 1.0) { say("native format not CF32 in baseband"); bad++; }
     if (fr.empty() || fr[0].minimum() > 1e6 || fr[0].maximum() < 2e9) { say("frequency range wrong"); bad++; }
-    /* the low IF rates below the zero IF range, which comes last */
-    if (rr.size() < 2 || rr.back().minimum() > 2e6 || rr.back().maximum() < 8e6) { say("rate range wrong"); bad++; }
+    /* one span: a low IF's from a few ksps, zero IF's up to the top */
+    if (rr.size() != 1 || rr[0].minimum() > 10e3 || rr[0].maximum() < 8e6)
+    { say("rate range wrong: %zu spans, %.0f to %.0f", rr.size(), rr.empty() ? 0 : rr[0].minimum(),
+          rr.empty() ? 0 : rr.back().maximum()); bad++; }
     else {
-        bool has900 = false, has256 = false;
-        for (auto &r : rr) {
-            if (r.minimum() == 900000 && r.maximum() == 900000) has900 = true;
-            if (r.minimum() == 256000 && r.maximum() == 256000) has256 = true;
-        }
-        if (!has900 || !has256) { say("no low IF rates 900k and 256k listed"); bad++; }
-        note("frequency %.3f-%.0f MHz, %zu low IF rates from %.0f sps, then %.2f-%.2f Msps", fr[0].minimum() / 1e6,
-             fr[0].maximum() / 1e6, rr.size() - 1, rr[0].minimum(), rr.back().minimum() / 1e6, rr.back().maximum() / 1e6);
+        /* the list: low IF rates needing no NCO, the usual round ones, zero IF's */
+        std::vector<double> lr = d->listSampleRates(SOAPY_SDR_RX, 0);
+        auto in = [&lr](double r) { return std::find(lr.begin(), lr.end(), r) != lr.end(); };
+
+        if (!in(900000) || !in(256000) || !in(250000) || !in(2048000))
+        { say("rates 900k, 256k, 250k and 2048k not all listed"); bad++; }
+        note("frequency %.3f-%.0f MHz, rates %.0f sps to %.2f Msps, %zu listed", fr[0].minimum() / 1e6,
+             fr[0].maximum() / 1e6, rr[0].minimum(), rr[0].maximum() / 1e6, lr.size());
     }
 
     g = d->listGains(SOAPY_SDR_RX, 0);
@@ -145,15 +148,29 @@ static int probe(Dev *d, soapy_say_t say, soapy_say_t note)
     if (d->getSampleRate(SOAPY_SDR_RX, 0) != 900000 || d->getFrequency(SOAPY_SDR_RX, 0) != 433.5e6 || bw.back() != 600e3)
     { say("900 ksps: %.0f sps at %.0f Hz, widest filter %.0f", d->getSampleRate(SOAPY_SDR_RX, 0),
           d->getFrequency(SOAPY_SDR_RX, 0), bw.back()); bad++; }
-    d->setSampleRate(SOAPY_SDR_RX, 0, 250000);
-    if (d->getSampleRate(SOAPY_SDR_RX, 0) != 256000) { say("250 ksps gave %.0f, not 256000", d->getSampleRate(SOAPY_SDR_RX, 0)); bad++; }
+    /* the DC removal: on at a low IF by default, set on or off at any IF */
+    if (!d->hasDCOffsetMode(SOAPY_SDR_RX, 0) || !d->getDCOffsetMode(SOAPY_SDR_RX, 0)) { say("no DC removal at a low IF"); bad++; }
+    d->setDCOffsetMode(SOAPY_SDR_RX, 0, false);
+    if (d->getDCOffsetMode(SOAPY_SDR_RX, 0)) { say("DC removal stayed on"); bad++; }
+    d->setSampleRate(SOAPY_SDR_RX, 0, 2e6);
+    d->setDCOffsetMode(SOAPY_SDR_RX, 0, true);
+    if (!d->getDCOffsetMode(SOAPY_SDR_RX, 0)) { say("no DC removal at zero IF when set"); bad++; }
+    d->setSampleRate(SOAPY_SDR_RX, 0, 900000);
 
-    /* a fixed IF has its own rates; one converter halves the top one */
+    /* any other low rate as asked, the NCO taking the band the rest of the way */
+    d->setSampleRate(SOAPY_SDR_RX, 0, 250000);
+    if (d->getSampleRate(SOAPY_SDR_RX, 0) != 250000) { say("250 ksps gave %.0f", d->getSampleRate(SOAPY_SDR_RX, 0)); bad++; }
+
+    /* a fixed IF has a span of rates; one converter halves its top */
     d->writeSetting("if_freq", "2048000");
     d->setSampleRate(SOAPY_SDR_RX, 0, 8192000);
     if (d->getSampleRate(SOAPY_SDR_RX, 0) != 8192000) { say("both converters at 2048 kHz: %.0f", d->getSampleRate(SOAPY_SDR_RX, 0)); bad++; }
+    top = d->getSampleRateRange(SOAPY_SDR_RX, 0).back().maximum();
     d->writeSetting("converters", "I");
-    if (d->getSampleRate(SOAPY_SDR_RX, 0) != 4096000) { say("one converter at 2048 kHz: %.0f", d->getSampleRate(SOAPY_SDR_RX, 0)); bad++; }
+    if (d->getSampleRate(SOAPY_SDR_RX, 0) != std::min(8192000.0, std::floor(top / 2)) ||
+        d->getSampleRateRange(SOAPY_SDR_RX, 0).back().maximum() != std::floor(top / 2))
+    { say("one converter at 2048 kHz: %.0f, the span's top %.0f of %.0f", d->getSampleRate(SOAPY_SDR_RX, 0),
+          d->getSampleRateRange(SOAPY_SDR_RX, 0).back().maximum(), top); bad++; }
 
     /* raw: one converter gives real samples, the LO at the centre */
     d->writeSetting("baseband", "false");

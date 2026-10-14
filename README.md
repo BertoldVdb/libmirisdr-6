@@ -30,7 +30,7 @@ The SoapySDR module is built too when the SoapySDR development files are install
 
   - **SDRplay RSP1B support.** 
   - **A SoapySDR module.** Programs that use SoapySDR can use the receivers with `driver=mirisdr`.
-  - **Low sample rates.** Rates down to about 28 ksps, through the tuner's low IF.
+  - **Low sample rates.** Any rate down to about 3.5 ksps, through the tuner's low IF.
   - **High sample rates.** Up to 12 Msps with isochronous USB transfers, and about 27.5 Msps with bulk transfers.
   - **Better reception on all MSi001 receivers.**
   - **A stable stream.** The library loads its own firmware into the receiver when it opens it. Together they keep the stream running across rate changes, start and stop, and USB stalls, without resetting the receiver.

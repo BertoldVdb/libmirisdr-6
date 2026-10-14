@@ -135,10 +135,10 @@ The second argument is the tuner. It is always 0 for now. It is there for receiv
   - `if_freq`: 0 for zero IF, or a low IF of 450000, 1620000 or 2048000.
   - `bandwidth`: the tuner's filter in Hz. 0 lets the library pick. At zero IF it takes the narrowest filter at least as wide as the sample rate, up to 8 MHz, and changes it when the rate changes. For example 2.048 Msps gets 5 MHz and 10 Msps gets 8 MHz. With a low IF it takes the widest the IF has. The filters are listed below.
   - `low_if_auto`: with a low IF, put the LO one IF above `frequency`, so `frequency` is what the tuner passes. Without it the LO sits at `frequency`.
-  - `lo_offset`: moves the LO by this many Hz on top of the above.
   - `iq`: with a low IF, which tuner outputs run. `MIRISDR_IQ_BOTH`, or `MIRISDR_IQ_ONLY_I` or `MIRISDR_IQ_ONLY_Q` to switch one off.
   - `gain`: see the next section.
   - `frontend`: the bias-T and the notch filters, see below.
+  - `dc_removal`: with a baseband stream, whether the library takes the DC offset off in software. `MIRISDR_DC_AUTO` (the default) does at a low IF, where the DC lies outside the band, and not at zero IF, where it is the band's centre. `MIRISDR_DC_ON` does at every IF; at zero IF a signal right at the LO goes with it. `MIRISDR_DC_OFF` never does. It tracks over 50 ms, so it follows the tuner's slow drift but not a signal.
   - `override` and `synth_thresh`: expert settings. They hold the tuner's calibration codes and fix the synthesizer's grid. Leave them at 0 unless you know you need them.
 
 The filters each IF has:
@@ -164,7 +164,7 @@ A filter the IF does not have is refused. This matters when you change the IF. `
 
 `mirisdr_tune_check()` takes the same arguments and fills the same result, without tuning. Use it to find out what would work.
 
-The older `mirisdr_set_center_freq()` sets the LO directly. It switches `low_if_auto` and `lo_offset` off. Under a baseband stream at a low IF it sets the frequency put at 0 Hz instead, with the LO the IF above it, as any tune there does.
+The older `mirisdr_set_center_freq()` sets the LO directly. It switches `low_if_auto` off. Under a baseband stream at a low IF it sets the frequency put at 0 Hz instead, with the LO the IF above it, as any tune there does.
 
 <h4>The front end</h4>
 
@@ -338,16 +338,33 @@ At zero IF the receiver's lowest rate is 1.3 Msps, and the LO and the DC offset 
 
 <h4>How it works</h4>
 
-  - At zero IF the samples are only converted to float. No other processing is done.
-  - With a low IF the LO goes one IF above `frequency`. The converters run at 4 times the IF, so the band sits at a quarter of their rate. The library shifts it to 0 Hz and removes the DC offset. With both converters the shift is just a change of sign, which costs almost nothing.
-  - With one converter (`iq` set to `MIRISDR_IQ_ONLY_I` or `_ONLY_Q` in the tune) a real to I/Q converter makes complex samples at half the rate. This halves the USB data and keeps more bits at high rates, but costs more CPU.
-  - Half-band filters then halve the rate as many times as needed. Each is flat to 0.4 of its output rate and 61 dB down from 0.6.
+  - At zero IF the samples are only converted to float, and the DC offset taken off if the tune's `dc_removal` is `MIRISDR_DC_ON`.
+  - With a low IF the LO goes one IF above `frequency`. The library shifts the band by a quarter of the converter rate and removes the DC offset (see `dc_removal` in the tune). With both converters that shift is just a change of sign, which costs almost nothing.
+  - With one converter (`iq` set to `MIRISDR_IQ_ONLY_I` or `_ONLY_Q` in the tune) a real to I/Q converter makes complex samples at half the rate, shifted the same way. This halves the USB data and keeps more bits at high rates, but costs more CPU.
+  - When the converters run at 4 times the IF, that shift puts the band at 0 Hz. At any other converter rate an NCO, a frequency shift in software, takes it the rest of the way. The NCO is skipped at 4 times the IF.
+  - Half-band filters then halve the rate as many times as needed. The last is flat to 0.4 of its output rate and 63 dB down from 0.6. The ones before it only keep aliases out of that band, so they are shorter and cheaper.
+  - Where halving does not reach the rate exactly, a resampler makes the rest, a ratio between 1 and 2. It is a windowed sinc, flat to 0.4 of the output rate and 63 dB down from 0.6, as the last half-band. It keeps exact time: output m lies exactly m × `decimation` converter samples after output 0.
 
 The image rejection is the tuner's own, about 37 dB, with one converter or both.
 
 <h4>Which rates</h4>
 
-At zero IF any normal rate works, from 1.3 Msps. With a low IF the rate must be the converter rate divided by a power of 2, up to 256, as long as the result is a whole number. With one converter it must be divided by 2 at least.
+At zero IF any normal rate works, from 1.3 Msps. With a low IF any rate works between the IF's lowest and what the converters reach. The library picks the converter rate like this:
+
+  - 4 times the IF, if that is at most 7 Msps. Above about 7 Msps the receiver's analog performance falls off. That is 1.8 Msps at 450 kHz and 6.48 Msps at 1620 kHz.
+  - Else the least rate the IF takes: 2.4 times the IF plus half its widest filter, which keeps the band clear of the receiver's own filter edge. That is 6.7584 Msps at 2048 kHz, with the NCO.
+  - The output rate itself, if that is higher (twice it with one converter), with the NCO.
+  - At least 1.3 Msps, or 2.6 Msps with the decimation bypass `"ON"`, and at most 15 Msps with the bypass `"OFF"`, 30 Msps otherwise. `"AUTO"` uses the bypass above 14.5 Msps.
+
+The total decimation stays under 512, so each IF has a lowest rate:
+
+| IF | Converter rate | Lowest rate |
+|---|---|---|
+| 450 kHz | 1.8 Msps | 3516 |
+| 1620 kHz | 6.48 Msps | 12657 |
+| 2048 kHz | 6.7584 Msps | 13201 |
+
+The rates below need neither the resampler nor the NCO, so they cost the least CPU. The converters then run at exactly 4 times the IF, 8.192 Msps at 2048 kHz too:
 
 | IF | Converter rate | Rates with both converters |
 |---|---|---|
@@ -355,17 +372,21 @@ At zero IF any normal rate works, from 1.3 Msps. With a low IF the rate must be 
 | 1620 kHz | 6.48 Msps | 6480000, 3240000, 1620000, 810000, 405000, 202500, 101250, 50625 |
 | 2048 kHz | 8.192 Msps | 8192000, 4096000, 2048000 and so on down to 32000 |
 
-Tune the IF first, then set the stream, because the IF decides which rates exist. A rate the IF does not have is refused with a message that says which ones it has.
+With one converter, the same rates divided by 2 at least. For example 250 ksps at 450 kHz runs the converters at 1.8 Msps with a decimation of 7.2, and 1 Msps at 2048 kHz runs them at 6.7584 Msps with the NCO and a decimation of 6.7584. `adc_rate` in the stream result says what they run at.
 
-A tune that changes the IF while the stream runs moves the rate to the nearest one the new IF has. Check `mirisdr_get_stream()` afterwards.
+The USB limits still apply to the converter rate. A rate outside the IF's span is refused, with a message that gives the span.
+
+A tune that changes the IF while the stream runs keeps the rate if the new IF has it, and otherwise moves it to the nearest end of the new IF's span. Check `mirisdr_get_stream()` afterwards.
 
 <h4>The stream result with baseband</h4>
 
   - `baseband`: `MIRISDR_BASEBAND_ZERO_IF`, `MIRISDR_BASEBAND_COMPLEX` (low IF, both converters) or `MIRISDR_BASEBAND_REAL` (low IF, one converter).
   - `rate`: the output rate the callback gets.
   - `adc_rate`: the converters' rate.
-  - `decimation`: converter samples per output sample.
-  - `group_delay`: the filters' delay in converter samples. Output sample m is centred on converter sample m × `decimation` − `group_delay`, so a time stamp counted in converter samples, such as a PPS, is output sample (sample + `group_delay`) / `decimation`. 0 at zero IF.
+  - `decimation`: converter samples per output sample, a `double`. A fraction where the resampler runs.
+  - `nco`: whether the NCO runs, because the converters are not at 4 times the IF.
+  - `resampled`: whether the resampler runs, because the rate is not the converter rate divided by a power of 2. Either costs more CPU than the rates in the table above.
+  - `group_delay`: the filters' delay in converter samples, a `double`. Output sample m is centred on converter sample m × `decimation` − `group_delay`, so a time stamp counted in converter samples, such as a PPS, is output sample (sample + `group_delay`) / `decimation`. 0 at zero IF.
 
 <h4>Things to know</h4>
 
@@ -375,7 +396,7 @@ A tune that changes the IF while the stream runs moves the rate to the nearest o
   - `swap_iq` still mirrors the spectrum.
   - A buffer length given to `mirisdr_read_async()` is in output bytes, 8 bytes for each complex sample.
   - `mirisdr_read_sync()` refuses baseband.
-  - The processing runs in the callback's thread. On a Raspberry Pi Compute Module 0 (one core at 1 GHz) it runs at 3 times real time or better with the 2048 kHz IF, and 9 times with both converters at the full 8.192 Msps. The 450 kHz IF needs much less.
+  - The processing runs in the callback's thread. On a Raspberry Pi Compute Module 0 (one core at 1 GHz) it runs at 3.5 times real time or better with the 2048 kHz IF, and 9 times with both converters at the full 8.192 Msps. The 450 kHz IF needs much less. Rates off the table above add the resampler: 250 ksps at 450 kHz runs at 10 times real time, 1 Msps at 1620 kHz at 2.9 times and 3 Msps at 2 times. 1 Msps at 2048 kHz, with the NCO too, runs at about 1.9 times.
   - The same signal reads about 12 dB higher with a low IF than at zero IF. This is not explained yet, so do not compare absolute levels between the two.
 
 

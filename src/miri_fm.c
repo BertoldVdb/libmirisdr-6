@@ -142,7 +142,6 @@ struct demod_state
 	int      deemph, deemph_a;
 	int      now_lpr;
 	int      prev_lpr_index;
-	double   lpr_t, lpr_prev;   /* low_pass_real: the next output's place, the last average */
 	int      dc_block, dc_avg;
 	void     (*mode_demod)(struct demod_state*);
 	pthread_rwlock_t rw;
@@ -215,13 +214,13 @@ void usage(void)
 		"\t    1:      Isochronous (maximum 196.608 Mbit/s) \n"
 		"\t    2:      Bulk (maximum 333Mbit/s, depends on controller type)\n"
 		"\t[-i IF mode (default: auto)]\n"
-		"\t    auto:    the low IF with the lowest rate that fits -s\n"
+		"\t    auto:    450 kHz, or 1620 kHz for a band wider than 480 kHz\n"
 		"\t    0:       ZERO, at 1.3 MS/s or more, with a box filter\n"
 		"\t    450000:  450 kHz\n"
 		"\t    1620000: 1620kHz\n"
 		"\t    2048000: 2048kHz\n"
-		"\t    a low IF has a fixed list of rates: the next one up\n"
-		"\t    is used, and the audio resampled to the rate asked for\n"
+		"\t    a low IF takes any rate: the demod runs at a whole multiple\n"
+		"\t    of the audio rate, which it averages down to\n"
 		"\t[-w BW mode (default: the widest the IF allows)]\n"
 		"\t    200000:  200kHz, 450 kHz IF\n"
 		"\t    300000:  300kHz, 450 kHz IF\n"
@@ -377,29 +376,18 @@ int low_pass_simple(int16_t *signal2, int len, int step)
 }
 
 void low_pass_real(struct demod_state *s)
-/* down to rate_out2: a square window by the whole part of the ratio, then linear
-   interpolation for the rest. In place, so no upsampling */
+/* down to rate_out2, a whole fraction of rate_out: the average of each m, carried
+   over from buffer to buffer. In place */
 {
 	int i, i2 = 0;
 	int m = s->rate_out / s->rate_out2;
-	double step, v;
-	if (m < 1) {
-		m = 1;}
-	step = (double)s->rate_out / m / s->rate_out2;
 	for (i = 0; i < s->result_len; i++) {
 		s->now_lpr += s->result[i];
 		if (++s->prev_lpr_index < m) {
 			continue;}
-		v = (double)s->now_lpr / m;
+		s->result[i2++] = (int16_t)((s->now_lpr + (s->now_lpr >= 0 ? m / 2 : -(m / 2))) / m);
 		s->now_lpr = 0;
 		s->prev_lpr_index = 0;
-		/* the outputs from the last averaged sample up to this one */
-		while (s->lpr_t < 1.0) {
-			s->result[i2++] = (int16_t)lrint(s->lpr_prev + s->lpr_t * (v - s->lpr_prev));
-			s->lpr_t += step;
-		}
-		s->lpr_t -= 1.0;
-		s->lpr_prev = v;
 	}
 	s->result_len = i2;
 }
@@ -709,71 +697,6 @@ int rms(int16_t *samples, int len, int step)
 	return (int)sqrt((p-err) / len);
 }
 
-void arbitrary_upsample(int16_t *buf1, int16_t *buf2, int len1, int len2)
-/* linear interpolation, len1 < len2 */
-{
-	int i = 1;
-	int j = 0;
-	int tick = 0;
-	double frac;  // use integers...
-	while (j < len2) {
-		frac = (double)tick / (double)len2;
-		buf2[j] = (int16_t)(buf1[i-1]*(1-frac) + buf1[i]*frac);
-		j++;
-		tick += len1;
-		if (tick > len2) {
-			tick -= len2;
-			i++;
-		}
-		if (i >= len1) {
-			i = len1 - 1;
-			tick = len2;
-		}
-	}
-}
-
-void arbitrary_downsample(int16_t *buf1, int16_t *buf2, int len1, int len2)
-/* fractional boxcar lowpass, len1 > len2 */
-{
-	int i = 1;
-	int j = 0;
-	int tick = 0;
-	double remainder = 0;
-	double frac;  // use integers...
-	buf2[0] = 0;
-	while (j < len2) {
-		frac = 1.0;
-		if ((tick + len2) > len1) {
-			frac = (double)(len1 - tick) / (double)len2;}
-		buf2[j] += (int16_t)((double)buf1[i] * frac + remainder);
-		remainder = (double)buf1[i] * (1.0-frac);
-		tick += len2;
-		i++;
-		if (tick > len1) {
-			j++;
-			buf2[j] = 0;
-			tick -= len1;
-		}
-		if (i >= len1) {
-			i = len1 - 1;
-			tick = len1;
-		}
-	}
-	for (j=0; j<len2; j++) {
-		buf2[j] = buf2[j] * len2 / len1;}
-}
-
-void arbitrary_resample(int16_t *buf1, int16_t *buf2, int len1, int len2)
-/* up to you to calculate lengths and make sure it does not go OOB
- * okay for buffers to overlap, if you are downsampling */
-{
-	if (len1 < len2) {
-		arbitrary_upsample(buf1, buf2, len1, len2);
-	} else {
-		arbitrary_downsample(buf1, buf2, len1, len2);
-	}
-}
-
 void full_demod(struct demod_state *d)
 {
 	int i, ds_p;
@@ -819,9 +742,7 @@ void full_demod(struct demod_state *d)
 	if (d->dc_block) {
 		dc_block_filter(d);}
 	if (d->rate_out2 > 0) {
-		low_pass_real(d);
-		//arbitrary_resample(d->result, d->result, d->result_len, d->result_len * d->rate_out2 / d->rate_out);
-	}
+		low_pass_real(d);}
 }
 
 static void mirisdr_callback(unsigned char *buf, uint32_t len, void *ctx)
@@ -905,53 +826,56 @@ static void *output_thread_fn(void *arg)
 	return 0;
 }
 
-/* The low IFs: with both converters at 4 x IF, the library filters the station
-   down to that rate halved up to 8 times, while it stays whole */
-static const uint32_t low_ifs[] = { 450000, 1620000, 2048000 };
+/* The low IFs, the least rate each gives (just over its converter rate / 512) and its
+   widest filter */
+static const struct { uint32_t hz, least, widest; } low_ifs[] = {
+	{ 450000, 3516, 600000 }, { 1620000, 12657, 1536000 }, { 2048000, 13201, 1536000 } };
 
-/* The capture for a demod rate of at least rate_in. A low IF gives the station at
-   0 Hz, at the lowest rate of its list that fits and that the oversampling divides.
-   Zero IF captures at 1.3 MS/s or more, a quarter of the rate off the station, and
-   the box filter takes it down to rate_in. The audio is resampled to the rate asked
-   for where the demod rate differs */
+/* The capture for a demod rate of at least rate_in. The library gives any rate with
+   a low IF, so the demod rate is the audio rate times the oversampling times a whole
+   number: the audio then comes from it by averaging, with no resampling. A low IF
+   gives the station at 0 Hz: by default the 450 kHz one where its filter passes the
+   oversampled band, else 1620 kHz. Zero IF captures at 1.3 MS/s or more, a quarter
+   of the rate off the station, and the box filter takes it down to rate_in */
 static void optimal_settings(void)
 {
 	struct dongle_state *d = &dongle;
 	struct demod_state *dm = &demod;
-	uint32_t want = (uint32_t)dm->rate_in, best = 0, best_if = 0, adc, r;
-	int audio = dm->rate_out2 > 0 ? dm->rate_out2 : dm->rate_out;
-	int i, k;
+	int raw = dm->mode_demod == &raw_demod;
+	uint32_t audio = (uint32_t)(dm->rate_out2 > 0 && !raw ? dm->rate_out2 : dm->rate_out);
+	uint32_t unit = audio * (uint32_t)dm->post_downsample, least = 0, j;
+	uint32_t band = (uint32_t)dm->rate_in / (uint32_t)dm->post_downsample;    /* -s */
+	int i = -1, k;
 
-	for (i = 0; d->if_mode && i < 3; i++) {
-		if (d->if_mode > 0 && (uint32_t)d->if_mode != low_ifs[i]) {
-			continue;}
-		adc = 4 * low_ifs[i];
-		for (k = 0; k <= 8 && !(adc & ((1u << k) - 1)); k++) {
-			r = adc >> k;
-			if (r < want) {
-				break;}
-			if (r % dm->post_downsample) {
-				continue;}
-			if (!best || r < best) {
-				best = r;
-				best_if = low_ifs[i];
-			}
-		}
-	}
-	if (d->if_mode > 0 && !best) {
-		fprintf(stderr, "No rate of the %d Hz IF fits %u S/s.\n", d->if_mode, want);
-		exit(1);
-	}
+	/* the IF: as asked, or by the band the demod takes in */
+	if (d->if_mode > 0) {
+		for (i = 0; i < 3 && low_ifs[i].hz != (uint32_t)d->if_mode; i++);
+		if (i == 3) {
+			fprintf(stderr, "No %d Hz IF.\n", d->if_mode);
+			exit(1);}
+	} else if (d->if_mode < 0) {
+		i = (band <= 0.8 * low_ifs[0].widest) ? 0 : 1;}
+	if (i >= 0) {
+		least = low_ifs[i].least;}
 
-	if (best) {
+	/* the least whole multiple that reaches the demod rate and the IF's least */
+	j = ((uint32_t)dm->rate_in + unit - 1) / unit;
+	if (j < 1) {
+		j = 1;}
+	while (unit * j < least) {
+		j++;}
+	dm->rate_in = (int)(unit * j);
+	dm->rate_out = dm->rate_in / dm->post_downsample;
+	dm->rate_out2 = (!raw && j > 1) ? (int)audio : -1;
+
+	if (i >= 0) {
 		if (dm->downsample_passes) {
 			fprintf(stderr, "-F has no effect with a low IF.\n");}
 		dm->downsample = 1;
 		dm->downsample_passes = 0;
-		d->if_mode = (int)best_if;
-		d->rate = best;
+		d->if_mode = (int)low_ifs[i].hz;
+		d->rate = (uint32_t)dm->rate_in;
 		d->rotate = 0;
-		dm->rate_in = (int)best;
 	} else {
 		dm->downsample = (1300000 / dm->rate_in) + 1;
 		if (dm->downsample_passes) {
@@ -968,13 +892,6 @@ static void optimal_settings(void)
 	dm->output_scale = 2;
 	if (dm->mode_demod == &fm_demod) {
 		dm->output_scale = 1;}
-
-	dm->rate_out = dm->rate_in / dm->post_downsample;
-	if (audio > dm->rate_out) {
-		fprintf(stderr, "The audio cannot be resampled up, it stays at %d Hz.\n", dm->rate_out);
-		dm->rate_out2 = -1;
-	} else if (audio != dm->rate_out) {
-		dm->rate_out2 = audio;}
 
 	/* about 20 ms a buffer, of whole groups of four for the rotation and of the
 	   oversampling */
@@ -1051,14 +968,15 @@ static void *controller_thread_fn(void *arg)
 	}
 	mirisdr_get_tune(dongle.dev, 0, NULL, &tr);
 	if (dongle.if_mode) {
-		fprintf(stderr, "Sampling at %u S/s, %s, %d Hz IF, filtered down to %u S/s.\n",
-			sr.adc_rate, sr.format, dongle.if_mode, sr.rate);
+		fprintf(stderr, "Sampling at %u S/s, %s, %d Hz IF, filtered down to %u S/s%s%s.\n",
+			sr.adc_rate, sr.format, dongle.if_mode, sr.rate, sr.resampled ? ", resampled" : "",
+			sr.nco ? ", with the NCO" : "");
 	} else {
 		fprintf(stderr, "Sampling at %u S/s, %s, zero IF.\n", sr.rate, sr.format);}
 	if (demod.mode_demod == &raw_demod) {
 		fprintf(stderr, "Output at %d Hz.\n", demod.rate_in);
 	} else if (demod.rate_out2 > 0 && demod.rate_out2 != demod.rate_out) {
-		fprintf(stderr, "Output at %d Hz, resampled from %d Hz.\n", demod.rate_out2, demod.rate_out);
+		fprintf(stderr, "Output at %d Hz, averaged down from %d Hz.\n", demod.rate_out2, demod.rate_out);
 	} else {
 		fprintf(stderr, "Output at %d Hz.\n", demod.rate_out);}
 	fprintf(stderr, "Tuned to %u Hz, bandwidth %u Hz, tuner gain %d dB.\n", dongle.freq, tr.bandwidth, tr.gain.total);
@@ -1138,7 +1056,6 @@ void demod_init(struct demod_state *s)
 	s->prev_lpr_index = 0;
 	s->deemph_a = 0;
 	s->now_lpr = 0;
-	s->lpr_t = s->lpr_prev = 0;
 	s->dc_block = 0;
 	s->dc_avg = 0;
 	pthread_rwlock_init(&s->rw, NULL);

@@ -1,110 +1,91 @@
 /*
- * The half-band kernel of the Airspy real to I/Q converter (licence below), used by
- * iqconverter_float.c and by the half-band decimators in baseband.c. 47 taps, flat to
- * 0.2 fs, at least 61 dB down from 0.3 fs.
+ * The half-band kernels of the decimators in baseband.c and of the real to I/Q
+ * converter (iqconverter_float.c), by where the halving stands. Each is the minimax
+ * half-band of its length (a linear program over the taps at odd distances from the
+ * centre, which is 0.5): its passband error mirrors its stopband, so a kernel down
+ * D dB from fs/2 - p is flat within as much to p. Made for libmirisdr.
+ *
+ * Only the last halving shapes the output's band: flat to 0.2 of its input rate (0.4
+ * of its output) and down from 0.3. One before it need only keep aliases out of that
+ * band, at most 0.1 of its rate, so its stopband starts at 0.4; the ones before that,
+ * half as wide again, at 0.45.
  */
-/*
-Copyright (C) 2014, Youssef Touil <youssef@airspy.com>
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-*/
 
 #ifndef MIRISDR_HB_KERNEL_H
 #define MIRISDR_HB_KERNEL_H
 
-#define MIRISDR_HB_KERNEL_LEN 47
+/* the last halving: 35 taps, 63.4 dB down from 0.3 fs */
+#define MIRISDR_HB_LAST_LEN 35
 
-static const float mirisdr_hb_kernel[MIRISDR_HB_KERNEL_LEN] =
+static const float mirisdr_hb_last[MIRISDR_HB_LAST_LEN] =
 {
-    -0.000998606272947510f,
-    0.000000000000000000f,
-    0.001695637278417295f,
-    0.000000000000000000f,
-    -0.003054430179754289f,
-    0.000000000000000000f,
-    0.005055504379767936f,
-    0.000000000000000000f,
-    -0.007901319195893647f,
-    0.000000000000000000f,
-    0.011873357051047719f,
-    0.000000000000000000f,
-    -0.017411159379930066f,
-    0.000000000000000000f,
-    0.025304817427568772f,
-    0.000000000000000000f,
-    -0.037225225204559217f,
-    0.000000000000000000f,
-    0.057533286997004301f,
-    0.000000000000000000f,
-    -0.102327462004259350f,
-    0.000000000000000000f,
-    0.317034472508947400f,
-    0.500000000000000000f,
-    0.317034472508947400f,
-    0.000000000000000000f,
-    -0.102327462004259350f,
-    0.000000000000000000f,
-    0.057533286997004301f,
-    0.000000000000000000f,
-    -0.037225225204559217f,
-    0.000000000000000000f,
-    0.025304817427568772f,
-    0.000000000000000000f,
-    -0.017411159379930066f,
-    0.000000000000000000f,
-    0.011873357051047719f,
-    0.000000000000000000f,
-    -0.007901319195893647f,
-    0.000000000000000000f,
-    0.005055504379767936f,
-    0.000000000000000000f,
-    -0.003054430179754289f,
-    0.000000000000000000f,
-    0.001695637278417295f,
-    0.000000000000000000f,
-    -0.000998606272947510f
+    1.1562087049e-03f,
+    0.0000000000e+00f,
+    -2.7484906053e-03f,
+    0.0000000000e+00f,
+    5.7683078099e-03f,
+    0.0000000000e+00f,
+    -1.0736466712e-02f,
+    0.0000000000e+00f,
+    1.8592400972e-02f,
+    0.0000000000e+00f,
+    -3.1093896603e-02f,
+    0.0000000000e+00f,
+    5.2603967184e-02f,
+    0.0000000000e+00f,
+    -9.9130593262e-02f,
+    0.0000000000e+00f,
+    3.1592691055e-01f,
+    5.0000000000e-01f,
+    3.1592691055e-01f,
+    0.0000000000e+00f,
+    -9.9130593262e-02f,
+    0.0000000000e+00f,
+    5.2603967184e-02f,
+    0.0000000000e+00f,
+    -3.1093896603e-02f,
+    0.0000000000e+00f,
+    1.8592400972e-02f,
+    0.0000000000e+00f,
+    -1.0736466712e-02f,
+    0.0000000000e+00f,
+    5.7683078099e-03f,
+    0.0000000000e+00f,
+    -2.7484906053e-03f,
+    0.0000000000e+00f,
+    1.1562087049e-03f
 };
 
+/* the one before it: 11 taps, 68.7 dB down from 0.4 fs */
+#define MIRISDR_HB_MID_LEN 11
 
-/* A short half-band for the stages that another follows: they only need to keep
-   aliases out of the final band, at most 0.1 of their rate, so their stopband
-   starts at 0.4. 15 taps, Kaiser window (beta 6.5), 65 dB down from 0.4 fs,
-   flat within 0.005 dB to 0.1 fs. Made for libmirisdr, not from Airspy */
-#define MIRISDR_HB_SHORT_LEN 15
-
-static const float mirisdr_hb_short[MIRISDR_HB_SHORT_LEN] =
+static const float mirisdr_hb_mid[MIRISDR_HB_MID_LEN] =
 {
-    -4.275877835e-04f,
-    0.000000000e+00f,
-    1.092679889e-02f,
-    0.000000000e+00f,
-    -5.973774928e-02f,
-    0.000000000e+00f,
-    2.992385382e-01f,
-    5.000000000e-01f,
-    2.992385382e-01f,
-    0.000000000e+00f,
-    -5.973774928e-02f,
-    0.000000000e+00f,
-    1.092679889e-02f,
-    0.000000000e+00f,
-    -4.275877835e-04f
+    9.7119660469e-03f,
+    0.0000000000e+00f,
+    -5.8120811681e-02f,
+    0.0000000000e+00f,
+    2.9859337686e-01f,
+    5.0000000000e-01f,
+    2.9859337686e-01f,
+    0.0000000000e+00f,
+    -5.8120811681e-02f,
+    0.0000000000e+00f,
+    9.7119660469e-03f
+};
+
+/* the ones before those: 7 taps, 72.5 dB down from 0.45 fs */
+#define MIRISDR_HB_EARLY_LEN 7
+
+static const float mirisdr_hb_early[MIRISDR_HB_EARLY_LEN] =
+{
+    -3.3666563683e-02f,
+    0.0000000000e+00f,
+    2.8354855446e-01f,
+    5.0000000000e-01f,
+    2.8354855446e-01f,
+    0.0000000000e+00f,
+    -3.3666563683e-02f
 };
 
 #endif

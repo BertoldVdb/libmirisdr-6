@@ -1,8 +1,9 @@
 /*
- * In libmirisdr: the real to I/Q converter from Airspy (Youssef Touil, MIT licence
- * below), as reworked for lpc4370sdr by Bertold Van den Bergh: vectorised, NEON on ARM,
- * the DC removal folded into the translation, split for two threads. Those changes are
- * his, not Airspy's, so report problems here. Copied from lpc4370sdr-host 0.3.1.
+ * In libmirisdr: the half-band of the real to I/Q converter from Airspy (Youssef Touil,
+ * MIT licence below), as reworked for lpc4370sdr by Bertold Van den Bergh: vectorised,
+ * NEON on ARM. Those changes are his, not Airspy's, so report problems here. Copied from
+ * lpc4370sdr-host 0.3.1, and cut down to the filter: baseband.c takes the DC off and does
+ * the fs/4 translation while it converts the samples to float.
  */
 /*
 Copyright (C) 2014, Youssef Touil <youssef@airspy.com>
@@ -31,25 +32,20 @@ THE SOFTWARE.
 
 #include <stdint.h>
 
-#define IQCONVERTER_NZEROS 2
-#define IQCONVERTER_NPOLES 2
-
-typedef struct {
-	float avg;
-	float hbc;
-	int phase; /* position of the next sample in the fs/4 translation's cycle of four */
-	int dc_removal; /* 1 (the default): DC removal before the translation; 0: translation alone */
-	int len;
-	int fir_index;
-	int delay_index;
-	float *fir_kernel;
+typedef struct iqconverter_float {
+	float hbc;  /* the kernel's centre tap: the translation's weight on Q */
+	int phase;  /* position of the next sample in the fs/4 translation's cycle of four,
+	               kept by whoever translates */
+	int len;    /* the I taps: the kernel's even ones */
 	float *fir_queue;
 	float *delay_line;
+	/* the FIR, made for one of hb_kernel.h's kernels: n translated real samples in, the
+	   I/Q pairs (n / 2) out, in place */
+	void (*fir)(struct iqconverter_float *cnv, float *samples, int len);
 } iqconverter_float_t;
 
 static iqconverter_float_t *iqconverter_float_create(const float *hb_kernel, int len);
 static void iqconverter_float_free(iqconverter_float_t *cnv);
 static void iqconverter_float_reset(iqconverter_float_t *cnv);
-static void iqconverter_float_process(iqconverter_float_t *cnv, float *samples, int len);
 
 #endif // IQCONVERTER_FLOAT_H

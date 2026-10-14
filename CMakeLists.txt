@@ -156,6 +156,11 @@ IF(NOT WIN32)
     LIST(APPEND MIRISDR_PC_LIBS "${CMAKE_THREAD_LIBS_INIT}")
 ENDIF(NOT WIN32)
 
+# the baseband NCO's sine and cosine
+IF(UNIX)
+    LIST(APPEND MIRISDR_PC_LIBS "-lm")
+ENDIF(UNIX)
+
 # use space-separation format for the pc file
 STRING(REPLACE ";" " " MIRISDR_PC_CFLAGS "${MIRISDR_PC_CFLAGS}")
 STRING(REPLACE ";" " " MIRISDR_PC_LIBS "${MIRISDR_PC_LIBS}")

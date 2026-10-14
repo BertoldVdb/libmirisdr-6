@@ -106,7 +106,9 @@ The receiver samples directly, at zero IF. Any rate in the range works.
 
 <h4>Below 1.3 Msps</h4>
 
-The receiver tunes to a low IF, and the library shifts the band back to the centre and filters it down in software. Only certain rates exist. They come from three IFs:
+The receiver tunes to a low IF, and the library shifts the band back to the centre and filters it down in software. Any rate from about 3.5 ksps works, and you get exactly the rate you ask for.
+
+These rates cost the least CPU, because the filters reach them by halving alone:
 
 | IF | Rates |
 |---|---|
@@ -114,9 +116,23 @@ The receiver tunes to a low IF, and the library shifts the band back to the cent
 | 1620 kHz | 810000, 405000, 202500, 101250, 50625 |
 | 2048 kHz | 1024000, 512000, 256000, 128000, 64000, 32000 |
 
-The module lists these rates together with the zero IF range. If you ask for a rate that is not on the list, you get the nearest one and the module logs which. For example 250000 gives 256000. Programs that let you type any rate can use `getSampleRate()` to see what they got.
+Any other rate adds a resampler in software, and at the 2048 kHz IF also a frequency shift (an NCO), because that IF runs the receiver at 6.7584 Msps rather than 8.192. The module then logs a warning that names the nearest rates that need neither. It picks the IF like this:
 
-With a fixed IF (see the `if_freq` setting) the rates of that IF are the only ones offered, including the higher ones. The 2048 kHz IF then also offers 8192000, 4096000 and 2048000.
+  - A rate from the table gets its IF.
+  - Up to 750 ksps, any other rate gets the 450 kHz IF, whose widest filter (600 kHz) still passes most of it.
+  - Above that, it gets the 1620 kHz IF, with its 1536 kHz filter.
+
+The module lists the table's rates, a few round ones (48k, 96k, 192k, 250k, 500k and 1M) and the usual zero IF rates. The rate range it reports runs from the lowest low IF rate to the top of the zero IF range.
+
+With a fixed IF (see the `if_freq` setting) that IF takes any rate in its span:
+
+| IF | Both converters | One converter |
+|---|---|---|
+| 450 kHz | 3516 to 1800000 | 3516 to 900000 |
+| 1620 kHz | 12657 to 6480000 | 12657 to 3240000 |
+| 2048 kHz | 13201 to 8192000 | 13201 to 4096000 |
+
+The span stops at 4 times the IF, or 2 times with one converter, because above that the tuner's filter leaves nothing to see. A rate outside the span gives its nearest end, and the module logs which.
 
 
 <h3>Bandwidth</h3>
@@ -180,6 +196,10 @@ Programs show these as device settings. With SoapySDR's API they are `writeSetti
 
 A setting the receiver cannot do is refused and logged. The receiver keeps what it had.
 
+<h4>DC offset</h4>
+
+With `baseband` on, the library takes the DC offset off in software: by default at a low IF, where it lies outside the band, and not at zero IF, where it sits at the band's centre. `setDCOffsetMode()` turns it on or off at every IF, and `getDCOffsetMode()` says whether it is on now. At zero IF it also removes a signal right at the centre frequency. Programs such as GQRX can do their own DC removal instead.
+
 <h4>More about the IF settings</h4>
 
   - **Zero IF** needs no processing on the computer. The LO and its DC offset sit in the middle of the band.
@@ -190,7 +210,7 @@ A setting the receiver cannot do is refused and logged. The receiver keeps what 
 
 <h4>How much CPU</h4>
 
-Measured on a Raspberry Pi Compute Module 0 (one core at 1 GHz), the low IF processing runs at 3 times real time or better with the 2048 kHz IF, and 9 times with both converters at the full 8.192 Msps. The 450 kHz IF needs much less. Zero IF needs no processing.
+Measured on a Raspberry Pi Compute Module 0 (one core at 1 GHz), the low IF processing runs at 3.5 times real time or better with the 2048 kHz IF, and 9 times with both converters at the full 8.192 Msps. The 450 kHz IF needs much less. A rate that is not in the table above adds the resampler: 250 ksps at 450 kHz still runs at 10 times real time, 1 Msps at 1620 kHz at 2.9 times and 3 Msps at 2 times. The 2048 kHz IF off its own rates also runs the NCO, at about 1.9 times real time, so use 1620 kHz there on such a computer. Zero IF needs no processing.
 
 
 <h3>Stream options</h3>

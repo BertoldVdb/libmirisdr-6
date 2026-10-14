@@ -124,6 +124,7 @@ struct mirisdr_dev {
     int                 bb_path;        /* MIRISDR_BASEBAND_* the stream runs */
     int                 bb_stages;      /* half-band stages after the shift or the converter */
     uint32_t            bb_rate;        /* output samples per second */
+    uint32_t            bb_if;          /* Hz, the low IF the stream was planned for: the NCO's */
     mirisdr_read_async_cb_t cb;
     void                *cb_ctx;
     size_t              xfer_buf_num;

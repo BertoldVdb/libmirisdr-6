@@ -57,6 +57,11 @@ public:
     void setAntenna(const int direction, const size_t channel, const std::string &name);
     std::string getAntenna(const int direction, const size_t channel) const;
 
+    /* DC offset: the library's removal under baseband */
+    bool hasDCOffsetMode(const int direction, const size_t channel) const;
+    void setDCOffsetMode(const int direction, const size_t channel, const bool automatic);
+    bool getDCOffsetMode(const int direction, const size_t channel) const;
+
     /* gain */
     std::vector<std::string> listGains(const int direction, const size_t channel) const;
     void setGain(const int direction, const size_t channel, const double value);
@@ -172,6 +177,8 @@ private:
     void configure(uint32_t rate);
     bool realOut(void) const;
     std::vector<uint32_t> lowIfRates(uint32_t ifHz) const;
+    void lowIfRange(uint32_t ifHz, uint32_t &lo, uint32_t &hi) const;
+    uint32_t pickLowIf(uint32_t rate) const;
     void applyTune(const mirisdr_tune_config_t &cfg);
     StageRanges stageRanges(void) const;
     std::vector<uint32_t> bandwidthsFor(uint32_t ifHz) const;
