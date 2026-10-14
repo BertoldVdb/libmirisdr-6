@@ -61,9 +61,19 @@ typedef struct mirisdr_dev mirisdr_dev_t;
 /* devices */
 MIRISDR_API uint32_t mirisdr_get_device_count (void);
 MIRISDR_API const char *mirisdr_get_device_name (uint32_t index);
+/* The serial is the system's copy (libusb >= 1.0.30, or sysfs on Linux), otherwise read by opening
+   the device for a moment. If serial is NULL, the device is never opened. */
 MIRISDR_API int mirisdr_get_device_usb_strings (uint32_t index, char *manufact, char *product, char *serial);
-/* Matches the serial of the device if it has one, otherwise a synthetic one based on USB bus location */
+/* This function finds the index of a receiver by the (possibly synthetic) serial. Warning:
+ * these functions have a race condition: the index can change if devices are added or removed.
+ * To avoid the race condition, use mirisdr_open_ex() with a serial */
 MIRISDR_API int mirisdr_get_index_by_serial (const char *serial);
+/* The same with a USB port too, either may be NULL: see usb_port in mirisdr_open_config_t */
+MIRISDR_API int mirisdr_get_index_by_serial_port (const char *serial, const char *usb_port); /* extra */
+/* The USB port the device is in, "<bus>:<port>[.<port>...]" e.g. "1:3" (the synthetic serial of one
+   without a serial of its own), which stays the same while the device stays in that port.
+   Serial (may be NULL) the serial it declares, empty if none. */
+MIRISDR_API int mirisdr_get_device_port (uint32_t index, char *port, int port_len, char *serial, int serial_len); /* extra */
 
 /* main */
 MIRISDR_API int mirisdr_open (mirisdr_dev_t **p, uint32_t index);
@@ -523,7 +533,11 @@ MIRISDR_API int mirisdr_fw_patch (uint8_t *image, uint32_t size, const mirisdr_f
 typedef struct mirisdr_open_config
 {
 	uint32_t       index;           /* when opening by index */
-	const char    *serial;          /* or by serial, which wins over the index */
+	const char    *serial;          /* or by serial or port ("1:3"), which wins over the index,
+	                                   matched in the device list it is opened from */
+	const char    *usb_port;        /* or by port ("1:3"). If serial also set, the device in that
+	                                   port only when none has the serial, and only if it
+	                                   declares no serial (as from ROM) */
 	int            fd;              /* or an already open descriptor, -1 for none */
 
 	const uint8_t *firmware;        /* the image, or NULL */

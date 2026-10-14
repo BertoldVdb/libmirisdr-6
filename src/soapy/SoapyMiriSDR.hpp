@@ -132,7 +132,8 @@ private:
     mirisdr_dev_t *dev;
     mutable std::recursive_mutex devMutex;
     int flavour;
-    std::string serial;
+    std::string serial;     /* the one the device declares, none from ROM */
+    std::string usbPort;    /* "1:3", as the list names it */
 
     /* settings, applied with each stream or tune */
     mirisdr_stream_config_t streamCfg;

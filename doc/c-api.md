@@ -87,7 +87,7 @@ It prints `256000 samples/s from 8192000, LO 435548000 Hz, bandwidth 1536000 Hz`
 
 <h3>Opening a receiver</h3>
 
-`mirisdr_open(&dev, index)` opens a receiver by its place in the list. `mirisdr_get_device_count()`, `mirisdr_get_device_name()` and `mirisdr_get_device_usb_strings()` describe the receivers found. `mirisdr_get_index_by_serial()` finds one by its serial.
+`mirisdr_open(&dev, index)` opens a receiver by its place in the list. `mirisdr_get_device_count()`, `mirisdr_get_device_name()` and `mirisdr_get_device_usb_strings()` describe the receivers found. `mirisdr_get_index_by_serial()` finds one by its serial, or by the USB port it is listed at when it has none (`1:3`). The USB port keeps working once it has a serial. `mirisdr_get_device_port()` gives the port of any receiver in the list, and the serial it reports, empty when it reports none. `mirisdr_get_index_by_serial_port()` finds one by serial, port or both, the way `mirisdr_open_ex()` does. None of these open a receiver, so one in use by another program is not disturbed: the serial is the copy the system keeps, from libusb 1.0.30 on or from sysfs on Linux. Only with an older libusb on other systems is each receiver opened for a moment to read its serial; a port alone and `mirisdr_get_device_usb_strings()` with `serial` NULL never do.
 
 For more control use `mirisdr_open_ex()`. Fill the config with `mirisdr_open_config_default()` first and change only what you need.
 
@@ -101,7 +101,11 @@ if (mirisdr_open_ex(&dev, &cfg) < 0)
 
 The fields you are most likely to use:
 
-  - `index`, `serial` or `fd`: which receiver. A serial wins over the index. `fd` takes a USB file descriptor that is already open, as on Android.
+  - `index`, `serial`, `usb_port` or `fd`: which receiver. A serial or port wins over the index. `serial` also takes the USB port a receiver is listed at, such as `1:3`. `fd` takes a USB file descriptor that is already open, as on Android.
+
+With both `serial` and `usb_port`, the receiver with that serial is taken, in whatever port. When none has it, the receiver in `usb_port` is taken, but only if it reports no serial, as one running from its ROM after a power cycle. One that reports another serial is not.
+
+Avoid opening based on an index: a receiver plugged in or out shifts the index of the others. With `serial` or `usb_port`, the receiver is matched in the same device list it is opened from, so another one cannot take its place. `mirisdr_get_index_by_serial()` followed by `mirisdr_open()` leaves a moment for that to happen. While the firmware loads, the receiver reboots and is opened again by its USB port, whichever way it was chosen.
   - `hw_flavour`: the kind of board. `MIRISDR_HW_AUTO`, the default, tells from the USB ids. Other values are `MIRISDR_HW_DEFAULT`, `MIRISDR_HW_SDRPLAY` and `MIRISDR_HW_RSP1B`. A wrong value can switch things the board does not have, such as a bias-T.
   - `firmware`, `firmware_path` and `keep_running`: the library loads its own firmware into the receiver by default, and replaces a different one that is running. Give another image, or set `keep_running` to use what runs.
 

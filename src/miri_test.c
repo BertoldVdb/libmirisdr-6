@@ -183,6 +183,7 @@ static int within (double got, double want, double frac)
 /* A test that upsets the device must not make every later one fail, so the
    handle is checked between tests and reopened if it has gone. */
 static const char *open_serial;
+static char rom_port[32];
 
 static int device_healthy (void)
 {
@@ -257,12 +258,22 @@ static tres_t t_usb_strings (void)
 
     say("\"%s\" / \"%s\" / serial \"%s\"", manuf, prod, serial);
 
+    /* without the serial nothing is opened, and the rest is the same */
+    {
+        char m2[256] = "", p2[256] = "";
+
+        if (mirisdr_get_device_usb_strings(0, m2, p2, NULL) < 0 || strcmp(m2, manuf) || strcmp(p2, prod)) {
+            say("with no serial asked: \"%s\" / \"%s\"", m2, p2);
+            return T_FAIL;
+        }
+    }
+
     return (*manuf || *prod) ? T_PASS : T_FAIL;
 }
 
 static tres_t t_open_by_serial (void)
 {
-    char serial[256] = "";
+    char serial[256] = "", port[32] = "", listed[256] = "", own[256] = "";
     int index;
 
     if (mirisdr_get_serial(dev, serial, sizeof serial) < 0 || !*serial) {
@@ -275,6 +286,34 @@ static tres_t t_open_by_serial (void)
     if (index < 0) { say("serial \"%s\" did not resolve to an index", serial); return T_FAIL; }
 
     say("serial \"%s\" resolves to index %d", serial, index);
+
+    /* the port it is listed at before its firmware runs still finds it: "bus-p.q" as "bus:p.q" */
+    if (mirisdr_get_usb_position(dev, NULL, NULL, port, sizeof port) == 0) {
+        char *dash = strchr(port, '-');
+
+        if (dash) *dash = ':';
+        if (mirisdr_get_index_by_serial(port) != index) {
+            say("port \"%s\" did not resolve to index %d", port, index);
+            return T_FAIL;
+        }
+        if (mirisdr_get_device_port((uint32_t) index, listed, sizeof listed, own, sizeof own)
+            || strcmp(listed, port) || strcmp(own, serial)) {
+            say("index %d lists port \"%s\" serial \"%s\", not \"%s\" \"%s\"", index, listed, own, port, serial);
+            return T_FAIL;
+        }
+
+        /* by port, by both, and a port whose receiver declares another serial than asked */
+        if ((mirisdr_get_index_by_serial_port(NULL, port) != index)
+            || (mirisdr_get_index_by_serial_port(serial, port) != index)
+            || (mirisdr_get_index_by_serial_port(serial, "no such port") != index)
+            || (mirisdr_get_index_by_serial_port("no such serial", port) != -1)) {
+            say("by serial and port: %d %d %d %d", mirisdr_get_index_by_serial_port(NULL, port),
+                mirisdr_get_index_by_serial_port(serial, port), mirisdr_get_index_by_serial_port(serial, "no such port"),
+                mirisdr_get_index_by_serial_port("no such serial", port));
+            return T_FAIL;
+        }
+        say("port \"%s\" resolves to it too, alone and with the serial; another serial at it does not", port);
+    }
 
     return T_PASS;
 }
@@ -4857,6 +4896,13 @@ int main (int argc, char **argv)
         if (mirisdr_open_ex(&dev, &cfg) < 0) {
             fprintf(stderr, "cannot open the device\n");
             return 1;
+        }
+
+        /* the ROM declares no serial: found again by its port, "1-3" listed as "1:3" */
+        if (serial && (mirisdr_get_usb_position(dev, NULL, NULL, rom_port, sizeof rom_port) == 0)
+            && strchr(rom_port, '-')) {
+            *strchr(rom_port, '-') = ':';
+            open_serial = rom_port;
         }
 
         if (mirisdr_running_from_rom(dev) != 1) mirisdr_reboot(dev, MIRISDR_BOOT_ROM);

@@ -493,6 +493,43 @@ extern "C" int soapy_test(const char *which, const char *module, const char *ser
         extra["if_freq"] = "bogus";
         if (!(d = openDev(module, serial, nullptr, say, extra))) return SOAPY_T_FAIL;
         Dev::unmake(d);
+
+        /* every receiver listed with its port, and the serial only of one that declares it */
+        SoapySDR::Kwargs find, by;
+        std::string port, own;
+        bool listed = false;
+
+        find["driver"] = "mirisdr";
+        auto found = Dev::enumerate(find);
+        for (auto &f : found)
+            if (f["usb_port"].find(':') == std::string::npos || (f.count("serial") && f["serial"].empty()))
+            { say("listed usb_port \"%s\", serial \"%s\"", f["usb_port"].c_str(), f["serial"].c_str()); return SOAPY_T_FAIL; }
+        if (!(d = openDev(module, serial, nullptr, say))) return SOAPY_T_FAIL;
+        port = d->getHardwareInfo()["usb_port"];
+        own = d->getHardwareInfo()["serial"];
+        Dev::unmake(d);
+        for (auto &f : found) listed |= (f["usb_port"] == port) && (f["serial"] == own);
+        if (!listed) { say("opened usb_port \"%s\" serial \"%s\", not as listed", port.c_str(), own.c_str()); return SOAPY_T_FAIL; }
+
+        /* opened by its port, alone and with its serial */
+        by["usb_port"] = port;
+        for (int k = 0; k < 2; k++)
+        {
+            if (!(d = openDev(module, k ? own.c_str() : nullptr, nullptr, say, by))) return SOAPY_T_FAIL;
+            std::string got = d->getHardwareInfo()["usb_port"];
+            Dev::unmake(d);
+            if (got != port) { say("usb_port=%s opened %s", port.c_str(), got.c_str()); return SOAPY_T_FAIL; }
+        }
+
+        /* found by port, the result carries it, which the open matches again; a port whose
+           receiver declares another serial than asked is not it */
+        find["usb_port"] = port;
+        found = Dev::enumerate(find);
+        if (found.size() != 1 || found[0]["usb_port"] != port || found[0].count("serial"))
+        { say("finding usb_port %s gave %zu results", port.c_str(), found.size()); return SOAPY_T_FAIL; }
+        find["serial"] = "no such serial";
+        if (!own.empty() && !Dev::enumerate(find).empty())
+        { say("usb_port %s found for another serial", port.c_str()); return SOAPY_T_FAIL; }
     }
 
     if (!(d = openDev(module, serial, strcmp(which, "bandranges") ? nullptr : "band", say))) return SOAPY_T_FAIL;

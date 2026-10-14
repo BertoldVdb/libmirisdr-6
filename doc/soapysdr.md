@@ -35,21 +35,33 @@ The device string can hold these keys:
 
   - `driver=mirisdr`: this module.
   - `serial=...`: a receiver by its serial, when more than one is plugged in. `SoapySDRUtil --find` lists the serials.
+  - `usb_port=...`: a receiver by the USB port it is in, such as `1:3`. `SoapySDRUtil --find` lists the port of every receiver.
   - `if_freq`, `converters` and `baseband`: the settings of the same name, described below. They are here for programs that only let you type a device string. An example is `driver=mirisdr,if_freq=450000`.
   - `bandwidth`: the tuner filter in Hz, for programs such as GQRX that have no field for it. See Bandwidth below.
   - `gain_ranges`: `max`, the default, or `band`. See Gain below.
 
 When opened, the receiver is at 100 MHz with a total gain of 40 dB and a rate of 2.048 Msps.
 
+Found by `serial=` or `usb_port=`, a receiver is listed under those same keys, and it is opened by them too. A receiver plugged in or out in between does not take its place.
+
+<h4>Receivers in use</h4>
+
+Listing receivers and finding one does not open them, so a receiver another program is using is listed with its serial too, and that program is not disturbed. The module opens only the receiver it is asked to open. The serial is the copy the system keeps from when the receiver was plugged in. libusb 1.0.30 and later give it on Linux, Windows and macOS. With an older libusb it is read from `/sys/bus/usb/devices` on Linux. Elsewhere the module still opens each receiver for a moment to read its serial: one in use may then not open and is listed without one, and a program opening it at that same moment may fail. `usb_port=` opens nothing anywhere.
+
 <h4>Receivers without firmware in their EEPROM</h4>
 
-Most receivers start from the ROM in the chip. libmirisdr loads its own firmware into them when it opens them. The ROM does not report a serial, and the module does not open/update every receiver just to list it. So until a receiver has been opened once, `SoapySDRUtil --find` shows where it sits on the USB in place of a serial:
+Most receivers start from the ROM in the chip. libmirisdr loads its own firmware into them when it opens them. The ROM does not report a serial, and the module does not open/update every receiver just to list it. So until a receiver has been opened once, `SoapySDRUtil --find` lists it with only its place on the USB:
 
-    serial = 1:3
+    usb_port = 1:3
 
-That is bus 1, address 3. `serial=1:3` picks the receiver, but the numbers change when you plug it in again or into another port.
+That is bus 1, port 3. Behind a hub more ports follow, for example `1:2.4`. `usb_port=1:3` picks the receiver for as long as it stays in that port.
 
-After the first open the firmware keeps running until the receiver loses power. From then on the real serial shows up, whichever program opened it.
+After the first open the firmware keeps running until the receiver loses power. From then on its serial is listed too, whichever program opened it. A program that saved the device string with both keys, `serial=...,usb_port=1:3`, finds the receiver either way:
+
+  - by its serial, in whatever port, while the firmware runs
+  - after a power cycle, back on its ROM without a serial, as the receiver in that port. A receiver there that reports another serial is not taken in its place.
+
+Older versions listed the port as `serial=1:3`. That still finds the receiver, also once it reports its serial.
 
 To have a fixed serial from the moment it is plugged in, write the firmware into the receiver's EEPROM with a serial of its own. The receiver needs an EEPROM for this. Unplug it and plug it in again afterwards, so it starts from the new firmware. With more than one receiver plugged in, pick the one to write with `-d` and its index, for example `miri_eeprom -d 1 writefw ...`.
 

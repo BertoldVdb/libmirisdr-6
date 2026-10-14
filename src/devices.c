@@ -138,12 +138,48 @@ static int mirisdr_usb_string (libusb_device_handle *dh, uint8_t at, char *out, 
     return libusb_get_string_descriptor_ascii(dh, at, (unsigned char *) out, len) > 0;
 }
 
-static int mirisdr_device_string (libusb_device *d, uint8_t at, char *out, int len)
+static int mirisdr_device_serial_cached (libusb_device *d, char *out, int len)
+{
+#if LIBUSBX_API_VERSION >= 0x0100010C
+    if (libusb_get_device_string(d, LIBUSB_DEVICE_STRING_SERIAL_NUMBER, out, len) > 1) return 1;
+#endif
+
+#if defined(__linux__) && (LIBUSBX_API_VERSION >= 0x01000102)
+    {
+        uint8_t ports[7];
+        char path[96];
+        int n, i, at;
+        size_t got;
+        FILE *f;
+
+        if ((n = libusb_get_port_numbers(d, ports, sizeof(ports))) <= 0) return 0;
+
+        at = snprintf(path, sizeof path, "/sys/bus/usb/devices/%u", libusb_get_bus_number(d));
+        for (i = 0; i < n; i++)
+            at+= snprintf(path + at, sizeof path - at, i ? ".%u" : "-%u", ports[i]);
+        snprintf(path + at, sizeof path - at, "/serial");
+
+        if (!(f = fopen(path, "r"))) return 0;
+        got = fgets(out, len, f) ? strcspn(out, "\n") : 0;
+        fclose(f);
+
+        out[got] = 0;
+        return got > 0;
+    }
+#else
+    (void) d; (void) out; (void) len;
+    return 0;
+#endif
+}
+
+static int mirisdr_device_serial (libusb_device *d, uint8_t at, char *out, int len)
 {
     libusb_device_handle *dh;
     int got;
 
-    if (!at || libusb_open(d, &dh)) return 0;
+    if (!at) return 0;
+    if (mirisdr_device_serial_cached(d, out, len)) return 1;
+    if (libusb_open(d, &dh)) return 0;
 
     got = mirisdr_usb_string(dh, at, out, len);
     libusb_close(dh);
@@ -183,13 +219,13 @@ int mirisdr_get_device_usb_strings (uint32_t index, char *manufact, char *produc
     struct libusb_device_descriptor dd;
     mirisdr_device_t *device = NULL;
 
-    if (!manufact || !product || !serial) return -1;
+    if (!manufact || !product) return -1;
 
     if ((i_max = mirisdr_list_devices(&ctx, &list)) < 0)
     {
         memset(manufact, 0, 256);
         memset(product, 0, 256);
-        memset(serial, 0, 256);
+        if (serial) memset(serial, 0, 256);
 
         return -1;
     }
@@ -202,7 +238,8 @@ int mirisdr_get_device_usb_strings (uint32_t index, char *manufact, char *produc
             strcpy(manufact, device->manufacturer);
             strcpy(product, device->product);
 
-            if (!mirisdr_device_string(list[i], dd.iSerialNumber, serial, 256))
+            /* the serial is the only one that opens the device */
+            if (serial && !mirisdr_device_serial(list[i], dd.iSerialNumber, serial, 256))
                 mirisdr_port_name(list[i], serial);
 
             libusb_free_device_list(list, 1);
@@ -213,7 +250,7 @@ int mirisdr_get_device_usb_strings (uint32_t index, char *manufact, char *produc
 
     memset(manufact, 0, 256);
     memset(product, 0, 256);
-    memset(serial, 0, 256);
+    if (serial) memset(serial, 0, 256);
 
     libusb_free_device_list(list, 1);
     libusb_exit(ctx);
@@ -221,20 +258,121 @@ int mirisdr_get_device_usb_strings (uint32_t index, char *manufact, char *produc
     return -1;
 }
 
-int mirisdr_get_index_by_serial (const char *serial)
+int mirisdr_get_device_port (uint32_t index, char *port, int port_len, char *serial, int serial_len)
 {
-    char manufact[256], product[256], have[256];
-    uint32_t i, i_max;
+    ssize_t i, i_max;
+    size_t j = 0;
+    libusb_context *ctx;
+    libusb_device **list;
+    struct libusb_device_descriptor dd;
+    char name[256];
+    int ret = -1;
 
-    if (!serial) return -1;
+    if (!port || (port_len <= 0) || (serial && (serial_len <= 0))) return -1;
 
-    i_max = mirisdr_get_device_count();
+    *port = 0;
+    if (serial) *serial = 0;
 
-    for (i = 0; i < i_max; i++)
-    {
-        if (mirisdr_get_device_usb_strings(i, manufact, product, have)) continue;
-        if (!strcmp(have, serial)) return (int) i;
+    if ((i_max = mirisdr_list_devices(&ctx, &list)) < 0) return -1;
+
+    for (i = 0; i < i_max; i++) {
+        if (libusb_get_device_descriptor(list[i], &dd) < 0) continue;
+
+        if (mirisdr_device_get(dd.idVendor, dd.idProduct) && (j++ == index)) {
+            mirisdr_port_name(list[i], name);
+            if ((int) strlen(name) < port_len) {
+                strcpy(port, name);
+                ret = 0;
+            }
+            if (serial && !mirisdr_device_serial(list[i], dd.iSerialNumber, serial, serial_len))
+                *serial = 0;
+            break;
+        }
     }
 
-    return -1;
+    libusb_free_device_list(list, 1);
+    libusb_exit(ctx);
+
+    return ret;
+}
+
+static int mirisdr_pick_is (libusb_device *d, const struct libusb_device_descriptor *dd,
+                            int own, const char *want)
+{
+    char have[256];
+
+    if (!own) mirisdr_port_name(d, have);
+    else if (!mirisdr_device_serial(d, dd->iSerialNumber, have, sizeof have)) *have = 0;
+
+    return *have && !strcmp(have, want);
+}
+
+/* The receiver an open or a lookup takes from one device list. */
+static libusb_device *mirisdr_pick (libusb_device **list, ssize_t n, uint32_t index,
+                                    const char *serial, const char *usb_port, int *at)
+{
+    struct libusb_device_descriptor dd;
+    char own[256];
+    ssize_t i;
+    int j, pass, hit;
+
+    for (pass = 0; pass < 3; pass++) {
+        if ((pass < 2) ? !serial : !usb_port) continue;
+
+        for (i = 0, j = 0; i < n; i++) {
+            if (libusb_get_device_descriptor(list[i], &dd) < 0) continue;
+            if (!mirisdr_device_get(dd.idVendor, dd.idProduct)) continue;
+
+            if (pass < 2) hit = mirisdr_pick_is(list[i], &dd, pass, serial);
+            else hit = mirisdr_pick_is(list[i], &dd, 0, usb_port)
+                       && (!serial || !mirisdr_device_serial(list[i], dd.iSerialNumber, own, sizeof own));
+
+            if (hit) {
+                if (at) *at = j;
+                return list[i];
+            }
+
+            j++;
+        }
+    }
+
+    if (serial || usb_port) return NULL;
+
+    for (i = 0, j = 0; i < n; i++) {
+        if (libusb_get_device_descriptor(list[i], &dd) < 0) continue;
+        if (!mirisdr_device_get(dd.idVendor, dd.idProduct)) continue;
+
+        if ((uint32_t) j == index) {
+            if (at) *at = j;
+            return list[i];
+        }
+
+        j++;
+    }
+
+    return NULL;
+}
+
+int mirisdr_get_index_by_serial_port (const char *serial, const char *usb_port)
+{
+    ssize_t i_max;
+    int found = -1;
+    libusb_context *ctx;
+    libusb_device **list;
+
+    if (!serial && !usb_port) return -1;
+
+    if ((i_max = mirisdr_list_devices(&ctx, &list)) < 0) return -1;
+
+    if (!mirisdr_pick(list, i_max, 0, serial, usb_port, &found)) found = -1;
+
+    libusb_free_device_list(list, 1);
+    libusb_exit(ctx);
+
+    return found;
+}
+
+int mirisdr_get_index_by_serial (const char *serial)
+{
+    return serial ? mirisdr_get_index_by_serial_port(serial, NULL) : -1;
 }

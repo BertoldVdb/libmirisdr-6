@@ -73,10 +73,12 @@ SoapyMiriSDR::SoapyMiriSDR(const SoapySDR::Kwargs &args):
 {
     mirisdr_open_config_t cfg;
     mirisdr_tune_config_t tc;
-    char manufact[256], product[256], ser[256];   /* the library fills 256 each */
+    char ser[256];
 
+    /* the library finds the serial or port in the list it opens from */
     mirisdr_open_config_default(&cfg);
     if (args.count("serial")) cfg.serial = args.at("serial").c_str();
+    if (args.count("usb_port")) cfg.usb_port = args.at("usb_port").c_str();
 
     if (mirisdr_open_ex(&dev, &cfg) < 0 || !dev)
         throw std::runtime_error("mirisdr: could not open the device");
@@ -85,7 +87,13 @@ SoapyMiriSDR::SoapyMiriSDR(const SoapySDR::Kwargs &args):
     try {
 
     flavour = mirisdr_get_hw_flavour(dev);
-    if (mirisdr_get_usb_strings(dev, manufact, product, ser) == 0) serial = ser;
+    if (mirisdr_get_serial(dev, ser, sizeof ser) > 0) serial = ser;
+    /* "1-3" here is "1:3" in the list */
+    if ((mirisdr_get_usb_position(dev, NULL, NULL, ser, sizeof ser) == 0) && std::strchr(ser, '-'))
+    {
+        *std::strchr(ser, '-') = ':';
+        usbPort = ser;
+    }
 
     /* the IF settings may come with the device, for programs that only take a string */
     if (args.count("if_freq") && !parseIf(args.at("if_freq"), ifMode))
@@ -133,7 +141,8 @@ SoapyMiriSDR::SoapyMiriSDR(const SoapySDR::Kwargs &args):
         throw;
     }
 
-    SoapySDR_logf(SOAPY_SDR_INFO, "mirisdr: opened %s", serial.c_str());
+    SoapySDR_logf(SOAPY_SDR_INFO, "mirisdr: opened %s at %s", serial.empty() ? "a receiver without serial" : serial.c_str(),
+                  usbPort.empty() ? "an unknown port" : usbPort.c_str());
 }
 
 SoapyMiriSDR::~SoapyMiriSDR(void)
@@ -326,7 +335,8 @@ SoapySDR::Kwargs SoapyMiriSDR::getHardwareInfo(void) const
     char s[64];
     int i;
 
-    info["serial"] = serial;
+    if (!serial.empty()) info["serial"] = serial;
+    if (!usbPort.empty()) info["usb_port"] = usbPort;
     if (mirisdr_get_usb_ids(dev, &vid, &pid) == 0)
     {
         snprintf(s, sizeof s, "%04x:%04x", vid, pid);

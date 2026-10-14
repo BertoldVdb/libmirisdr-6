@@ -15,7 +15,8 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-static int mirisdr_open_raw (mirisdr_dev_t **p, uint32_t index, int external_tuner, uint8_t gpio_in, int flavour);
+static int mirisdr_open_raw (mirisdr_dev_t **p, uint32_t index, const char *serial, const char *usb_port,
+                             int external_tuner, uint8_t gpio_in, int flavour);
 static int mirisdr_open_fd_raw (mirisdr_dev_t **p, int fd, int external_tuner, uint8_t gpio_in, int flavour);
 
 const uint8_t *mirisdr_default_firmware (uint32_t *size)
@@ -83,11 +84,11 @@ int mirisdr_running_from_rom (mirisdr_dev_t *p)
     return 1;
 }
 
+/* The USB port the device is in, as mirisdr_port_name() gives it: it comes back there
+   after each reboot, and is opened there by name. */ 
 typedef struct
 {
-    uint8_t bus;
-    uint8_t ports[8];
-    int     nports;
+    char    port[96];
     int     valid;
 } mirisdr_fw_path_t;
 
@@ -100,55 +101,29 @@ static void mirisdr_fw_path_of (mirisdr_dev_t *p, mirisdr_fw_path_t *path)
     if (!p || !p->dh) return;
     if (!(d = libusb_get_device(p->dh))) return;
 
-    path->bus = libusb_get_bus_number(d);
-    path->nports = libusb_get_port_numbers(d, path->ports, sizeof(path->ports));
-    path->valid = path->nports > 0;
+    mirisdr_port_name(d, path->port);
+    path->valid = strchr(path->port, ':') != NULL;
 }
 
 static int mirisdr_fw_find (const mirisdr_fw_path_t *path, uint32_t fallback, int *denied)
 {
     libusb_context *ctx = NULL;
-    libusb_device **list;
-    ssize_t i, i_max;
-    int found = -1, count = 0;
+    libusb_device **list, *d = NULL;
+    ssize_t i_max;
+    int found = -1;
 
     if (libusb_init(&ctx) < 0) return -1;
 
     i_max = libusb_get_device_list(ctx, &list);
 
-    for (i = 0; i < i_max; i++)
-    {
-        struct libusb_device_descriptor dd;
-
-        libusb_get_device_descriptor(list[i], &dd);
-        if (!mirisdr_device_get(dd.idVendor, dd.idProduct)) continue;
-
-        if (path->valid)
-        {
-            uint8_t ports[8];
-            int n = libusb_get_port_numbers(list[i], ports, sizeof(ports));
-
-            if ((libusb_get_bus_number(list[i]) == path->bus) && (n == path->nports)
-                && !memcmp(ports, path->ports, (size_t) n))
-            {
-                found = count;
-                break;
-            }
-        }
-        else if ((uint32_t) count == fallback)
-        {
-            found = count;
-            break;
-        }
-
-        count++;
-    }
+    if (i_max > 0) d = mirisdr_pick(list, i_max, fallback, NULL, path->valid ? path->port : NULL, &found);
+    if (!d) found = -1;
 
     /* udev can take seconds to give the new node its permissions */
     if ((found >= 0) && denied)
     {
         libusb_device_handle *h;
-        int r = libusb_open(list[i], &h);
+        int r = libusb_open(d, &h);
 
         if (r == 0) libusb_close(h);
         *denied = (r == LIBUSB_ERROR_ACCESS);
@@ -478,11 +453,14 @@ static int mirisdr_fw_ids_ok (mirisdr_dev_t *p, int have, uint16_t vid, uint16_t
     return (now_vid == vid) && (now_pid == pid);
 }
 
-static int mirisdr_fw_open (mirisdr_dev_t **dev, const mirisdr_open_config_t *cfg, uint32_t at)
+/* by index, or by serial and port, see mirisdr_pick() */
+static int mirisdr_fw_open (mirisdr_dev_t **dev, const mirisdr_open_config_t *cfg, uint32_t at,
+                            const char *serial, const char *usb_port)
 {
     uint8_t block[16];
     int r = (cfg->fd >= 0) ? mirisdr_open_fd_raw(dev, cfg->fd, cfg->external_tuner, cfg->gpio_input_mask, cfg->hw_flavour)
-                           : mirisdr_open_raw(dev, at, cfg->external_tuner, cfg->gpio_input_mask, cfg->hw_flavour);
+                           : mirisdr_open_raw(dev, at, serial, usb_port, cfg->external_tuner,
+                                              cfg->gpio_input_mask, cfg->hw_flavour);
 
     /* the ROM answers the memory requests too, so anything that needs our own
        firmware asks this rather than assuming */
@@ -516,7 +494,7 @@ static int mirisdr_fw_recycle (mirisdr_dev_t **dev, const mirisdr_open_config_t 
     if ((again = mirisdr_fw_wait(path, index)) < 0) return -1;
     *at = (uint32_t) again;
 
-    return mirisdr_fw_open(dev, cfg, *at);
+    return mirisdr_fw_open(dev, cfg, *at, NULL, path->valid ? path->port : NULL);
 }
 
 int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
@@ -551,15 +529,6 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
     index = at = cfg->index;
     path.valid = 0;
 
-    if (cfg->serial && (cfg->fd < 0))
-    {
-        int found = mirisdr_get_index_by_serial(cfg->serial);
-
-        if (found < 0) return -1;
-
-        index = at = (uint32_t) found;
-    }
-
     image = cfg->firmware;
     size = cfg->firmware_size;
 
@@ -584,9 +553,14 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
         memcpy(work, image, size);
     }
 
-    if (mirisdr_fw_open(&dev, cfg, at) < 0) goto out;
+    if (mirisdr_fw_open(&dev, cfg, at, (cfg->fd < 0) ? cfg->serial : NULL,
+                        (cfg->fd < 0) ? cfg->usb_port : NULL) < 0) goto out;
 
-    if (cfg->fd < 0) mirisdr_fw_path_of(dev, &path);
+    if (cfg->fd < 0)
+    {
+        index = at = dev->index;
+        mirisdr_fw_path_of(dev, &path);
+    }
 
     if (work && !cfg->keep_running)
     {

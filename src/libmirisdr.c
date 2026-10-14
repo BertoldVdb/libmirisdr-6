@@ -175,12 +175,12 @@ failed:
     return -1;
 }
 
-static int mirisdr_open_raw (mirisdr_dev_t **p, uint32_t index, int external_tuner, uint8_t gpio_in, int flavour) {
+static int mirisdr_open_raw (mirisdr_dev_t **p, uint32_t index, const char *serial, const char *usb_port,
+                             int external_tuner, uint8_t gpio_in, int flavour) {
     mirisdr_dev_t *dev = NULL;
     libusb_device **list, *device = NULL;
-    struct libusb_device_descriptor dd;
-    ssize_t i, i_max;
-    size_t count = 0;
+    ssize_t i_max;
+    int at = (int) index;
     int r;
 
     *p = NULL;
@@ -208,20 +208,15 @@ static int mirisdr_open_raw (mirisdr_dev_t **p, uint32_t index, int external_tun
         goto failed;
     }
 
-    for (i = 0; i < i_max; i++) {
-        if (libusb_get_device_descriptor(list[i], &dd) < 0) continue;
-
-        if ((mirisdr_device_get(dd.idVendor, dd.idProduct)) &&
-            (count++ == index)) {
-            device = list[i];
-            break;
-        }
-    }
+    device = mirisdr_pick(list, i_max, index, serial, usb_port, &at);
+    dev->index = (uint32_t) at;
 
     /* nenašli jsme zařízení */
     if (!device) {
         libusb_free_device_list(list, 1);
-        fprintf( stderr, "no miri device %u found\n", dev->index);
+        if (serial || usb_port) fprintf(stderr, "no miri device %s%s%s found\n", serial ? serial : "",
+                                        (serial && usb_port) ? " or at " : "", usb_port ? usb_port : "");
+        else fprintf(stderr, "no miri device %u found\n", index);
         goto failed;
     }
 
