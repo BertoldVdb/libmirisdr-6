@@ -157,6 +157,14 @@ static int probe(Dev *d, soapy_say_t say, soapy_say_t note)
     if (!d->getDCOffsetMode(SOAPY_SDR_RX, 0)) { say("no DC removal at zero IF when set"); bad++; }
     d->setSampleRate(SOAPY_SDR_RX, 0, 900000);
 
+    /* auto never takes 2048 kHz: 1620 kHz has the same filters at a lower converter rate */
+    for (double sr : { 1024000.0, 512000.0, 256000.0, 128000.0, 1000000.0, 1200000.0, 700000.0, 64000.0 })
+    {
+        d->setSampleRate(SOAPY_SDR_RX, 0, sr);
+        if (d->readSetting("if_in_use") == "2048000") { say("auto took 2048 kHz at %.0f S/s", sr); bad++; }
+    }
+    d->setSampleRate(SOAPY_SDR_RX, 0, 900000);
+
     /* any other low rate as asked, the NCO taking the band the rest of the way */
     d->setSampleRate(SOAPY_SDR_RX, 0, 250000);
     if (d->getSampleRate(SOAPY_SDR_RX, 0) != 250000) { say("250 ksps gave %.0f", d->getSampleRate(SOAPY_SDR_RX, 0)); bad++; }

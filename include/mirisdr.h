@@ -308,8 +308,15 @@ typedef struct mirisdr_stream_result
 	                                   are not at 4 x IF, which costs CPU (see above) */
 	int         resampled;          /* ... and the resampler: the rate is not the converters'
 	                                   divided by a power of 2, which costs CPU too */
+	uint32_t    adc_clock;          /* Hz the converters sample at: twice adc_rate, or adc_rate with the
+	                                   decimation bypassed. See MIRISDR_ADC_CLOCK_BEST */
+	int         bits;               /* bits per sample the format carries: 14, 12, 10 or 8 */
 	uint32_t reserved[MIRISDR_RESERVED];
 } mirisdr_stream_result_t;
+
+/* The converters are at their best up to a 15 MHz clock (7.5 Msps, twice that with the
+   decimation bypassed). Above it their effective resolution drops */
+#define MIRISDR_ADC_CLOCK_BEST   15000000
 
 #define MIRISDR_BASEBAND_OFF     0      /* raw samples */
 #define MIRISDR_BASEBAND_ZERO_IF 1      /* zero IF, as float */

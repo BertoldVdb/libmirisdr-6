@@ -973,6 +973,9 @@ static void *controller_thread_fn(void *arg)
 			sr.nco ? ", with the NCO" : "");
 	} else {
 		fprintf(stderr, "Sampling at %u S/s, %s, zero IF.\n", sr.rate, sr.format);}
+	if (sr.adc_clock > MIRISDR_ADC_CLOCK_BEST)
+		fprintf(stderr, "The converters clock at %.1f MHz, past their best %.0f MHz: their resolution drops.\n",
+		        sr.adc_clock / 1e6, MIRISDR_ADC_CLOCK_BEST / 1e6);
 	if (demod.mode_demod == &raw_demod) {
 		fprintf(stderr, "Output at %d Hz.\n", demod.rate_in);
 	} else if (demod.rate_out2 > 0 && demod.rate_out2 != demod.rate_out) {

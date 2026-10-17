@@ -455,6 +455,9 @@ int main(int argc, char **argv)
 		        sr.baseband == MIRISDR_BASEBAND_COMPLEX ? "both converters" : "zero IF",
 		        sr.adc_rate, tr.lo);
 	}
+	if (sr.adc_clock > MIRISDR_ADC_CLOCK_BEST)
+		fprintf(stderr, "The converters clock at %.1f MHz, past their best %.0f MHz: their resolution drops.\n",
+		        sr.adc_clock / 1e6, MIRISDR_ADC_CLOCK_BEST / 1e6);
 	fprintf(stderr, "I/Q swap is %s.\n", sc.swap_iq ? "on" : "off");
 	fprintf(stderr, "Transfer mode is %s.\n", mirisdr_get_transfer(dev));
 	fprintf(stderr, "Sample format is %s", mirisdr_get_sample_format(dev));

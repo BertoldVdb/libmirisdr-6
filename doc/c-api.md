@@ -22,7 +22,7 @@ Each apply call can fill in a result. The result says what is really running, su
 
 <h3>A complete example</h3>
 
-This program receives 433.5 MHz through the 2048 kHz IF and gets 256000 complex float samples a second, with 433.5 MHz at 0 Hz.
+This program receives 433.5 MHz through the 1620 kHz IF and gets 810000 complex float samples a second, with 433.5 MHz at 0 Hz.
 
 ```c
 #include <mirisdr.h>
@@ -42,7 +42,7 @@ static void callback(unsigned char *buf, uint32_t len, void *ctx)
                (unsigned long long) info.gap_samples, (unsigned long long) info.sample);
 
     received += len / (2 * sizeof(float));
-    if (received >= 10 * 256000)
+    if (received >= 10 * 810000)
         mirisdr_cancel_async(dev);
     (void) iq; (void) ctx;
 }
@@ -59,7 +59,7 @@ int main(void)
 
     mirisdr_get_tune(dev, 0, &tc, NULL);
     tc.frequency = 433500000;
-    tc.if_freq = 2048000;
+    tc.if_freq = 1620000;
     tc.bandwidth = 0;          /* the library picks */
     tc.low_if_auto = 1;        /* LO one IF above the frequency */
     tc.gain.mode = MIRISDR_GAIN_TOTAL;
@@ -69,7 +69,7 @@ int main(void)
 
     mirisdr_get_stream(dev, &sc, NULL);
     sc.baseband = 1;
-    sc.rate = 256000;
+    sc.rate = 810000;
     if (mirisdr_set_stream(dev, &sc, &sr) < 0)
         return 1;
     printf("%u samples/s from %u, LO %u Hz, bandwidth %u Hz\n",
@@ -82,7 +82,7 @@ int main(void)
 }
 ```
 
-It prints `256000 samples/s from 8192000, LO 435548000 Hz, bandwidth 1536000 Hz`. The rest of this document explains each part.
+It prints `810000 samples/s from 6480000, LO 435120000 Hz, bandwidth 1536000 Hz`. The rest of this document explains each part.
 
 
 <h3>Opening a receiver</h3>
@@ -299,6 +299,8 @@ The receiver normally samples at twice the rate and filters down. Its clock reac
   - `format`: the format running, never an automatic one.
   - `adc`: what is sampled, `MIRISDR_IQ_BOTH` for complex or `MIRISDR_IQ_ONLY_I` or `_ONLY_Q` for real.
   - `decimation_bypassed`: whether the bypass is on.
+  - `adc_clock`: the converters' clock in Hz, twice `adc_rate`, or `adc_rate` itself with the bypass on. Up to `MIRISDR_ADC_CLOCK_BEST` (15 MHz, so 7.5 Msps without the bypass) the converters are at their best. Above it their effective resolution drops, gradually, not at once. The library goes past it only when the rate asks for it, and the bundled tools and the SoapySDR module say so.
+  - `bits`: the bits a sample keeps in the running format: 14, 12, 10 or 8. This is the USB limit, separate from the converter clock.
   - `usb_bytes`: bytes per second on the USB.
   - `usb_capacity`: what the automatic choice planned on.
   - `gap_fill`: whether gap fill is in effect: as set, and always under baseband.
@@ -377,7 +379,7 @@ The image rejection is the tuner's own, about 37 dB, with one converter or both.
 
 At zero IF any normal rate works, from 1.3 Msps. With a low IF any rate works between the IF's lowest and what the converters reach. The library picks the converter rate like this:
 
-  - 4 times the IF, if that is at most 7 Msps. Above about 7 Msps the receiver's analog performance falls off. That is 1.8 Msps at 450 kHz and 6.48 Msps at 1620 kHz.
+  - 4 times the IF, if that is at most 7 Msps. Above about 7.5 Msps (a 15 MHz converter clock) the receiver's analog performance falls off. That is 1.8 Msps at 450 kHz and 6.48 Msps at 1620 kHz.
   - Else the least rate the IF takes: 2.4 times the IF plus half its widest filter, which keeps the band clear of the receiver's own filter edge. That is 6.7584 Msps at 2048 kHz, with the NCO.
   - The output rate itself, if that is higher (twice it with one converter), with the NCO.
   - At least 1.3 Msps, or 2.6 Msps with the decimation bypass `"ON"`, and at most 15 Msps with the bypass `"OFF"`, 30 Msps otherwise. `"AUTO"` uses the bypass above 14.5 Msps.
@@ -390,15 +392,14 @@ The total decimation stays under 512, so each IF has a lowest rate:
 | 1620 kHz | 6.48 Msps | 12657 |
 | 2048 kHz | 6.7584 Msps | 13201 |
 
-The rates below need neither the resampler nor the NCO, so they cost the least CPU. The converters then run at exactly 4 times the IF, 8.192 Msps at 2048 kHz too:
+The rates below need neither the resampler nor the NCO, so they cost the least CPU. The converters then run at exactly 4 times the IF:
 
 | IF | Converter rate | Rates with both converters |
 |---|---|---|
 | 450 kHz | 1.8 Msps | 1800000, 900000, 450000, 225000, 112500, 56250, 28125 |
 | 1620 kHz | 6.48 Msps | 6480000, 3240000, 1620000, 810000, 405000, 202500, 101250, 50625 |
-| 2048 kHz | 8.192 Msps | 8192000, 4096000, 2048000 and so on down to 32000 |
 
-With one converter, the same rates divided by 2 at least. For example 250 ksps at 450 kHz runs the converters at 1.8 Msps with a decimation of 7.2, and 1 Msps at 2048 kHz runs them at 6.7584 Msps with the NCO and a decimation of 6.7584. `adc_rate` in the stream result says what they run at.
+With one converter, the same rates divided by 2 at least. The 2048 kHz IF has none: 4 times it is 8.192 Msps, past the receiver's best, so it runs at 6.7584 Msps with the NCO. Only an output of 8192000 (4096000 with one converter) still takes the converters to 8.192 Msps, as nothing lower delivers it. The 1620 kHz IF has the same filters at a lower rate, so prefer it. For example 250 ksps at 450 kHz runs the converters at 1.8 Msps with a decimation of 7.2, and 1 Msps at 2048 kHz runs them at 6.7584 Msps with the NCO and a decimation of 6.7584. `adc_rate` in the stream result says what they run at.
 
 The USB limits still apply to the converter rate. A rate outside the IF's span is refused, with a message that gives the span.
 
@@ -412,6 +413,7 @@ A tune that changes the IF while the stream runs keeps the rate if the new IF ha
   - `decimation`: converter samples per output sample, a `double`. A fraction where the resampler runs.
   - `nco`: whether the NCO runs, because the converters are not at 4 times the IF.
   - `resampled`: whether the resampler runs, because the rate is not the converter rate divided by a power of 2. Either costs more CPU than the rates in the table above.
+  - `adc_clock` and `bits`: see the stream result above.
   - `group_delay`: the filters' delay in converter samples, a `double`. Output sample m is centred on converter sample m × `decimation` − `group_delay`, so a time stamp counted in converter samples, such as a PPS, is output sample (sample + `group_delay`) / `decimation`. 0 at zero IF.
 
 <h4>Things to know</h4>
@@ -422,7 +424,7 @@ A tune that changes the IF while the stream runs keeps the rate if the new IF ha
   - `swap_iq` still mirrors the spectrum.
   - A buffer length given to `mirisdr_read_async()` is in output bytes, 8 bytes for each complex sample.
   - `mirisdr_read_sync()` refuses baseband.
-  - The processing runs in the callback's thread. On a Raspberry Pi Compute Module 0 (one core at 1 GHz) it runs at 3.5 times real time or better with the 2048 kHz IF, and 9 times with both converters at the full 8.192 Msps. The 450 kHz IF needs much less. Rates off the table above add the resampler: 250 ksps at 450 kHz runs at 10 times real time, 1 Msps at 1620 kHz at 2.9 times and 3 Msps at 2 times. 1 Msps at 2048 kHz, with the NCO too, runs at about 1.9 times.
+  - The processing runs in the callback's thread. On a Raspberry Pi Compute Module 0 (one core at 1 GHz) the 450 kHz IF needs little. Rates off the table above add the resampler: 250 ksps at 450 kHz runs at 10 times real time, 1 Msps at 1620 kHz at 2.9 times and 3 Msps at 2 times. 1 Msps at 2048 kHz, with the NCO too, runs at about 1.9 times.
   - The same signal reads about 12 dB higher with a low IF than at zero IF. This is not explained yet, so do not compare absolute levels between the two.
 
 

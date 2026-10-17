@@ -2965,6 +2965,65 @@ static void plan_stream (mirisdr_dev_t *n, const char *what, mirisdr_stream_conf
     note("%-36s %s%s%s", what, got ? "accepted" : "refused", got ? ", " : "", got ? r->format : "");
 }
 
+/* The converters' clock and the bits a format keeps, in the stream result. Baseband at a
+ * low IF keeps the clock at or under MIRISDR_ADC_CLOCK_BEST */
+static tres_t t_plan_adc (void)
+{
+    static const struct { const char *format; uint32_t rate; const char *bypass; uint32_t clock; int bits; } want[] = {
+        { "252_S16",  2000000, "OFF",  4000000, 14 },
+        { "336_S16",  7500000, "OFF", 15000000, 12 },
+        { "384_S16",  8000000, "OFF", 16000000, 10 },
+        { "504_S16", 10000000, "OFF", 20000000,  8 },
+        { "504_S8",  10000000, "ON",  10000000,  8 },
+        { "252_S16",  5000000, "ON",   5000000, 14 },
+    };
+    static const struct { uint32_t if_hz, rate; } bb[] = {
+        { 2048000, 1024000 }, { 2048000, 2048000 }, { 1620000, 1620000 }, { 1620000, 810000 }, { 450000, 900000 },
+    };
+    mirisdr_dev_t *n;
+    mirisdr_stream_config_t c;
+    mirisdr_stream_result_t r;
+    mirisdr_tune_config_t t;
+    unsigned i;
+
+    plan_bad = 0;
+
+    if (mirisdr_open_null(&n, "252_S16") < 0) { say("no null device"); return T_FAIL; }
+
+    for (i = 0; i < sizeof want / sizeof want[0]; i++)
+    {
+        mirisdr_stream_config_default(&c);
+        c.format = want[i].format; c.rate = want[i].rate; c.decimation_bypass = want[i].bypass;
+        c.transfer = "BULK"; c.usb_capacity = 100000000;
+        if (mirisdr_stream_check(n, &c, &r) < 0) { plan_bad++; say("%s at %u refused", want[i].format, want[i].rate); continue; }
+        if (r.adc_clock != want[i].clock || r.bits != want[i].bits)
+        { plan_bad++; say("%s at %u, bypass %s: clock %u, %d bits", want[i].format, want[i].rate, want[i].bypass, r.adc_clock, r.bits); }
+        note("%-8s %8u bypass %-3s clock %8u %2d bits", want[i].format, want[i].rate, want[i].bypass, r.adc_clock, r.bits);
+    }
+
+    /* the 15 MHz line */
+    if (MIRISDR_ADC_CLOCK_BEST != 15000000) { plan_bad++; say("the best clock is %u", MIRISDR_ADC_CLOCK_BEST); }
+
+    /* baseband at a low IF: never past it */
+    for (i = 0; i < sizeof bb / sizeof bb[0]; i++)
+    {
+        mirisdr_tune_config_default(&t);
+        t.frequency = 100000000; t.if_freq = bb[i].if_hz;
+        mirisdr_stream_config_default(&c);
+        c.rate = bb[i].rate; c.baseband = 1;
+        if (mirisdr_tune(n, 0, &t, NULL) < 0 || mirisdr_set_stream(n, &c, &r) < 0)
+        { plan_bad++; say("baseband %u at %u Hz IF refused", bb[i].rate, bb[i].if_hz); continue; }
+        if (r.adc_clock > MIRISDR_ADC_CLOCK_BEST || r.adc_clock != 2 * r.adc_rate)
+        { plan_bad++; say("baseband %u at %u Hz IF: converters at %u, clock %u", bb[i].rate, bb[i].if_hz, r.adc_rate, r.adc_clock); }
+        note("baseband %7u at %7u Hz IF: converters %7u, clock %8u", bb[i].rate, bb[i].if_hz, r.adc_rate, r.adc_clock);
+    }
+
+    mirisdr_close(n);
+
+    if (!plan_bad) say("clock twice the rate, the rate itself bypassed; 14, 12, 10, 8 bits; low IF baseband under 15 MHz");
+    return plan_bad ? T_FAIL : T_PASS;
+}
+
 static tres_t t_plan_stream (void)
 {
     mirisdr_dev_t *n;
@@ -4286,8 +4345,10 @@ static tres_t t_bb_plan (void)
         { 450000, 0, 1800000, 1800000, 1 }, { 450000, 0, 900000, 1800000, 2 }, { 450000, 0, 28125, 1800000, 64 },
         { 450000, 1, 900000, 1800000, 2 },  { 450000, 1, 225000, 1800000, 8 },
         { 1620000, 0, 6480000, 6480000, 1 }, { 1620000, 0, 810000, 6480000, 8 }, { 1620000, 1, 3240000, 6480000, 2 },
-        { 2048000, 0, 8192000, 8192000, 1 }, { 2048000, 0, 2048000, 8192000, 4 }, { 2048000, 0, 32000, 8192000, 256 },
-        { 2048000, 1, 4096000, 8192000, 2 }, { 2048000, 1, 1024000, 8192000, 8 },
+        /* 2048 kHz: 4 x IF is past 7 Msps (the converters past their best clock), so only an
+           output that needs 8192 kHz of converters gets it */
+        { 2048000, 0, 8192000, 8192000, 1 }, { 2048000, 0, 2048000, 6758400, 3.3 }, { 2048000, 0, 32000, 6758400, 211.2 },
+        { 2048000, 1, 4096000, 8192000, 2 }, { 2048000, 1, 1024000, 6758400, 6.6 },
         /* not 4 x IF divided down: still 4 x IF up to 7 Msps, the resampler making the
            rest; at 2048 kHz the least the IF takes, 2.4 x (IF + half the widest filter),
            with the NCO too; above those, the output rate itself with the NCO */
@@ -5323,6 +5384,7 @@ static const struct {
 
     { "plan",     "tune config rules",          t_plan_tune           },
     { "plan",     "stream config rules",        t_plan_stream         },
+    { "plan",     "converter clock and bits",   t_plan_adc            },
     { "plan",     "stream following the tune",  t_plan_follow         },
     { "plan",     "frontend with the tune",     t_plan_frontend       },
     { "plan",     "RSPdx-R2 front end",         t_plan_dxr2           },

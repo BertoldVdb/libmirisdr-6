@@ -244,12 +244,15 @@ void SoapyMiriSDR::probeRanges(void)
  ******************************************************************/
 
 /* the rates of a low IF that need no resampler or NCO: 4 x IF divided by a power of 2, by
-   2 at least for a single converter */
+   2 at least for a single converter. None where 4 x IF is past 7 Msps (2048 kHz): the
+   library runs those converters lower, with the NCO */
 std::vector<uint32_t> SoapyMiriSDR::lowIfRates(uint32_t ifHz) const
 {
     std::vector<uint32_t> rates;
     int one = converters != MIRISDR_IQ_BOTH, k;
     uint64_t base = (uint64_t) 4 * ifHz / (one ? 2 : 1);
+
+    if ((uint64_t) 4 * ifHz > 7000000) return rates;
 
     for (k = 0; k <= 8 - one && !(base % ((uint64_t) 1 << k)); k++) rates.push_back((uint32_t) (base >> k));
     return rates;
@@ -277,7 +280,8 @@ void SoapyMiriSDR::lowIfRange(uint32_t ifHz, uint32_t &lo, uint32_t &hi) const
 }
 
 /* "auto" below rateMin: an IF that has this rate free, as before; else the one with the
-   least converter rate whose widest filter passes most of it */
+   least converter rate whose widest filter passes most of it. Never 2048 kHz: 1620 kHz has
+   the same filters at a lower converter rate */
 uint32_t SoapyMiriSDR::pickLowIf(uint32_t rate) const
 {
     const int one = converters != MIRISDR_IQ_BOTH;
@@ -287,7 +291,7 @@ uint32_t SoapyMiriSDR::pickLowIf(uint32_t rate) const
     for (uint32_t f : IFS)
     {
         std::vector<uint32_t> r = lowIfRates(f);
-        if (f && std::find(r.begin(), r.end(), rate) != r.end()) return f;
+        if (f && f != 2048000 && std::find(r.begin(), r.end(), rate) != r.end()) return f;
     }
 
     for (uint32_t f : IFS)
@@ -295,7 +299,7 @@ uint32_t SoapyMiriSDR::pickLowIf(uint32_t rate) const
         uint64_t widest = f > 450000 ? 1536000 : 600000, conv;
 
         lowIfRange(f, lo, hi);
-        if (!f || rate < lo || rate > hi || (widest < 0.8 * rate && f != 2048000)) continue;
+        if (!f || f == 2048000 || rate < lo || rate > hi || widest < 0.8 * rate) continue;
         conv = std::max<uint64_t>(convPref(f), (uint64_t) rate << one);
         if (!pick || conv < best) { pick = f; best = conv; }
     }
@@ -348,12 +352,27 @@ void SoapyMiriSDR::configure(uint32_t rate)
     applyStream(c);
     if (out != rate) SoapySDR_logf(SOAPY_SDR_INFO, "mirisdr: %u S/s, the nearest to %u with a %u Hz IF", out, rate, ifHz);
 
-    /* a rate that is not the converters' halved, or with them off 4 x IF: say which
-       nearby ones need neither. Direct sampling always runs the NCO */
     mirisdr_stream_result_t r;
     mirisdr_tune_result_t tr;
+    if (mirisdr_get_stream(dev, NULL, &r) < 0) return;
+
+    /* the converters past their best clock, the format short of 14 bits, or a 2048 kHz IF
+       where 1620 kHz has the same filters for less */
+    if (r.adc_clock > MIRISDR_ADC_CLOCK_BEST)
+        SoapySDR_logf(SOAPY_SDR_WARNING, "mirisdr: the converters clock at %.1f MHz, past their best %.0f MHz "
+                      "(7.5 MS/s, or 15 MS/s with the decimation bypass): their resolution drops",
+                      r.adc_clock / 1e6, MIRISDR_ADC_CLOCK_BEST / 1e6);
+    if (r.bits && r.bits < 14)
+        SoapySDR_logf(SOAPY_SDR_INFO, "mirisdr: %u S/s over USB fits the %s format, %d bits a sample",
+                      r.adc_rate, r.format, r.bits);
+    if (ifHz == 2048000)
+        SoapySDR_logf(SOAPY_SDR_INFO, "mirisdr: a 1620 kHz IF has the same filters as 2048 kHz at a lower "
+                      "converter rate");
+
+    /* a rate that is not the converters' halved, or with them off 4 x IF: say which
+       nearby ones need neither. Direct sampling always runs the NCO */
     if (mirisdr_get_tune(dev, 0, NULL, &tr) == 0 && tr.frontend.direct_sampling) return;
-    if (mirisdr_get_stream(dev, NULL, &r) == 0 && (r.nco || r.resampled))
+    if (r.nco || r.resampled)
     {
         uint32_t below = 0, above = 0;
 
@@ -750,7 +769,7 @@ std::vector<double> SoapyMiriSDR::listSampleRates(const int direction, const siz
 {
     static const std::vector<double> common = { 1.536e6, 2e6, 2.048e6, 2.4e6, 3e6, 4e6, 5e6, 6e6, 7e6,
                                                 8e6, 9e6, 10e6, 12e6, 14e6 };
-    static const std::vector<double> low = { 48e3, 96e3, 192e3, 250e3, 500e3, 1e6 };
+    static const std::vector<double> low = { 48e3, 96e3, 128e3, 192e3, 250e3, 256e3, 500e3, 512e3, 1e6, 1.024e6 };
     std::vector<double> rates;
     uint32_t fixed = fixedIf(), lo, hi;
 
@@ -1074,6 +1093,7 @@ std::string SoapyMiriSDR::readSetting(const std::string &key) const
     int n;
 
     if (key == "if_freq") return ifMode;
+    if (key == "if_in_use") return std::to_string(ifFreq);
     if (key == "converters") return converters == MIRISDR_IQ_ONLY_I ? "I" : converters == MIRISDR_IQ_ONLY_Q ? "Q" : "both";
     if (key == "baseband") return baseband ? "true" : "false";
     if (key == "format") return formatSetting.empty() ? "AUTO" : formatSetting;

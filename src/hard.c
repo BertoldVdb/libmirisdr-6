@@ -277,8 +277,8 @@ static uint32_t mirisdr_ds_edge (const mirisdr_stream_config_t *s, uint32_t f)
 
 /* A low IF baseband stream's converter rate and k, its half-band stages after the shift
    or the converter (which halves once more with one output). The free path first: the
-   converters at 4 x IF and the output that halved k times, the band at 0 Hz with no
-   more. Any other output takes the preferred converter rate (or the output's own, if
+   converters at 4 x IF (up to MIRISDR_BB_PREFER_MAX) and the output that halved k times,
+   the band at 0 Hz with no more. Any other output takes the preferred converter rate (or the output's own, if
    higher) and as many halvings as leave between 1 and 2 to go, which the resampler
    makes. Returns k with the converter rate in *conv, or -1. With adjust a rate out of
    reach becomes the nearest there is, in *rate */
@@ -300,7 +300,9 @@ static int mirisdr_bb_stages_for (uint32_t if_hz, uint32_t ds_edge, int real, ui
 	}
 	x = *rate;
 
-	for (k = 0; !ds_edge && (k <= kmax); k++)
+	/* not past MIRISDR_BB_PREFER_MAX either: 2048 kHz would clock the converters past
+	   their best (MIRISDR_ADC_CLOCK_BEST) */
+	for (k = 0; !ds_edge && (r4 <= MIRISDR_BB_PREFER_MAX) && (k <= kmax); k++)
 		if (((x * m << k) == r4) && (r4 >= need) && (r4 <= hi)) {
 			*conv = (uint32_t) r4;
 			return k;
@@ -553,6 +555,19 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 	return 0;
 }
 
+/* the bits a sample keeps in a format: its packing, complex or real alike */
+static int mirisdr_format_bits (int format)
+{
+	switch (mirisdr_format_spp(format))
+	{
+	case 252: return 14;
+	case 504: return mirisdr_format_real(format) ? 14 : 8;     /* two bytes a pair, or a real sample */
+	case 336: case 672: return 12;
+	case 384: case 768: return 10;
+	default: return 0;
+	}
+}
+
 static void mirisdr_stream_result_of (uint32_t rate, int format, int swap, int decim, uint32_t cap,
                                       int bb_path, uint32_t bb_rate, uint32_t bb_if, int bb_ds, int gap_fill,
                                       mirisdr_stream_result_t *res)
@@ -573,6 +588,8 @@ static void mirisdr_stream_result_of (uint32_t rate, int format, int swap, int d
 	res->decimation_bypassed = decim;
 	res->usb_bytes = (uint32_t) ((uint64_t) rate * 1024 / mirisdr_format_spp(format));
 	res->usb_capacity = cap;
+	res->adc_clock = decim ? rate : 2 * rate;
+	res->bits = mirisdr_format_bits(format);
 }
 
 /* the registers only: the stream is stopped around this */

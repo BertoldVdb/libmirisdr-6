@@ -118,15 +118,14 @@ These rates cost the least CPU, because the filters reach them by halving alone:
 |---|---|
 | 450 kHz | 900000, 450000, 225000, 112500, 56250, 28125 |
 | 1620 kHz | 810000, 405000, 202500, 101250, 50625 |
-| 2048 kHz | 1024000, 512000, 256000, 128000, 64000, 32000 |
 
-Any other rate adds a resampler in software, and at the 2048 kHz IF also a frequency shift (an NCO), because that IF runs the receiver at 6.7584 Msps rather than 8.192. The module then logs a warning that names the nearest rates that need neither. It picks the IF like this:
+Any other rate adds a resampler in software. The module then logs a warning that names the nearest rates that need neither. The 2048 kHz IF always adds a frequency shift (an NCO) as well, because 4 times it would clock the receiver past its best, so it runs at 6.7584 Msps rather than 8.192. `auto` never picks it: the 1620 kHz IF has the same filters at a lower rate. It picks the IF like this:
 
   - A rate from the table gets its IF.
   - Up to 750 ksps, any other rate gets the 450 kHz IF, whose widest filter (600 kHz) still passes most of it.
   - Above that, it gets the 1620 kHz IF, with its 1536 kHz filter.
 
-The module lists the table's rates, a few round ones (48k, 96k, 192k, 250k, 500k and 1M) and the usual zero IF rates. The rate range it reports runs from the lowest low IF rate to the top of the zero IF range.
+The module lists the table's rates, a few round ones (48k, 96k, 128k, 192k, 250k, 256k, 500k, 512k, 1M and 1.024M) and the usual zero IF rates. The rate range it reports runs from the lowest low IF rate to the top of the zero IF range.
 
 With a fixed IF (see the `if_freq` setting) that IF takes any rate in its span:
 
@@ -137,6 +136,8 @@ With a fixed IF (see the `if_freq` setting) that IF takes any rate in its span:
 | 2048 kHz | 13201 to 8192000 | 13201 to 4096000 |
 
 The span stops at 4 times the IF, or 2 times with one converter, because above that the tuner's filter leaves nothing to see. A rate outside the span gives its nearest end, and the module logs which.
+
+The module logs a warning when a rate clocks the receiver's converters past 15 MHz, which is above 7.5 Msps (15 Msps with the decimation bypass). Their effective resolution drops there, gradually. It also notes when the USB format keeps fewer than 14 bits a sample, and suggests the 1620 kHz IF when 2048 kHz is set.
 
 
 <h3>Bandwidth</h3>
@@ -186,7 +187,8 @@ Programs show these as device settings. With SoapySDR's API they are `writeSetti
 
 | Setting | Values | Default | What it does |
 |---|---|---|---|
-| `if_freq` | `auto`, `0`, `450000`, `1620000`, `2048000` | `auto` | The tuner IF. `auto` uses zero IF from 1.3 Msps up and a low IF below. The others fix the IF. |
+| `if_freq` | `auto`, `0`, `450000`, `1620000`, `2048000` | `auto` | The tuner IF. `auto` uses zero IF from 1.3 Msps up and a low IF below, never 2048 kHz. The others fix the IF. |
+| `if_in_use` | read only | | The IF in force, in Hz, 0 for zero IF: what `auto` picked. |
 | `converters` | `both`, `I`, `Q` | `both` | With a low IF, use both converters or only one. |
 | `baseband` | `true`, `false` | `true` | Put the frequency you set at the centre of the stream, at any IF. |
 | `format` | `AUTO`, `252_S16`, `336_S16`, `384_S16`, `504_S16`, `504_S8` | `AUTO` | How samples cross the USB. `AUTO` picks the most bits that fit. |
@@ -215,7 +217,7 @@ With `baseband` on, the library takes the DC offset off in software: by default 
 
 <h4>How much CPU</h4>
 
-Measured on a Raspberry Pi Compute Module 0 (one core at 1 GHz), the low IF processing runs at 3.5 times real time or better with the 2048 kHz IF, and 9 times with both converters at the full 8.192 Msps. The 450 kHz IF needs much less. A rate that is not in the table above adds the resampler: 250 ksps at 450 kHz still runs at 10 times real time, 1 Msps at 1620 kHz at 2.9 times and 3 Msps at 2 times. The 2048 kHz IF off its own rates also runs the NCO, at about 1.9 times real time, so use 1620 kHz there on such a computer. Zero IF needs no processing.
+Measured on a Raspberry Pi Compute Module 0 (one core at 1 GHz), the 450 kHz IF needs little processing. A rate that is not in the table above adds the resampler: 250 ksps at 450 kHz still runs at 10 times real time, 1 Msps at 1620 kHz at 2.9 times and 3 Msps at 2 times. The 2048 kHz IF also runs the NCO, at about 1.9 times real time, so use 1620 kHz there on such a computer. Zero IF needs no processing.
 
 
 <h3>Stream options</h3>
@@ -278,7 +280,7 @@ int main()
 }
 ```
 
-Build it with `g++ example.cpp -lSoapySDR`. At 256000 samples a second the module picks the 2048 kHz IF by itself, and 433.5 MHz is at 0 Hz in `buf`.
+Build it with `g++ example.cpp -lSoapySDR`. At 256000 samples a second the module picks the 450 kHz IF by itself, and 433.5 MHz is at 0 Hz in `buf`.
 
 
 <h3>What it does not do</h3>
