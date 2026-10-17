@@ -160,11 +160,11 @@ Some programs, have no field for the filter. For those, put it in the device str
 
 <h3>Gain</h3>
 
-Set the gain as one total, from 0 to 102 dB on most bands, plus the RSPduo's or RSPdx-R2's amplifier from 55 MHz. The library splits it over the stages in the way that works best, with the front end first so the noise stays low. It does this again when you tune to another band.
+Set the gain as one total, from 0 to 102 dB on most bands, plus the board's amplifier from 55 MHz on the RSP1B, RSPdx-R2 and RSPduo. The library splits it over the stages in the way that works best, with the front end first so the noise stays low. It does this again when you tune to another band.
 
 The stages can also be set one by one:
 
-  - `AMP`: RSPduo and RSPdx-R2. 0 or the full gain of the amplifier before the tuner, from 55 MHz up. On the RSPduo about 25 dB up to 108 MHz, 24 to 250 MHz, 22 to 420 MHz, 20 to 960 MHz and 17 in L band. On the RSPdx-R2 it is about 24, 25, 24, 21 and 15 dB in the same bands. A total turns it on first, and bypasses it only below its own gain. The RSPduo's Hi-Z and the bands below 55 MHz have none.
+  - `AMP`: RSP1B, RSPdx-R2 and RSPduo. 0 or the full gain of the amplifier before the tuner, from 55 MHz up. On the RSPduo about 25 dB up to 108 MHz, 24 to 250 MHz, 22 to 420 MHz, 20 to 960 MHz and 17 in L band. On the RSPdx-R2 it is about 24, 25, 24, 21 and 15 dB in the same bands, and on the RSP1B about 25, 25, 24, 23 and 19 dB. A total turns it on first, and bypasses it only below its own gain. The RSPduo's Hi-Z and the bands below 55 MHz have none.
   - `LNA`: 0 or its full gain, which is 24 dB on most bands, 7 dB in band IV/V and about 4 dB in L band. The AM inputs have none.
   - `MIX`: 0 or 19 dB.
   - `MIXBUF`: 0 or 24 dB, only where the receiver uses its AM input: below 55 MHz, and from 255 to 420 MHz through the up-converter. On the RSP1 that is below 50 MHz only. The tuner's other AM input, with steps of 6 dB, is not used.
@@ -200,7 +200,7 @@ Programs show these as device settings. With SoapySDR's API they are `writeSetti
 | `fm_notch` | `true`, `false` | `false` | RSP1B, RSPdx-R2 and RSPduo only. Notch for FM broadcast (85 to 100 MHz). |
 | `mw_notch` | `true`, `false` | `false` | RSP1B, RSPdx-R2 and RSPduo only. Notch for medium wave (0.4 to 1.6 MHz). |
 | `dab_notch` | `true`, `false` | `false` | RSP1B, RSPdx-R2 and RSPduo only. Notch for DAB (165 to 230 MHz). |
-| `attenuator` | RSPduo `0`, `6`, `13`, `19`, and RSPdx-R2 `0` to `36` in steps of 3 | `0` | RSPduo and RSPdx-R2. Pads in dB before channel 0's tuner, against strong signals. They are apart from the gain: the total does not count them. Another value takes the nearest step. On the RSPduo each channel has its own as a channel setting, see Two channels. |
+| `attenuator` | RSPduo and RSP1B `0`, `6`, `13`, `19`, and RSPdx-R2 `0` to `36` in steps of 3 | `0` | RSP1B, RSPdx-R2 and RSPduo. Pads in dB before channel 0's tuner, against strong signals. They are apart from the gain: the total does not count them. Another value takes the nearest step. On the RSPduo each channel has its own as a channel setting, see Two channels. |
 | `ref_out` | `true`, `false` | `false` | RSPduo only. The board's 24 MHz clock out of its reference connector, for another receiver. |
 | `port_tie` | `true`, `false` | `false` | RSPduo only. Ties the two 50 ohm ports together, so both channels hear both, as from one antenna. It works at HF, 50 to 200 MHz and 600 to 900 MHz, and much less at 300 to 433 MHz and in L band. |
 | `direct_sampling` | `OFF`, `ON`, `AUTO` | `AUTO` | RSPdx-R2 only. Sample the antenna directly instead of through the tuner: `ON` whenever the frequency is 2 MHz or below, `AUTO` only where the whole band (the frequency plus half the rate) fits under 2 MHz. Otherwise the tuner is used as usual. `true` and `false` work as `ON` and `OFF`. The gain is then only the LNA, about 37 dB, on from a total of 19 dB. |

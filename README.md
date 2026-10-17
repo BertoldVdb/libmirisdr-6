@@ -28,7 +28,7 @@ The SoapySDR module is built too when the SoapySDR development files are install
 
 <h3>For users</h3>
 
-  - **SDRplay RSP1B and RSPdx-R2 support.** Filters, notches, bias-T, and the RSPdx-R2's three antenna inputs, amplifier (in the gain), pads in 3 dB steps and direct sampling below 2 MHz.
+  - **SDRplay RSP1B and RSPdx-R2 support.** Filters, notches, bias-T, the amplifier (in the gain) and pads, and the RSPdx-R2's three antenna inputs and direct sampling below 2 MHz.
   - **SDRplay RSPduo support.** Both tuners, alone or together (a low IF each, delivered as two labelled streams or two SoapySDR channels). Each tuner's filters, notches, amplifier (in the gain) and pads, the bias-T, the Hi-Z input, the tie that feeds both tuners from one port, and the reference output.
   - **A SoapySDR module.** Programs that use SoapySDR can use the receivers with `driver=mirisdr`.
   - **Low sample rates.** Any rate down to about 3.5 ksps, through the tuner's low IF.

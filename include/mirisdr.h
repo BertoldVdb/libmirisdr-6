@@ -410,7 +410,8 @@ typedef struct mirisdr_gain_config
 	int      amp_bypass;    /* the board's amplifier before the tuner bypassed, from 55 MHz:
 	                           RSPduo (not on the Hi-Z) about 25 dB to 108 MHz, 24 to 250, 22
 	                           to 420, 20 to 960, 17 in L band. RSPdx-R2 about 24 to 108, 25
-	                           to 250, 24 to 420, 21 to 960, 15 in L band. 0 elsewhere */
+	                           to 250, 24 to 420, 21 to 960, 15 in L band. RSP1B about 25 to 250,
+	                           24 to 420, 23 to 960, 19 in L band. 0 elsewhere */
 	uint32_t reserved[MIRISDR_RESERVED_NESTED];
 } mirisdr_gain_config_t;
 
@@ -457,9 +458,9 @@ typedef struct mirisdr_frontend_config
 	                           takes B, its Hi-Z input */
 	int      direct_sampling; /* RSPdx-R2 only, MIRISDR_DS_*: when to sample the antenna directly,
 	                           see below. The result says whether it is in force (0 or 1) */
-	int      attenuator;    /* dB, pads before the tuner, apart from the gain's total. RSPduo:
-	                           0, 6, 13 or 19 (to 900 MHz, 11 and 14 for the last two in L
-	                           band), one pad at a time, not on the Hi-Z. RSPdx-R2: 0 to 36 in
+	int      attenuator;    /* dB, pads before the tuner, apart from the gain's total. RSPduo
+	                           and RSP1B: 0, 6, 13 or 19, one pad at a time (the RSPduo's not on
+	                           the Hi-Z). RSPdx-R2: 0 to 36 in
 	                           3 dB steps, its pads in series (31 at most at 1.5 GHz).
 	                           mirisdr_get_frontend_caps() lists them */
 	uint32_t flags;         /* MIRISDR_FRONTEND_*, the board's switches, see above */
@@ -593,7 +594,7 @@ MIRISDR_API int mirisdr_get_lna_gain (mirisdr_dev_t *p);                /* extra
 MIRISDR_API int mirisdr_get_baseband_gain (mirisdr_dev_t *p);           /* extra */
 MIRISDR_API int mirisdr_set_bias (mirisdr_dev_t *p, int bias);          /* extra */
 MIRISDR_API int mirisdr_get_bias (mirisdr_dev_t *p);                    /* extra */
-/* The tune's frontend.attenuator, dB: RSPduo and RSPdx-R2, see above */
+/* The tune's frontend.attenuator, dB: RSP1B, RSPdx-R2 and RSPduo, see above */
 MIRISDR_API int mirisdr_set_attenuator (mirisdr_dev_t *p, int db);      /* extra */
 MIRISDR_API int mirisdr_get_attenuator (mirisdr_dev_t *p);              /* extra */
 /* The tune's frontend.flags, MIRISDR_FRONTEND_*: the board's, see above */

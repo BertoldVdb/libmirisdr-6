@@ -125,6 +125,9 @@
 #define SDRPLAY_A6              (1u << 6)
 #define SDRPLAY_A5              (1u << 5)
 #define DXR2_PAD                10      /* B2-B5: the RSPdx-R2's pads, about 3, 6, 12 and 15 dB */
+#define RSP1B_PAD               10      /* B2-B4: the RSP1B's, about 6, 13 and 19 dB, one at a time */
+
+static int mirisdr_duo_pad (int db);
 #define SDRPLAY_A4              (1u << 4)
 #define SDRPLAY_A3              (1u << 3)
 #define SDRPLAY_A2              (1u << 2)
@@ -164,6 +167,11 @@ static uint16_t mirisdr_sdrplay_word (int flavour, uint16_t word, int notch, int
         if (amp_off) w |= SDRPLAY_A5;
         if (mirisdr_dxr2_pads(att) > 0) w &= (uint16_t) ~(mirisdr_dxr2_pads(att) << DXR2_PAD);
     }
+    if (flavour == MIRISDR_HW_RSP1B)
+    {
+        if (amp_off) w |= SDRPLAY_A5;
+        if (mirisdr_duo_pad(att) > 0) w &= (uint16_t) ~(1u << (RSP1B_PAD + mirisdr_duo_pad(att) - 1));
+    }
 
     return w;
 }
@@ -184,7 +192,7 @@ static uint16_t mirisdr_sdrplay_word (int flavour, uint16_t word, int notch, int
 #define DUO2_AMP0       (1u << 5)       /* A5: tuner 0's amplifier powered, low (a MOSFET switch) */
 #define DUO2_AMP1       (1u << 8)       /* B0: tuner 1's */
 
-/* the RSPduo's pad for a tuner's attenuation, dB: 0, 6, 13 or 19, -1 for any other */
+/* the RSPduo's (and RSP1B's) pad for an attenuation, dB: 0, 6, 13 or 19, -1 for any other */
 static int mirisdr_duo_pad (int db)
 {
     switch (db)

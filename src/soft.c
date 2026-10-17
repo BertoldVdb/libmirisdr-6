@@ -67,21 +67,33 @@ static hw_switch_freq_plan_t hw_switch_freq_plan_sdrplay[] = {
 #define RSP1B_250_300   0x3F5F  /* B7 B6 A7 low, A5 low */
 #define RSP1B_300_380   0x3C5F  /* and B1 B0 low */
 #define RSP1B_380_420   0x3E5F  /* and B0 low */
+#define RSP1B_380_420_KHZ 403000 /* it beats the 300-380 filter from 403 MHz (0.6 dB at 380, 2026-10-17) */
+
+/* The amplifier A5 low takes in (released bypasses it), against the bypass, 2026-10-17: 25
+   dB at 60-145 MHz, 24.5 at 200, 23.7 at 300, 22.4-23.4 at 433-900, 21.5 at 1.2 GHz, 17 at
+   1.5. It improves sensitivity: the receiver's own floor rises 7-19 dB with it. Counted
+   from 55 MHz */
+#define RSP1B_AMP_VHF   25
+#define RSP1B_AMP_B3    25
+#define RSP1B_AMP_UHF   24
+#define RSP1B_AMP_B45   23
+#define RSP1B_AMP_L     19
 
 static hw_switch_freq_plan_t hw_switch_freq_plan_rsp1b[] = {
         {0,       MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_LPF2, 0},
         {2000,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_2_12, 0},
         {12000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_12_30, 0},
         {30000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_30_60, 0},
-        {55000,   MIRISDR_MODE_VHF, 0, 0, 32, 0xea80, 0, RSP1B_VHF_B45, 0},
-        {108000,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1B_B3_L, 0},
-        {250000,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1B_B3_L, 0},
-        {255000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 6, RSP1B_250_300, 0},
-        {280000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1B_250_300, 0},
-        {300000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1B_300_380, 0},
-        {380000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1B_380_420, 0},
-        {420000,  MIRISDR_MODE_B45, 0, 0, 4,  0xea80, 0, RSP1B_VHF_B45, 0},
-        {960000,  MIRISDR_MODE_BL,  0, 0, 2,  0xea80, 0, RSP1B_B3_L, 0},
+        {55000,   MIRISDR_MODE_VHF, 0, 0, 32, 0xea80, 0, RSP1B_VHF_B45, RSP1B_AMP_VHF},
+        {108000,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1B_B3_L, RSP1B_AMP_B3},
+        {250000,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1B_B3_L, RSP1B_AMP_B3},
+        {255000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 6, RSP1B_250_300, RSP1B_AMP_UHF},
+        {280000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1B_250_300, RSP1B_AMP_UHF},
+        {300000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1B_300_380, RSP1B_AMP_UHF},
+        {RSP1B_380_420_KHZ, MIRISDR_MODE_AM, MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1B_380_420,
+         RSP1B_AMP_UHF},
+        {420000,  MIRISDR_MODE_B45, 0, 0, 4,  0xea80, 0, RSP1B_VHF_B45, RSP1B_AMP_B45},
+        {960000,  MIRISDR_MODE_BL,  0, 0, 2,  0xea80, 0, RSP1B_B3_L, RSP1B_AMP_L},
         {2400000, -1, 0, 0, 0, 0x0000, 0, 0, 0},
 };
 
@@ -449,7 +461,7 @@ static int mirisdr_attenuator_list (int flavour, int *v)
     int db, n = 0;
 
     for (db = 0; db <= 36; db++)
-        if ((flavour == MIRISDR_HW_RSPDUO) ? (mirisdr_duo_pad(db) >= 0) :
+        if ((flavour == MIRISDR_HW_RSPDUO || flavour == MIRISDR_HW_RSP1B) ? (mirisdr_duo_pad(db) >= 0) :
             (flavour == MIRISDR_HW_RSPDXR2) ? (mirisdr_dxr2_pads(db) >= 0) : !db)
         {
             if (v) v[n] = db;
@@ -960,7 +972,7 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
 
     if (!mirisdr_attenuator_ok(p->hw_flavour, c->frontend.attenuator))
     {
-        mirisdr_refuse(p, "unsupported attenuator %d dB: the RSPduo takes 0, 6, 13 or 19, the RSPdx-R2 0 to 36 in"
+        mirisdr_refuse(p, "unsupported attenuator %d dB: the RSPduo and RSP1B take 0, 6, 13 or 19, the RSPdx-R2 0 to 36 in"
                        " 3 dB steps, other boards none\n", c->frontend.attenuator);
         return -1;
     }

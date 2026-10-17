@@ -2972,20 +2972,22 @@ static tres_t t_plan_tune (void)
     plan_tune(n, "2.5 GHz", &c, 0, &r);
     c.frequency = 1500000000; c.gain.mode = MIRISDR_GAIN_TOTAL; c.gain.total = 200;
     plan_tune(n, "1.5 GHz, gain 200", &c, 1, &r);
-    if (r.gain.total != 82) { plan_bad++; say("L band gain %d, not 82", r.gain.total); }
+    if (r.gain.total != 82 + 19) { plan_bad++; say("L band gain %d, not 82 and the RSP1B's amplifier's 19", r.gain.total); }
     c.frequency = 100000000;
     plan_tune(n, "100 MHz, gain 200", &c, 1, &r);
-    if (r.gain.total != 102) { plan_bad++; say("VHF gain %d, not 102", r.gain.total); }
+    if (r.gain.total != 102 + 25) { plan_bad++; say("VHF gain %d, not 102 and the amplifier's 25", r.gain.total); }
     c.gain.total = -5;
     plan_tune(n, "a negative gain", &c, 0, &r);
 
-    /* a total splits front end first, stages are checked against the band */
+    /* a total splits front end first, the board's amplifier (25 dB) before the tuner's LNA, and
+       stages are checked against the band */
     mirisdr_tune_config_default(&c);
-    c.frequency = 100000000; c.gain.mode = MIRISDR_GAIN_TOTAL; c.gain.total = 60;
-    plan_tune(n, "VHF, 60 dB in total", &c, 1, &r);
-    if (r.gain.total != 60 || !r.gain.lna || !r.gain.mixer || r.gain.baseband != 17)
-    { plan_bad++; say("60 dB split to %d: lna %d mixer %d baseband %d", r.gain.total, r.gain.lna, r.gain.mixer, r.gain.baseband); }
+    c.frequency = 100000000; c.gain.mode = MIRISDR_GAIN_TOTAL; c.gain.total = 85;
+    plan_tune(n, "VHF, 85 dB in total", &c, 1, &r);
+    if (r.gain.total != 85 || r.gain.amp_bypass || !r.gain.lna || !r.gain.mixer || r.gain.baseband != 17)
+    { plan_bad++; say("85 dB split to %d: bypass %d lna %d mixer %d baseband %d", r.gain.total, r.gain.amp_bypass, r.gain.lna, r.gain.mixer, r.gain.baseband); }
     c.gain.mode = MIRISDR_GAIN_STAGES; c.gain.lna = 0; c.gain.mixer = 1; c.gain.mixbuffer = 0; c.gain.baseband = 30;
+    c.gain.amp_bypass = 1;
     plan_tune(n, "VHF, stages", &c, 1, &r);
     if (r.gain.total != 49) { plan_bad++; say("stages without the LNA give %d, not 49", r.gain.total); }
     c.gain.baseband = 60;
@@ -3838,6 +3840,28 @@ static tres_t t_plan_dxr2 (void)
     mirisdr_set_attenuator(n, 0);
     mirisdr_tune_config_default(&c);
 
+    /* the RSP1B: its amplifier (A5, 25 dB at 100 MHz) bypassed under a total of 25, its pads
+       one at a time on B2-B4 (13 dB: B3), 0/6/13/19 only, and the 380-420 filter from 403 MHz */
+    mirisdr_set_hw_flavour(n, MIRISDR_HW_RSP1B);
+    c.frequency = 100000000; c.gain.mode = MIRISDR_GAIN_TOTAL; c.gain.total = 200;
+    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.gain.total != 127 || r.gain.amp_bypass || r.frontend.raw.expander[0] != 0xBFDF)
+    { plan_bad++; say("RSP1B total 200 at 100 MHz: %d, bypass %d, word %04X", r.gain.total, r.gain.amp_bypass, r.frontend.raw.expander[0]); }
+    c.gain.total = 24;
+    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || !r.gain.amp_bypass || r.frontend.raw.expander[0] != 0xBFFF)
+    { plan_bad++; say("RSP1B total 24 at 100 MHz: bypass %d, word %04X", r.gain.amp_bypass, r.frontend.raw.expander[0]); }
+    c.gain.total = 60; c.frontend.attenuator = 13;
+    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.frontend.attenuator != 13 || r.gain.total != 60 || r.frontend.raw.expander[0] != 0xB7DF)
+    { plan_bad++; say("RSP1B 13 dB pad: %d, total %d, word %04X", r.frontend.attenuator, r.gain.total, r.frontend.raw.expander[0]); }
+    c.frontend.attenuator = 12;
+    if (mirisdr_tune_check(n, 0, &c, &r) == 0) { plan_bad++; say("RSP1B 12 dB pad accepted"); }
+    c.frontend.attenuator = 0;
+    c.frequency = 402000000;
+    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.frontend.raw.expander[0] != 0x3C5F) { plan_bad++; say("RSP1B at 402 MHz: word %04X", r.frontend.raw.expander[0]); }
+    c.frequency = 403000000;
+    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.frontend.raw.expander[0] != 0x3E5F) { plan_bad++; say("RSP1B at 403 MHz: word %04X", r.frontend.raw.expander[0]); }
+    mirisdr_set_hw_flavour(n, MIRISDR_HW_RSPDXR2);
+    mirisdr_tune_config_default(&c);
+
     /* the antenna in the result and through the setter, and back to A on another board */
     c.frequency = 100000000; c.frontend.bias = 0; c.frontend.notch = 0; c.frontend.antenna = MIRISDR_ANTENNA_C;
     if (mirisdr_tune(n, 0, &c, &r) < 0 || r.frontend.antenna != MIRISDR_ANTENNA_C) { plan_bad++; say("antenna C not in force"); }
@@ -3860,7 +3884,7 @@ static tres_t t_plan_caps (void)
         uint32_t flags, raw;
     } want[] = {
         { MIRISDR_HW_DEFAULT, 0, 0, 0x1, -1, 0, 0, 0, 0, 1, 0, 0, 0x1 },
-        { MIRISDR_HW_RSP1B,   0, 7, 0x1, -1, 1, 0, 0, 0, 1, 0, 0, 0x3 },
+        { MIRISDR_HW_RSP1B,   0, 7, 0x1, -1, 1, 0, 55000000, 25, 4, 19, 0, 0x3 },
         { MIRISDR_HW_RSPDXR2, 0, 7, 0x7, -1, 1, 1, 55000000, 25, 13, 36, 0, 0x3 },
         { MIRISDR_HW_RSPDUO,  0, 7, 0x3, MIRISDR_ANTENNA_HIZ, 0, 0, 55000000, 25, 4, 19, MIRISDR_FRONTEND_PORT_TIE | MIRISDR_FRONTEND_REF_OUT, 0x7 },
         { MIRISDR_HW_RSPDUO,  1, 7, 0x1, -1, 1, 0, 55000000, 25, 4, 19, MIRISDR_FRONTEND_PORT_TIE | MIRISDR_FRONTEND_REF_OUT, 0x7 },

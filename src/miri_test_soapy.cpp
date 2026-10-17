@@ -91,11 +91,11 @@ static int probe(Dev *d, soapy_say_t say, soapy_say_t note)
              fr[0].maximum() / 1e6, rr[0].minimum(), rr[0].maximum() / 1e6, lr.size());
     }
 
-    /* the board's amplifier before the tuner: the RSPduo's 25 dB in band II, its most, and the
-       RSPdx-R2's 24 there, 25 at most (band III) */
+    /* the board's amplifier before the tuner: the RSPduo's and RSP1B's 25 dB in band II, their
+       most, and the RSPdx-R2's 24 there, 25 at most (band III) */
     const std::string hw = d->getHardwareKey();
-    const bool duo = hw == "RSPduo", dxr2 = hw == "RSPdxR2";
-    const double amp = duo ? 25 : dxr2 ? 24 : 0, ampMax = duo ? 25 : dxr2 ? 25 : 0;
+    const bool duo = hw == "RSPduo", dxr2 = hw == "RSPdxR2", rsp1b = hw == "RSP1B";
+    const double amp = (duo || rsp1b) ? 25 : dxr2 ? 24 : 0, ampMax = (duo || dxr2 || rsp1b) ? 25 : 0;
 
     g = d->listGains(SOAPY_SDR_RX, 0);
     if (g.size() != (amp ? 5u : 4u) || !has(g, "LNA") || !has(g, "MIX") || !has(g, "MIXBUF") || !has(g, "BB") ||
@@ -148,6 +148,16 @@ static int probe(Dev *d, soapy_say_t say, soapy_say_t note)
         d->setGain(SOAPY_SDR_RX, 0, "AMP", amp);
         if (d->getGain(SOAPY_SDR_RX, 0, "AMP") != amp || d->getGain(SOAPY_SDR_RX, 0) != 53 + amp)
         { say("AMP on gave %.0f dB", d->getGain(SOAPY_SDR_RX, 0)); bad++; }
+    }
+
+    /* RSP1B: its pads one at a time, 0, 6, 13 or 19 dB, the nearest taken, apart from the gain */
+    if (rsp1b)
+    {
+        d->writeSetting("attenuator", "12");
+        if (d->readSetting("attenuator") != "13" || d->getGain(SOAPY_SDR_RX, 0) != 53 + amp ||
+            d->getSettingInfo(SOAPY_SDR_RX, 0).size() != 1 || d->getSettingInfo(SOAPY_SDR_RX, 0)[0].options.size() != 4)
+        { say("pads: %s", d->readSetting("attenuator").c_str()); bad++; }
+        d->writeSetting("attenuator", "0");
     }
 
     /* RSPdx-R2: its pads in 3 dB steps, the nearest taken, apart from the gain */
@@ -492,9 +502,10 @@ static int bandRanges(Dev *d, soapy_say_t say, soapy_say_t note)
 {
     int bad = 0;
 
-    /* VHF: LNA 24, mixer 19, no mixbuffer, baseband 59, and the amplifier, the RSPduo's 25, the
-       RSPdx-R2's 24 */
-    const double amp = d->getHardwareKey() == "RSPduo" ? 25 : d->getHardwareKey() == "RSPdxR2" ? 24 : 0;
+    /* VHF: LNA 24, mixer 19, no mixbuffer, baseband 59, and the amplifier, the RSPduo's and RSP1B's
+       25, the RSPdx-R2's 24 */
+    const double amp = (d->getHardwareKey() == "RSPduo" || d->getHardwareKey() == "RSP1B") ? 25 :
+                       d->getHardwareKey() == "RSPdxR2" ? 24 : 0;
     d->setFrequency(SOAPY_SDR_RX, 0, 100e6);
     if (d->getGainRange(SOAPY_SDR_RX, 0).maximum() != 102 + amp ||
         d->getGainRange(SOAPY_SDR_RX, 0, "AMP").maximum() != amp ||
