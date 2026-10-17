@@ -710,7 +710,7 @@ double SoapyMiriSDR::getGain(const int direction, const size_t channel, const st
 
 /* The most each stage reaches in any band: the LNA below band IV/V, the mixbuffer on
    AM2, which never run together. The mixbuffer is 0 or 24 dB on AM2. The RSPduo's Hi-Z
-   runs on AM1, which steps it by 6 up to 18, so there the range steps by 6. The board's
+   runs on AM1, which steps it by 6 up to 18, so a channel with a Hi-Z steps by 6. The board's
    amplifier, its best band's, comes from the library */
 #define MAX_LNA                 24
 #define MAX_MIX                 19
@@ -745,7 +745,7 @@ SoapySDR::Range SoapyMiriSDR::getGainRange(const int direction, const size_t cha
         }
         if (name == "AMP" && cap().amp_bypass_hz) return SoapySDR::Range(0, cap().amp_max_db, cap().amp_max_db);
         if (name == "MIX") return SoapySDR::Range(0, MAX_MIX, MAX_MIX);
-        if (name == "MIXBUF") return SoapySDR::Range(0, MAX_MIXBUF, flavour == MIRISDR_HW_RSPDUO ? 6 : MAX_MIXBUF);
+        if (name == "MIXBUF") return SoapySDR::Range(0, MAX_MIXBUF, cap().antenna_hiz >= 0 ? 6 : MAX_MIXBUF);
         if (name == "BB") return SoapySDR::Range(0, MAX_BB, 1);
         return SoapySDR::Range(0, 0);
     }
