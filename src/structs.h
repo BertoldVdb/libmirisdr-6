@@ -125,6 +125,7 @@ struct mirisdr_dev {
     int                 bb_stages;      /* half-band stages after the shift or the converter */
     uint32_t            bb_rate;        /* output samples per second */
     uint32_t            bb_if;          /* Hz, the low IF the stream was planned for: the NCO's */
+    int                 bb_ds;          /* bb_if is a directly sampled frequency, not mirrored */
     mirisdr_read_async_cb_t cb;
     void                *cb_ctx;
     size_t              xfer_buf_num;
@@ -169,10 +170,14 @@ struct mirisdr_dev {
     int                 filter_cal;     /* IF filter code under the real crystal's XTALSEL, -1 unknown */
     uint8_t             tuner_gap;      /* tuned with another crystal's XTALSEL: hold filter_cal */
     uint8_t             dc_n;           /* DC calibration divider N of the XTALSEL tuned, 0 before */
-    uint16_t            exp_iodir;      /* RSP1B expander direction word sent, 0 bits pulled low */
+    uint16_t            exp_iodir;      /* SDRplay expander direction word sent, 0 bits pulled low */
     int                 exp_valid;      /* the expander holds exp_iodir */
     int                 exp_stale;      /* a list wrote it: send both bytes again, no setup */
     int                 notch;          /* MIRISDR_NOTCH_* asked for */
+    int                 antenna;        /* MIRISDR_ANTENNA_* */
+    int                 ds;             /* RSPdx-R2 direct sampling in force: GPIO_2 high */
+    int                 ds_lna;         /* its amplifier on (expander A0 released) */
+    uint32_t            ds_edge;        /* Hz, the low pass it runs through, 0 without it */
     int                 fw_ours;
     uint8_t             fw_pps_at;      /* status blocks, from the firmware block: internal RAM, */
     uint16_t            fw_anchor_at;   /* xdata, */
@@ -283,6 +288,9 @@ struct mirisdr_dev {
     int                 dc_period;  // refresh period
 };
 
+/* The SDRplay boards with the front end on an SPI expander (sdrplay.c) */
+#define MIRISDR_HW_EXPANDER(f)  (((f) == MIRISDR_HW_RSP1B) || ((f) == MIRISDR_HW_RSPDXR2))
+
 #if defined(_WIN32)
 static void mirisdr_xfer_lock_init (mirisdr_dev_t *p)    { InitializeCriticalSection(&p->xfer_lock); }
 static void mirisdr_xfer_lock_destroy (mirisdr_dev_t *p) { DeleteCriticalSection(&p->xfer_lock); }
@@ -319,6 +327,11 @@ static int mirisdr_async_move (mirisdr_dev_t *p, int from, int to)
 {
     return _InterlockedCompareExchange((volatile long *) &p->async_status, to, from) == from;
 }
+
+static int mirisdr_atomic_xchg (int *at, int v)
+{
+    return (int) _InterlockedExchange((volatile long *) at, v);
+}
 #else
 static int mirisdr_async_get (mirisdr_dev_t *p)
 {
@@ -331,5 +344,10 @@ static void mirisdr_async_set (mirisdr_dev_t *p, int s)
 static int mirisdr_async_move (mirisdr_dev_t *p, int from, int to)
 {
     return __atomic_compare_exchange_n(&p->async_status, &from, to, 0, __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+}
+
+static int mirisdr_atomic_xchg (int *at, int v)
+{
+    return __atomic_exchange_n(at, v, __ATOMIC_SEQ_CST);
 }
 #endif

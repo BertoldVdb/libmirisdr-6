@@ -384,8 +384,8 @@ static int mirisdr_fw_ids_wanted (mirisdr_dev_t *p, const mirisdr_open_config_t 
 #define MIRISDR_EE_IDS          0xB4    /* byte 0: the ROM takes ids from bytes 1-6 */
 #define MIRISDR_EE_SERIAL_AT    7       /* SDRplay keep the serial right behind them */
 
-/* An RSP1B on its own ids running the ROM declares no serial, but its EEPROM holds one
-   behind the ids. Not when byte 0 says microcode follows instead. */
+/* An RSP1B or RSPdx-R2 on its own ids running the ROM declares no serial, but its EEPROM
+   holds one behind the ids. Not when byte 0 says microcode follows instead. */
 static int mirisdr_fw_ee_serial (mirisdr_dev_t *p, char *out, int len)
 {
     uint8_t b[MIRISDR_FW_SERIAL_MAX];
@@ -394,12 +394,12 @@ static int mirisdr_fw_ee_serial (mirisdr_dev_t *p, char *out, int len)
     int n;
 
     if (mirisdr_fw_ids_of(p, &vid, &pid) < 0) return 0;
-    if (!(d = mirisdr_device_get(vid, pid)) || (d->flavour != MIRISDR_HW_RSP1B)) return 0;
+    if (!(d = mirisdr_device_get(vid, pid)) || !MIRISDR_HW_EXPANDER(d->flavour)) return 0;
 
     if ((mirisdr_read_eeprom(p, 0, b, 1) < 0) || (b[0] != MIRISDR_EE_IDS)) return 0;
     if (mirisdr_read_eeprom(p, MIRISDR_EE_SERIAL_AT, b, sizeof b) < 0) return 0;
 
-    /* printable up to the first byte that is not, 0xFF on the RSP1B */
+    /* printable up to the first byte that is not, 0xFF on the RSP1B and RSPdx-R2 */
     for (n = 0; (n < (int) sizeof b) && (b[n] >= 0x20) && (b[n] < 0x7F); n++);
     if (!n || (n >= len)) return 0;
 
@@ -410,7 +410,7 @@ static int mirisdr_fw_ee_serial (mirisdr_dev_t *p, char *out, int len)
 }
 
 /* The same three ways the ids are chosen, since a serial is part of the identity
-   the image carries.  Read before any reboot: the ROM declares none, so an RSP1B's
+   the image carries. Read before any reboot: the ROM declares none, so an SDRplay's
    comes from its EEPROM. */
 static int mirisdr_fw_serial_wanted (mirisdr_dev_t *p, const mirisdr_open_config_t *cfg,
                                      const uint8_t *image, uint32_t size, char *out, int len)
@@ -514,7 +514,7 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
 
     *out = NULL;
 
-    if ((cfg->hw_flavour < MIRISDR_HW_AUTO) || (cfg->hw_flavour > MIRISDR_HW_RSP1B))
+    if ((cfg->hw_flavour < MIRISDR_HW_AUTO) || (cfg->hw_flavour > MIRISDR_HW_RSPDXR2))
     {
         fprintf(stderr, "libmirisdr: hw_flavour %d is not a board\n", cfg->hw_flavour);
         return -1;

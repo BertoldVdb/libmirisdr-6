@@ -33,9 +33,13 @@
    "purple dongle" - one board's wiring, not something the part defines. */
 #define BIAS_GPIO 3
 
+/* The RSPdx-R2's direct sampling switch: high puts the antenna on the I converter */
+#define DS_GPIO 2
+
 static int update_reg_8 (mirisdr_dev_t *p)
 {
-    uint32_t val = p->reg8 | ((p->bias && (p->hw_flavour != MIRISDR_HW_RSP1B)) ? (1 << (BIAS_GPIO + 8)) : 0);
+    uint32_t val = p->reg8 | ((p->bias && !MIRISDR_HW_EXPANDER(p->hw_flavour)) ? (1 << (BIAS_GPIO + 8)) : 0) |
+                   (p->ds ? (1 << (DS_GPIO + 8)) : 0);
     unsigned int pin;
 
     for (pin = 0; pin < MIRISDR_GPIO_COUNT; pin++)

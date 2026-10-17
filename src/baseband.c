@@ -77,6 +77,15 @@ typedef struct mirisdr_rs
 typedef struct mirisdr_bb
 {
     int     path, stages, sign;
+    int     low;            /* direct sampling: the real samples as I with Q 0, the NCO
+                               taking the frequency to 0 Hz at the full rate, and a
+                               half-band stage in the converter's place to filter its
+                               mirror. The converter, centred on a quarter of the rate,
+                               would pass only a little either side of it at the narrow
+                               kernels, where the frequency is anywhere from 0 Hz */
+    int     nhb;            /* half-band stages run: stages, one more when low */
+    uint32_t rate;          /* the converters' */
+    int     nco_move;       /* a tune's new IF + 1 for the NCO, taken at the next buffer, 0 for none */
     double  decim;          /* converter samples per output sample */
     iqconverter_float_t *cnv;
     mirisdr_hb_t hb[MIRISDR_BB_STAGES_MAX];
@@ -556,7 +565,7 @@ static void mirisdr_bb_restart (mirisdr_dev_t *p)
 
     if (!b) return;
     if (b->cnv) iqconverter_float_reset(b->cnv);
-    for (i = 0; i < b->stages; i++) {
+    for (i = 0; i < b->nhb; i++) {
         mirisdr_hb_clear(&b->hb[i]);
     }
     mirisdr_rs_restart(b->rs);
@@ -581,6 +590,34 @@ static void mirisdr_bb_start (mirisdr_dev_t *p)
 }
 
 /* For the stream the plan chose (p->bb_*), from stream_regs; the counts carry on */
+/* The band sits at IF - rate / 4 after the shift, the right way round, on both paths
+   (mirrored with swap_iq and both outputs, as the shift is). The converter of one
+   output runs at half the rate. At 4 x IF the step is 0 and the NCO is skipped */
+static void mirisdr_bb_nco_for (mirisdr_bb_t *b, uint32_t if_hz)
+{
+    double at, f;
+
+    if (b->path != MIRISDR_BASEBAND_COMPLEX && b->path != MIRISDR_BASEBAND_REAL) return;
+
+    at = (double) b->rate / (b->path == MIRISDR_BASEBAND_REAL ? 2 : 1);
+    f = ((double) if_hz - (double) b->rate / 4) / at * (b->path == MIRISDR_BASEBAND_COMPLEX ? b->sign : 1);
+    if (b->low) f = -(double) if_hz / b->rate;
+
+    b->nco_step = (uint64_t) (int64_t) (f * 18446744073709551616.0);
+    b->nco_w1r = cos(2 * M_PI * f);
+    b->nco_w1i = sin(2 * M_PI * f);
+    b->nco_w4r = (float) cos(8 * M_PI * f);
+    b->nco_w4i = (float) sin(8 * M_PI * f);
+}
+
+/* A tune moved the IF (direct sampling) and nothing else: the stream's thread takes the
+   new NCO at its next buffer, no restart */
+static void mirisdr_bb_move (mirisdr_dev_t *p, uint32_t if_hz)
+{
+    p->bb_if = if_hz;
+    if (p->bb) mirisdr_atomic_xchg(&p->bb->nco_move, (int) if_hz + 1);
+}
+
 static int mirisdr_bb_setup (mirisdr_dev_t *p)
 {
     mirisdr_bb_t *b, *old = p->bb;
@@ -600,12 +637,15 @@ static int mirisdr_bb_setup (mirisdr_dev_t *p)
        and Q swapped. The converter's output of a single one is the right way round */
     b->sign = p->swap_iq ? -1 : 1;
 
-    /* the converter is the last stage when none follow it */
-    if (b->path == MIRISDR_BASEBAND_REAL &&
+    /* the converter is the last stage when none follow it. Low, a half-band stage with
+       its kernel takes its place */
+    b->low = p->bb_ds && (b->path == MIRISDR_BASEBAND_REAL);
+    b->nhb = b->stages + b->low;
+    if (b->path == MIRISDR_BASEBAND_REAL && !b->low &&
         !(b->cnv = iqconverter_float_create(mirisdr_hb_kernel_at(b->stages), mirisdr_hb_len_at(b->stages)))) goto failed;
 
-    for (i = 0; i < b->stages; i++)
-        if (mirisdr_hb_init(&b->hb[i], 4096, b->stages - 1 - i) < 0) goto failed;
+    for (i = 0; i < b->nhb; i++)
+        if (mirisdr_hb_init(&b->hb[i], 4096, b->nhb - 1 - i) < 0) goto failed;
 
     /* what the halvings leave, between 1 and 2: the resampler */
     if ((b->path == MIRISDR_BASEBAND_COMPLEX || b->path == MIRISDR_BASEBAND_REAL) && p->bb_rate) {
@@ -616,19 +656,8 @@ static int mirisdr_bb_setup (mirisdr_dev_t *p)
 
     b->dc_a = (float) (1.0 / (MIRISDR_BB_DC_TAU * (p->rate ? p->rate : 1)));
 
-    /* The band sits at IF - rate / 4 after the shift, the right way round, on both paths
-       (mirrored with swap_iq and both outputs, as the shift is). The converter of one
-       output runs at half the rate. At 4 x IF the step is 0 and the NCO is skipped */
-    if (b->path == MIRISDR_BASEBAND_COMPLEX || b->path == MIRISDR_BASEBAND_REAL) {
-        double at = (double) p->rate / (b->path == MIRISDR_BASEBAND_REAL ? 2 : 1);
-        double f = ((double) p->bb_if - (double) p->rate / 4) / at * (b->path == MIRISDR_BASEBAND_COMPLEX ? b->sign : 1);
-
-        b->nco_step = (uint64_t) (int64_t) (f * 18446744073709551616.0);
-        b->nco_w1r = cos(2 * M_PI * f);
-        b->nco_w1i = sin(2 * M_PI * f);
-        b->nco_w4r = (float) cos(8 * M_PI * f);
-        b->nco_w4i = (float) sin(8 * M_PI * f);
-    }
+    b->rate = p->rate;
+    mirisdr_bb_nco_for(b, p->bb_if);
 
     if (old) {
         b->sample = b->produced = old->sample;
@@ -821,7 +850,9 @@ static int mirisdr_bb_process (mirisdr_dev_t *p, const unsigned char *buf, uint3
     uint32_t i;
     int n, s;
 
-    if (!(w = mirisdr_bb_work(b, vals + 2))) return 0;
+    if (!(w = mirisdr_bb_work(b, (b->low ? 2 * vals : vals) + 2))) return 0;
+
+    if ((s = mirisdr_atomic_xchg(&b->nco_move, 0))) mirisdr_bb_nco_for(b, (uint32_t) (s - 1));
 
     /* the tune's choice, read once a buffer */
     b->dc_on = (p->tune.dc_removal == MIRISDR_DC_ON) ||
@@ -838,7 +869,7 @@ static int mirisdr_bb_process (mirisdr_dev_t *p, const unsigned char *buf, uint3
 
         /* the odd sample of the last buffer first */
         i = 0;
-        if (b->path == MIRISDR_BASEBAND_REAL && b->have_carry) {
+        if (b->path == MIRISDR_BASEBAND_REAL && !b->low && b->have_carry) {
             w[0] = b->carry;
             i = 1;
         }
@@ -875,7 +906,20 @@ static int mirisdr_bb_process (mirisdr_dev_t *p, const unsigned char *buf, uint3
            translation (-1, -c, 1, c a sample, c its kernel's centre tap) from where the
            last buffer left it, all in the conversion; the converter only filters after.
            x sc - d, times r, is x (sc r) - d r: one multiply-add a sample */
-        if (b->path == MIRISDR_BASEBAND_REAL) {
+        /* low: the real samples as I, Q 0, the DC off, and the NCO takes the band to 0 Hz at
+           the full rate and the stages filter its mirror */
+        if (b->low) {
+            uint32_t k;
+
+            if (s8) {
+                const int8_t *in = (const int8_t *) buf;
+                for (k = 0; k < vals; k++) { w[2 * k] = in[k] * sc - d0; w[2 * k + 1] = 0; }
+            } else {
+                const int16_t *in = (const int16_t *) buf;
+                for (k = 0; k < vals; k++) { w[2 * k] = in[k] * sc - d0; w[2 * k + 1] = 0; }
+            }
+        }
+        else if (b->path == MIRISDR_BASEBAND_REAL) {
             const float c = b->cnv->hbc, r[4] = { -1.0f, -c, 1.0f, c };
             const int ph = b->cnv->phase;
             float a[4], o[4];
@@ -919,16 +963,21 @@ static int mirisdr_bb_process (mirisdr_dev_t *p, const unsigned char *buf, uint3
         }
         n = (int) (vals + i);
 
-        if (b->path == MIRISDR_BASEBAND_REAL) {
-            b->have_carry = n & 1;
-            if (b->have_carry) b->carry = w[--n];
-            b->cnv->fir(b->cnv, w, n);      /* translated above, the carry with its buffer */
+        if (b->low) {
+            n = (int) vals;
+            if (b->nco_step) mirisdr_bb_nco(b, w, n);
+        } else {
+            if (b->path == MIRISDR_BASEBAND_REAL) {
+                b->have_carry = n & 1;
+                if (b->have_carry) b->carry = w[--n];
+                b->cnv->fir(b->cnv, w, n);  /* translated above, the carry with its buffer */
+            }
+            n /= 2;
+            if (b->path == MIRISDR_BASEBAND_REAL && b->nco_step) mirisdr_bb_nco(b, w, n);
         }
-        n /= 2;
-        if (b->path == MIRISDR_BASEBAND_REAL && b->nco_step) mirisdr_bb_nco(b, w, n);
     }
 
-    for (s = 0; s < b->stages; s++) n = mirisdr_hb_run(&b->hb[s], w, n);
+    for (s = 0; s < b->nhb; s++) n = mirisdr_hb_run(&b->hb[s], w, n);
     if (b->rs) n = mirisdr_rs_run(b->rs, w, n);
 
     return n;

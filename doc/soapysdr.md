@@ -1,7 +1,7 @@
 Using libmirisdr receivers with SoapySDR
 ========================================
 
-The `mirisdr` SoapySDR module lets programs that use SoapySDR work with libmirisdr receivers. Examples are SDR++, CubicSDR, GQRX, GNU Radio and your own programs. It supports boards with the MSi2500 and MSi001 chips, such as the SDRplay RSP1 and RSP1B.
+The `mirisdr` SoapySDR module lets programs that use SoapySDR work with libmirisdr receivers. Examples are SDR++, CubicSDR, GQRX, GNU Radio and your own programs. It supports boards with the MSi2500 and MSi001 chips, such as the SDRplay RSP1, RSP1B and RSPdx-R2.
 
 This guide explains how to install the module, how to pick it, and what each setting does.
 
@@ -79,6 +79,8 @@ The firmware shows up with libmirisdr-6's own USB ids, 16d0:158c. These ids do n
 
         miri_eeprom writefw default -s B-1234567890
 
+  - **RSPdx-R2**: the same with `C-`.
+
   - **Other boards**: any serial of up to 12 characters works. `random` makes one up.
 
         miri_eeprom writefw default -s random
@@ -89,7 +91,7 @@ After replugging the USB VID:PID will change, which may require retriggering ude
 
 The module reports a range of 1 kHz to 2400 MHz, which is what the library accepts. The frequency you set is at 0 Hz in the samples, at every IF. You never need to add or subtract an IF yourself.
 
-There is one tuning element, called `RF`, and one antenna, called `RX`.
+There is one tuning element, called `RF`, and one antenna, called `RX`. The RSPdx-R2 has three antennas instead, `A`, `B` and `C`, with `A` the default.
 
 
 <h3>Sample rates</h3>
@@ -189,10 +191,11 @@ Programs show these as device settings. With SoapySDR's API they are `writeSetti
 | `transfer` | `ISOC`, `ISOC1`, `ISOC2`, `BULK` | `ISOC` on Linux, `BULK` on Windows | The USB transfer type. |
 | `decimation_bypass` | `AUTO`, `ON`, `OFF` | `AUTO` | Skip the receiver's own filter. `AUTO` does this above 14.5 Msps. |
 | `gap_fill` | `true`, `false` | `false` | Put zeros where samples were lost, for gaps of up to 16 USB packets. Always on with `baseband`, and then read back as `true`. |
-| `biastee` | `true`, `false` | `false` | RSP1B only. Power on the antenna input. |
-| `fm_notch` | `true`, `false` | `false` | RSP1B only. Notch for FM broadcast (85 to 100 MHz). |
-| `mw_notch` | `true`, `false` | `false` | RSP1B only. Notch for medium wave (0.4 to 1.6 MHz). |
-| `dab_notch` | `true`, `false` | `false` | RSP1B only. Notch for DAB (165 to 230 MHz). |
+| `biastee` | `true`, `false` | `false` | RSP1B and RSPdx-R2 only. Power on the antenna input, port B on the RSPdx-R2. |
+| `fm_notch` | `true`, `false` | `false` | RSP1B and RSPdx-R2 only. Notch for FM broadcast (85 to 100 MHz). |
+| `mw_notch` | `true`, `false` | `false` | RSP1B and RSPdx-R2 only. Notch for medium wave (0.4 to 1.6 MHz). |
+| `dab_notch` | `true`, `false` | `false` | RSP1B and RSPdx-R2 only. Notch for DAB (165 to 230 MHz). |
+| `direct_sampling` | `true`, `false` | `false` | RSPdx-R2 only. At 2 MHz and below, sample the antenna directly instead of through the tuner. Above 2 MHz the tuner is used as usual. The gain is then only the LNA, about 37 dB, on from a total of 19 dB. |
 
 A setting the receiver cannot do is refused and logged. The receiver keeps what it had.
 

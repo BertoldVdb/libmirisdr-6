@@ -36,10 +36,12 @@ extern "C" {
 typedef enum
 {
     MIRISDR_HW_AUTO = -1,       /* open config only: by VID:PID, else MIRISDR_HW_DEFAULT; under
-                                   our own ids (16d0:158c) a serial starting "B-" is an RSP1B */
+                                   our own ids (16d0:158c) a serial starting "B-" is an RSP1B,
+                                   "C-" an RSPdx-R2 */
     MIRISDR_HW_DEFAULT,
     MIRISDR_HW_SDRPLAY,
     MIRISDR_HW_RSP1B,           /* SDRplay RSP1B */
+    MIRISDR_HW_RSPDXR2,         /* SDRplay RSPdx-R2 */
 } mirisdr_hw_flavour_t;
 
 typedef enum
@@ -391,11 +393,14 @@ typedef struct mirisdr_gain_config
 } mirisdr_gain_config_t;
 
 /* The front end before the tuner, part of a tune so it goes out with it. The tune
- * result reports what is in force. A notch on a board without one is refused */
+ * result reports what is in force. A notch or an antenna on a board without one is refused */
 typedef struct mirisdr_frontend_config
 {
-	int      bias;          /* bias-T: power on the antenna input */
-	int      notch;         /* MIRISDR_NOTCH_*, RSP1B only */
+	int      bias;          /* bias-T: power on the antenna input (port B on the RSPdx-R2) */
+	int      notch;         /* MIRISDR_NOTCH_*, RSP1B and RSPdx-R2 only */
+	int      antenna;       /* MIRISDR_ANTENNA_*, B and C on the RSPdx-R2 only */
+	int      direct_sampling; /* RSPdx-R2 only: at MIRISDR_DS_MAX_HZ and below sample the antenna
+	                           directly, see below. The result says whether it is in force */
 	uint32_t reserved[MIRISDR_RESERVED]; /* Not using _NESTED here as I think this could grow a lot */
 } mirisdr_frontend_config_t;
 
@@ -475,7 +480,22 @@ MIRISDR_API int mirisdr_set_tuner_override (mirisdr_dev_t *p, int tuner,
 
 /* not implemented yet */
 MIRISDR_API int mirisdr_set_freq_correction (mirisdr_dev_t *p, int ppm);
+
+/* Direct sampling, RSPdx-R2 only (refused elsewhere). With frontend.direct_sampling set,
+ * a tune at MIRISDR_DS_MAX_HZ or below takes the antenna past the tuner, through the
+ * 2 MHz low pass, straight to the I converter, and above it the tuner as usual. The tune
+ * result's frontend.direct_sampling says which. In force it is like a single output (I)
+ * whose IF is the frequency, the right way round: a stream following the tune switches
+ * to I, and a baseband one puts the frequency at 0 Hz, its converters at 2.4 x the low
+ * pass's edge whatever the frequency, so a retune moves only the NCO, no restart. The
+ * 500 kHz low pass is taken when a baseband stream's band fits under it. The gain is
+ * then the low pass's amplifier alone, about 37 dB: gain.lna in STAGES, a total from
+ * 19 dB. The tuner's IF, bandwidth and iq are kept for above. Not in scans.
+ * mirisdr_set_direct_sampling(): 0 off, 1 on (the I converter), as librtlsdr's. */
+#define MIRISDR_DS_MAX_HZ       2000000
+#define MIRISDR_DS_LNA_DB       37
 MIRISDR_API int mirisdr_set_direct_sampling (mirisdr_dev_t *p, int on);
+MIRISDR_API int mirisdr_get_direct_sampling (mirisdr_dev_t *p);  /* extra: as set, -1 on error */
 
 /* transfer */
 MIRISDR_API int mirisdr_set_transfer (mirisdr_dev_t *p, const char *v);       /* extra */
@@ -499,7 +519,7 @@ MIRISDR_API int mirisdr_get_baseband_gain (mirisdr_dev_t *p);           /* extra
 MIRISDR_API int mirisdr_set_bias (mirisdr_dev_t *p, int bias);          /* extra */
 MIRISDR_API int mirisdr_get_bias (mirisdr_dev_t *p);                    /* extra */
 
-/* The single setters for the tune's frontend. Switchable notch filters, RSP1B only (-1 elsewhere),
+/* The single setters for the tune's frontend. Switchable notch filters, RSP1B and RSPdx-R2 only,
  * enabling these filters can improve or reduce signal quality depending on your
  * specific scenario, so probably just have to try. */
 #define MIRISDR_NOTCH_FM        0x01    /* 85-100 MHz */
@@ -507,6 +527,13 @@ MIRISDR_API int mirisdr_get_bias (mirisdr_dev_t *p);                    /* extra
 #define MIRISDR_NOTCH_MW        0x04    /* 0.4-1.6 MHz.*/
 MIRISDR_API int mirisdr_set_notch (mirisdr_dev_t *p, int notches);      /* extra */
 MIRISDR_API int mirisdr_get_notch (mirisdr_dev_t *p);                   /* extra */
+
+/* The antenna input. Other boards have only A */
+#define MIRISDR_ANTENNA_A       0
+#define MIRISDR_ANTENNA_B       1
+#define MIRISDR_ANTENNA_C       2
+MIRISDR_API int mirisdr_set_antenna (mirisdr_dev_t *p, int antenna);    /* extra */
+MIRISDR_API int mirisdr_get_antenna (mirisdr_dev_t *p);                 /* extra */
 
 /* GPIO control */
 #define MIRISDR_GPIO_COUNT      4

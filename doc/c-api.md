@@ -106,7 +106,7 @@ The fields you are most likely to use:
 With both `serial` and `usb_port`, the receiver with that serial is taken, in whatever port. When none has it, the receiver in `usb_port` is taken, but only if it reports no serial, as one running from its ROM after a power cycle. One that reports another serial is not.
 
 Avoid opening based on an index: a receiver plugged in or out shifts the index of the others. With `serial` or `usb_port`, the receiver is matched in the same device list it is opened from, so another one cannot take its place. `mirisdr_get_index_by_serial()` followed by `mirisdr_open()` leaves a moment for that to happen. While the firmware loads, the receiver reboots and is opened again by its USB port, whichever way it was chosen.
-  - `hw_flavour`: the kind of board. `MIRISDR_HW_AUTO`, the default, tells from the USB ids. Other values are `MIRISDR_HW_DEFAULT`, `MIRISDR_HW_SDRPLAY` and `MIRISDR_HW_RSP1B`. A wrong value can switch things the board does not have, such as a bias-T.
+  - `hw_flavour`: the kind of board. `MIRISDR_HW_AUTO`, the default, tells from the USB ids. Other values are `MIRISDR_HW_DEFAULT`, `MIRISDR_HW_SDRPLAY`, `MIRISDR_HW_RSP1B` and `MIRISDR_HW_RSPDXR2`. A wrong value can switch things the board does not have, such as a bias-T.
   - `firmware`, `firmware_path` and `keep_running`: the library loads its own firmware into the receiver by default, and replaces a different one that is running. Give another image, or set `keep_running` to use what runs.
 
 `mirisdr_close()` stops any stream and frees everything.
@@ -170,12 +170,25 @@ The older `mirisdr_set_center_freq()` sets the LO directly. It switches `low_if_
 
 `tc.frontend` holds what sits before the tuner. It goes out with the tune, in the same request.
 
-  - `bias`: the bias-T, which powers the antenna input.
-  - `notch`: notch filters, on the RSP1B only. `MIRISDR_NOTCH_FM` covers 85 to 100 MHz, `MIRISDR_NOTCH_MW` medium wave from 0.4 to 1.6 MHz, and `MIRISDR_NOTCH_DAB` 165 to 230 MHz. Combine them with `|`.
+  - `bias`: the bias-T, which powers the antenna input. On the RSPdx-R2 it powers port B.
+  - `notch`: notch filters, on the RSP1B and RSPdx-R2 only. `MIRISDR_NOTCH_FM` covers 85 to 100 MHz, `MIRISDR_NOTCH_MW` medium wave from 0.4 to 1.6 MHz, and `MIRISDR_NOTCH_DAB` 165 to 230 MHz. Combine them with `|`.
+  - `antenna`: the input, `MIRISDR_ANTENNA_A` (the default), `_B` or `_C`. Only the RSPdx-R2 has B and C.
+  - `direct_sampling`: RSPdx-R2 only. See Direct sampling below.
 
-A notch on a board without one is refused. The config keeps what you asked for, and the tune result reports both as in force.
+A notch, an antenna or direct sampling on a board without it is refused. The config keeps what you asked for, and the tune result reports both as in force.
 
-`mirisdr_set_bias()` and `mirisdr_set_notch()` still work. They change this part of the tune in force and apply it.
+`mirisdr_set_bias()`, `mirisdr_set_notch()` and `mirisdr_set_antenna()` still work. They change this part of the tune in force and apply it.
+
+The RSP1B and RSPdx-R2 choose their filters from the frequency. The RSPdx-R2 uses its 500 kHz low pass only when the tuner's whole filter band fits under 500 kHz, so with a low IF and a narrow filter. Otherwise it uses the 2 MHz low pass.
+
+<h4>Direct sampling</h4>
+
+The RSPdx-R2 can take the antenna past the tuner, through its 2 MHz low pass, straight to the I converter. `frontend.direct_sampling` allows it: a tune at 2 MHz (`MIRISDR_DS_MAX_HZ`) or below then uses it, and a tune above uses the tuner as usual. The tune result's `frontend.direct_sampling` says which is in force, so a program can sweep across 2 MHz without doing anything itself. `mirisdr_set_direct_sampling(dev, 1)` sets it on the tune in force, as in librtlsdr. 2 (the Q converter) is refused, as the RSPdx-R2 has it on I only.
+
+  - **The stream.** Direct sampling is like a single tuner output on I whose IF is the frequency. A stream that follows the tune, or a baseband one, switches to I by itself. With baseband the frequency comes out at 0 Hz, the right way round. The converters run at 4.8 Msps whatever the frequency, so a retune only moves the NCO and the stream does not restart. When a baseband stream's band fits under 500 kHz, the 500 kHz low pass is used instead, with the converters at 1.3 Msps. Rates go from about 9.4 ksps (2.5 ksps with the 500 kHz low pass) up. Without baseband the I samples are the band itself, from 0 Hz to half the rate.
+  - **The gain.** The tuner is not in the path. The only gain is an amplifier of about 37 dB (`MIRISDR_DS_LNA_DB`), on by default. With `MIRISDR_GAIN_STAGES` it is `gain.lna`. With `MIRISDR_GAIN_TOTAL` it is on from 19 dB. The tune result then reports it alone. Leave it on unless the signals are very strong: it raises the noise floor only 4 to 5 dB.
+  - **What stays.** The tune's IF, bandwidth and `iq` are kept for tunes above 2 MHz. The tune result shows `lo` 0, `iq` `MIRISDR_IQ_ONLY_I`, and the low pass's edge as `bandwidth`. Scans refuse direct sampling.
+  - **Response.** Flat from about 30 kHz to 1.5 MHz, 15 dB down at 2.5 MHz. Below 30 kHz it rolls off, 8 dB down at 10 kHz.
 
 
 <h3>Gain</h3>
@@ -432,7 +445,7 @@ The comments in `mirisdr.h` describe the timing in detail.
 
 <h3>Board features</h3>
 
-  - The bias-T and the RSP1B's notches are part of the tune. See the front end under Tuning.
+  - The bias-T, the notches and the RSPdx-R2's antenna input are part of the tune. See the front end under Tuning.
   - GPIO: `mirisdr_set_gpio_direction()`, `mirisdr_set_gpio_output()`, `mirisdr_get_gpio_input()` and related calls, for 4 pins.
   - I2C on GPIO 1 and 2: `mirisdr_i2c_write()`, `mirisdr_i2c_read()` and `mirisdr_i2c_transfer()`.
   - Serial output on GPIO 2: `mirisdr_uart_write()`.

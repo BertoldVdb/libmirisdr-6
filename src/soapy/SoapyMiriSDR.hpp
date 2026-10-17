@@ -1,5 +1,5 @@
 /*
- * SoapySDR module for libmirisdr: MSi2500/MSi001 receivers and the SDRplay RSP1B.
+ * SoapySDR module for libmirisdr: MSi2500/MSi001 receivers and the SDRplay RSP1B and RSPdx-R2.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by

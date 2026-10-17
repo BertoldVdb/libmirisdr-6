@@ -502,16 +502,25 @@ int mirisdr_get_hw_flavour (mirisdr_dev_t *p) {
 int mirisdr_set_hw_flavour (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_flavour) {
     if (!p) goto failed;
 
-    if (hw_flavour < MIRISDR_HW_DEFAULT || hw_flavour > MIRISDR_HW_RSP1B) goto failed;
+    if (hw_flavour < MIRISDR_HW_DEFAULT || hw_flavour > MIRISDR_HW_RSPDXR2) goto failed;
 
     p->hw_flavour = hw_flavour;
     p->exp_valid = 0;
 
-    /* only the RSP1B has notches: one left in the tune would refuse every later tune */
-    if (hw_flavour != MIRISDR_HW_RSP1B)
+    /* a notch or antenna left in the tune on a board without it would refuse every later tune */
+    if (!MIRISDR_HW_EXPANDER(hw_flavour))
     {
         p->notch = 0;
         p->tune.frontend.notch = 0;
+    }
+
+    if (hw_flavour != MIRISDR_HW_RSPDXR2)
+    {
+        p->antenna = MIRISDR_ANTENNA_A;
+        p->tune.frontend.antenna = MIRISDR_ANTENNA_A;
+        p->ds = 0;
+        p->ds_edge = 0;
+        p->tune.frontend.direct_sampling = 0;
     }
 
     return 0;

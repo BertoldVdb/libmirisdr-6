@@ -85,10 +85,38 @@ static hw_switch_freq_plan_t hw_switch_freq_plan_rsp1b[] = {
         {2400, -1, 0, 0, 0, 0x0000, 0, 0},
 };
 
-static hw_switch_freq_plan_t *hw_switch_freq_plan[3] = {
+/* RSPdx-R2: the RSP1B's plan with its own HF codes. The antenna bits (A3 A2) stay
+   released here, sdrplay.c pulls them for the port. 12-30 takes A5 from 14 MHz, where
+   it costs nothing in band and helps below it. The 500 kHz low pass replaces the 2 MHz
+   one where the whole filter band fits under it (mirisdr_tune_words()). */
+#define DXR2_LPF500     0x3FFF  /* B7 B6 low: the 500 kHz low pass */
+#define DXR2_LPF500_HZ  500000
+#define DXR2_LPF2       0x3DFF  /* and B1 low: the 2 MHz low pass */
+#define DXR2_12_30_HP   0x3EDF  /* the 12-30 code with A5 low */
+
+static hw_switch_freq_plan_t hw_switch_freq_plan_rspdxr2[] = {
+        {0,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, DXR2_LPF2},
+        {2,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_2_12},
+        {12,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_12_30},
+        {14,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, DXR2_12_30_HP},
+        {30,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_30_60},
+        {55,   MIRISDR_MODE_VHF, 0, 0, 32, 0xea80, 0, RSP1B_VHF_B45},
+        {108,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1B_B3_L},
+        {250,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1B_B3_L},
+        {255,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 6, RSP1B_250_300},
+        {280,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1B_250_300},
+        {300,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1B_300_380},
+        {380,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1B_380_420},
+        {420,  MIRISDR_MODE_B45, 0, 0, 4,  0xea80, 0, RSP1B_VHF_B45},
+        {960,  MIRISDR_MODE_BL,  0, 0, 2,  0xea80, 0, RSP1B_B3_L},
+        {2400, -1, 0, 0, 0, 0x0000, 0, 0},
+};
+
+static hw_switch_freq_plan_t *hw_switch_freq_plan[4] = {
         hw_switch_freq_plan_default,
         hw_switch_freq_plan_sdrplay,
-        hw_switch_freq_plan_rsp1b
+        hw_switch_freq_plan_rsp1b,
+        hw_switch_freq_plan_rspdxr2
 };
 
 /* The board's plan; mirisdr_open_ex() and mirisdr_set_hw_flavour() refuse other values */
@@ -96,7 +124,7 @@ static const hw_switch_freq_plan_t *mirisdr_plan_of (mirisdr_dev_t *p)
 {
     int f = (int) p->hw_flavour;
 
-    return hw_switch_freq_plan[(f >= MIRISDR_HW_DEFAULT && f <= MIRISDR_HW_RSP1B) ? f : MIRISDR_HW_DEFAULT];
+    return hw_switch_freq_plan[(f >= MIRISDR_HW_DEFAULT && f <= MIRISDR_HW_RSPDXR2) ? f : MIRISDR_HW_DEFAULT];
 }
 
 /* The row a frequency falls in */
@@ -139,6 +167,10 @@ static uint16_t mirisdr_frontend_word (mirisdr_dev_t *p, const hw_switch_freq_pl
     return row->expander;
 }
 
+/* The tuner's IF filters, Hz, by bandwidth index */
+static const uint32_t mirisdr_bw_hz[] = { 200000, 300000, 600000, 1536000, 5000000, 6000000,
+                                          7000000, 8000000, 14000000 };
+
 /* What one tune writes, worked out without touching the device */
 typedef struct mirisdr_tune_words
 {
@@ -160,6 +192,10 @@ static void mirisdr_tune_words (mirisdr_dev_t *p, uint32_t lo, uint32_t rx, int 
 
     w->row = row;
     w->expander = mirisdr_frontend_word(p, row, rx);
+
+    /* the 500 kHz low pass only where it cuts nothing the 2 MHz one passes */
+    if ((p->hw_flavour == MIRISDR_HW_RSPDXR2) && (w->expander == DXR2_LPF2) &&
+        ((uint64_t) rx + mirisdr_bw_hz[bw] / 2 <= DXR2_LPF500_HZ)) w->expander = DXR2_LPF500;
 
     if (row->mode == MIRISDR_MODE_AM)
     {
@@ -286,7 +322,7 @@ static int mirisdr_tune_send (mirisdr_dev_t *p, const mirisdr_tune_words_t *w)
 {
     int r = 0;
 
-    if ((p->hw_flavour == MIRISDR_HW_RSP1B) && (mirisdr_rsp1b_frontend(p, w->expander) < 0)) r = -1;
+    if (MIRISDR_HW_EXPANDER(p->hw_flavour) && (mirisdr_sdrplay_frontend(p, w->expander) < 0)) r = -1;
 
     p->reg8 = w->row->band_select_word;
     if (update_reg_8(p) < 0) r = -1;
@@ -382,9 +418,6 @@ static int mirisdr_lna_calibrate (mirisdr_dev_t *p, const hw_switch_freq_plan_t 
 
 #define MIRISDR_TUNE_ADJUST     1       /* the single setters: no combination checks */
 
-static const uint32_t mirisdr_bw_hz[] = { 200000, 300000, 600000, 1536000, 5000000, 6000000,
-                                          7000000, 8000000, 14000000 };
-
 static int mirisdr_if_mode (uint32_t hz)
 {
     switch (hz)
@@ -433,7 +466,7 @@ static uint32_t mirisdr_zero_if_rate (mirisdr_dev_t *p)
     if ((p->if_freq == MIRISDR_IF_ZERO) || !(p->stream.follow_tune || p->stream.baseband)) return rate;
 
     p->checking = 1;
-    r = mirisdr_stream_plan(p, &p->stream, MIRISDR_STREAM_ADJUST, MIRISDR_IQ_BOTH, 0, &spl);
+    r = mirisdr_stream_plan(p, &p->stream, MIRISDR_STREAM_ADJUST, MIRISDR_IQ_BOTH, 0, 0, &spl);
     p->checking = checking;
 
     return (r < 0) ? rate : spl.rate;
@@ -458,6 +491,10 @@ typedef struct mirisdr_tune_plan
 {
     mirisdr_tune_config_t cfg;  /* as asked, bandwidth 0 kept */
     int ifm, bw, iq;
+    int ds, ds_lna;             /* direct sampling in force, its amplifier on */
+    int siq;                    /* what the stream sees: iq, or the I converter alone */
+    uint32_t sif, ds_edge;      /* the stream's IF (the frequency under direct sampling),
+                                   the low pass direct sampling runs through */
     uint32_t lo, ovr13, ovr14;
     mirisdr_tune_words_t w;
     mirisdr_gr_t gr;            /* the gain reductions it ends up with */
@@ -467,6 +504,7 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
                               mirisdr_tune_plan_t *pl)
 {
     int adjust = flags & MIRISDR_TUNE_ADJUST, i;
+    mirisdr_gain_config_t g;
     int64_t lo;
 
     pl->cfg = *c;
@@ -533,10 +571,23 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
         pl->iq = MIRISDR_IQ_BOTH;
     }
 
+    /* RSPdx-R2 direct sampling: allowed, and in force at its frequencies */
+    if ((c->frontend.direct_sampling & ~1) ||
+        (c->frontend.direct_sampling && (p->hw_flavour != MIRISDR_HW_RSPDXR2)))
+    {
+        mirisdr_refuse(p, "unsupported direct sampling %d: on the RSPdx-R2 only\n", c->frontend.direct_sampling);
+        return -1;
+    }
+
+    pl->ds = c->frontend.direct_sampling && (c->frequency <= MIRISDR_DS_MAX_HZ);
+    pl->siq = pl->ds ? MIRISDR_IQ_ONLY_I : pl->iq;
+    pl->sif = pl->ds ? c->frequency : mirisdr_if_hz[pl->ifm];
+    pl->ds_edge = pl->ds ? mirisdr_ds_edge(&p->stream, c->frequency) : 0;
+
     /* the stream capturing the output switched off would go dead, unless it follows (as
        a baseband one does) */
-    if (!adjust && !p->stream.follow_tune && !p->stream.baseband && (pl->iq != MIRISDR_IQ_BOTH) &&
-        (mirisdr_stream_adc(p) != MIRISDR_IQ_BOTH) && (mirisdr_stream_adc(p) != pl->iq))
+    if (!adjust && !p->stream.follow_tune && !p->stream.baseband && (pl->siq != MIRISDR_IQ_BOTH) &&
+        (mirisdr_stream_adc(p) != MIRISDR_IQ_BOTH) && (mirisdr_stream_adc(p) != pl->siq))
     {
         mirisdr_refuse(p, "the stream captures the tuner output this tune switches off\n");
         return -1;
@@ -561,9 +612,17 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
     }
 
     if ((c->frontend.notch & ~(MIRISDR_NOTCH_FM | MIRISDR_NOTCH_DAB | MIRISDR_NOTCH_MW)) ||
-        (c->frontend.notch && (p->hw_flavour != MIRISDR_HW_RSP1B)))
+        (c->frontend.notch && !MIRISDR_HW_EXPANDER(p->hw_flavour)))
     {
-        mirisdr_refuse(p, "unsupported notch 0x%x: the notches are on the RSP1B only\n", c->frontend.notch);
+        mirisdr_refuse(p, "unsupported notch 0x%x: the notches are on the RSP1B and RSPdx-R2 only\n",
+                       c->frontend.notch);
+        return -1;
+    }
+
+    if ((c->frontend.antenna < MIRISDR_ANTENNA_A) || (c->frontend.antenna > MIRISDR_ANTENNA_C) ||
+        ((c->frontend.antenna != MIRISDR_ANTENNA_A) && (p->hw_flavour != MIRISDR_HW_RSPDXR2)))
+    {
+        mirisdr_refuse(p, "unsupported antenna %d: B and C are on the RSPdx-R2 only\n", c->frontend.antenna);
         return -1;
     }
 
@@ -595,10 +654,24 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
         return -1;
     }
 
-    /* the gain in that band */
-    if (c->gain.mode == MIRISDR_GAIN_STAGES)
+    /* direct sampling: the low pass, the tuner tuned as usual but not heard */
+    if (pl->ds) pl->w.expander = (pl->ds_edge == MIRISDR_DS_LP500_HZ) ? DXR2_LPF500 : DXR2_LPF2;
+
+    /* under direct sampling the gain is its amplifier's, on from half its gain, and the
+       tuner takes the rest (no LNA on its AM inputs) */
+    g = c->gain;
+    pl->ds_lna = p->ds_lna;
+    if (pl->ds && (g.mode == MIRISDR_GAIN_STAGES))
     {
-        if (mirisdr_gr_of_stages(pl->w.band, &c->gain, &pl->gr) < 0)
+        pl->ds_lna = g.lna ? 1 : 0;
+        g.lna = 0;
+    }
+    else if (pl->ds && (g.mode == MIRISDR_GAIN_TOTAL)) pl->ds_lna = g.total >= (MIRISDR_DS_LNA_DB + 1) / 2;
+
+    /* the gain in that band */
+    if (g.mode == MIRISDR_GAIN_STAGES)
+    {
+        if (mirisdr_gr_of_stages(pl->w.band, &g, &pl->gr) < 0)
         {
             mirisdr_refuse(p, "unsupported gain stages for the band: lna %d mixer %d mixbuffer %d baseband %d\n",
                     c->gain.lna, c->gain.mixer, c->gain.mixbuffer, c->gain.baseband);
@@ -613,7 +686,7 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
 }
 
 /* Where the received frequency lands, given what the stream captures */
-/* The notches a request turns on: the RSP1B's FM and MW share a switch */
+/* The notches a request turns on: the FM and MW notches share a switch */
 static int mirisdr_notch_in_force (int notch)
 {
     if (notch & (MIRISDR_NOTCH_FM | MIRISDR_NOTCH_MW)) notch |= MIRISDR_NOTCH_FM | MIRISDR_NOTCH_MW;
@@ -648,6 +721,26 @@ static void mirisdr_tune_result_bb (int bb_path, uint32_t if_hz, uint32_t rx, ui
     res->inverted = 0;
 }
 
+/* Direct sampling in force: no LO, the I converter with the frequency where it is (at
+   0 Hz under baseband), the low pass's edge as the bandwidth, the amplifier as the gain */
+static void mirisdr_tune_result_ds (int ds, int lna, uint32_t edge, uint32_t rx, int bb_path,
+                                    mirisdr_tune_result_t *res)
+{
+    res->frontend.direct_sampling = ds;
+    if (!ds) return;
+
+    res->lo = 0;
+    res->iq = MIRISDR_IQ_ONLY_I;
+    res->bandwidth = edge;
+    res->offset = (bb_path == MIRISDR_BASEBAND_OFF) ? (int32_t) rx : 0;
+    res->inverted = 0;
+    res->gain.lna = lna;
+    res->gain.mixer = 0;
+    res->gain.mixbuffer = 0;
+    res->gain.baseband = 0;
+    res->gain.total = lna ? MIRISDR_DS_LNA_DB : 0;
+}
+
 static int mirisdr_tune_adc (mirisdr_dev_t *p, int iq)
 {
     return p->stream.follow_tune ? iq : mirisdr_stream_adc(p);
@@ -658,7 +751,7 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
 {
     mirisdr_tune_plan_t pl;
     mirisdr_stream_plan_t spl;
-    int r, restream = 0, streaming = 0;
+    int r, restream = 0, streaming = 0, nco = 0;
 
     if (!p || !c) return -1;
     if (mirisdr_tune_plan(p, c, flags, &pl) < 0) return -1;
@@ -668,12 +761,14 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
     if (p->stream.follow_tune || p->stream.baseband)
     {
         if (mirisdr_stream_plan(p, &p->stream, ((flags & MIRISDR_TUNE_ADJUST) || p->stream.baseband) ?
-                                MIRISDR_STREAM_ADJUST : 0, pl.iq, mirisdr_if_hz[pl.ifm], &spl) < 0) return -1;
+                                MIRISDR_STREAM_ADJUST : 0, pl.siq, pl.sif, pl.ds_edge, &spl) < 0) return -1;
 
+        /* direct sampling moves its IF with every tune: the NCO alone follows it */
         restream = (spl.format != (int) p->format) || (spl.swap != p->swap_iq) || (spl.rate != p->rate) ||
                    (spl.decim != p->decim_on) || (spl.bb_path != p->bb_path) ||
                    (spl.bb_stages != p->bb_stages) || (spl.bb_rate != p->bb_rate) ||
-                   (spl.bb_if != p->bb_if);
+                   (spl.bb_ds != p->bb_ds) || ((spl.bb_if != p->bb_if) && !spl.bb_ds);
+        nco = !restream && (spl.bb_if != p->bb_if);
         if (restream && ((streaming = mirisdr_stream_pause(p)) < 0)) return -1;
     }
 
@@ -684,9 +779,13 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
     p->tuner_ovr13 = pl.ovr13;
     p->tuner_ovr14 = pl.ovr14;
 
-    /* the expander (RSP1B) and register 8 go out with the tune, these included */
+    /* the expander (SDRplay) and register 8 go out with the tune, these included */
     p->bias = c->frontend.bias ? 1 : 0;
     p->notch = c->frontend.notch;
+    p->antenna = c->frontend.antenna;
+    p->ds = pl.ds;
+    p->ds_lna = pl.ds_lna;
+    p->ds_edge = pl.ds_edge;
 
     r = mirisdr_lna_calibrate(p, pl.w.row, c->frequency, pl.ifm, pl.bw, pl.iq);
     if (mirisdr_tune_send(p, &pl.w) < 0) r = -1;
@@ -698,7 +797,7 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
     p->tune.iq = pl.iq;
     p->tune.gain.mode = MIRISDR_GAIN_KEEP;  /* the gain lives on in the stages, which a tune replaces */
     p->tune_lo = pl.w.lo_real;
-    p->tune_iq = pl.iq;
+    p->tune_iq = pl.siq;
 
     if (c->gain.mode == MIRISDR_GAIN_TOTAL)
     {
@@ -721,6 +820,7 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
         mirisdr_stream_regs(p, &spl);
         if (streaming && (mirisdr_start_async(p) < 0)) r = -1;
     }
+    else if (nco) mirisdr_bb_move(p, spl.bb_if);
 
     if (res)
     {
@@ -732,6 +832,8 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
         mirisdr_tune_result_bb(p->bb_path, mirisdr_if_hz[pl.ifm], c->frequency, p->tune_lo, res);
         res->frontend.bias = p->bias;
         res->frontend.notch = mirisdr_notch_in_force(p->notch);
+        res->frontend.antenna = p->antenna;
+        mirisdr_tune_result_ds(p->ds, p->ds_lna, p->ds_edge, c->frequency, p->bb_path, res);
     }
 
     return r;
@@ -752,6 +854,10 @@ static void mirisdr_tuner_defaults (mirisdr_dev_t *p)
     p->bandwidth = mirisdr_bw_auto(MIRISDR_IF_ZERO, DEFAULT_RATE);    /* as the first tune picks it */
     p->xtal = MIRISDR_XTAL_24M;
     p->bias = 0;
+    p->antenna = MIRISDR_ANTENNA_A;
+    p->ds = 0;
+    p->ds_lna = 1;
+    p->ds_edge = 0;
     p->dc_mode = MIRISDR_DC_PERIODIC2;
     p->dc_speedup = 0;
     p->dc_track = 0x1f;
@@ -796,22 +902,24 @@ int mirisdr_tune_check (mirisdr_dev_t *p, int tuner, const mirisdr_tune_config_t
     {
         mirisdr_stream_plan_t spl;
 
-        r = mirisdr_stream_plan(p, &p->stream, p->stream.baseband ? MIRISDR_STREAM_ADJUST : 0, pl.iq,
-                                mirisdr_if_hz[pl.ifm], &spl);
+        r = mirisdr_stream_plan(p, &p->stream, p->stream.baseband ? MIRISDR_STREAM_ADJUST : 0, pl.siq,
+                                pl.sif, pl.ds_edge, &spl);
     }
     p->checking = 0;
     if (r < 0) return -1;
 
     if (res) {
-        int bb = !p->stream.baseband ? MIRISDR_BASEBAND_OFF : (pl.ifm == MIRISDR_IF_ZERO) ?
-                 MIRISDR_BASEBAND_ZERO_IF : (pl.iq == MIRISDR_IQ_BOTH) ? MIRISDR_BASEBAND_COMPLEX :
+        int bb = !p->stream.baseband ? MIRISDR_BASEBAND_OFF : (pl.ifm == MIRISDR_IF_ZERO && !pl.ds) ?
+                 MIRISDR_BASEBAND_ZERO_IF : (pl.siq == MIRISDR_IQ_BOTH) ? MIRISDR_BASEBAND_COMPLEX :
                  MIRISDR_BASEBAND_REAL;
 
-        mirisdr_tune_result_of(mirisdr_tune_adc(p, pl.iq), cfg->frequency, pl.w.lo_real, pl.iq,
+        mirisdr_tune_result_of(mirisdr_tune_adc(p, pl.siq), cfg->frequency, pl.w.lo_real, pl.siq,
                                mirisdr_bw_hz[pl.bw], pl.w.band, &pl.gr, res);
         mirisdr_tune_result_bb(bb, mirisdr_if_hz[pl.ifm], cfg->frequency, pl.w.lo_real, res);
         res->frontend.bias = cfg->frontend.bias ? 1 : 0;
         res->frontend.notch = mirisdr_notch_in_force(cfg->frontend.notch);
+        res->frontend.antenna = cfg->frontend.antenna;
+        mirisdr_tune_result_ds(pl.ds, pl.ds_lna, pl.ds_edge, cfg->frequency, bb, res);
     }
 
     return 0;
@@ -831,6 +939,8 @@ int mirisdr_get_tune (mirisdr_dev_t *p, int tuner, mirisdr_tune_config_t *cfg, m
         mirisdr_tune_result_bb(p->bb_path, mirisdr_if_hz[p->if_freq], p->tune.frequency, p->tune_lo, res);
         res->frontend.bias = p->bias;
         res->frontend.notch = mirisdr_notch_in_force(p->notch);
+        res->frontend.antenna = p->antenna;
+        mirisdr_tune_result_ds(p->ds, p->ds_lna, p->ds_edge, p->tune.frequency, p->bb_path, res);
     }
 
     return 0;
@@ -936,12 +1046,26 @@ int mirisdr_set_freq_correction(mirisdr_dev_t *p, int ppm)
     return -1;
 }
 
+/* librtlsdr's: 1 the I converter, the only one the RSPdx-R2 has it on */
 int mirisdr_set_direct_sampling(mirisdr_dev_t *p, int on)
 {
-    (void) p;
-    (void) on;
-    fprintf(stderr, "direct sampling not implemented yet\n");
-    return -1;
+    mirisdr_tune_config_t c;
+
+    if (!p) return -1;
+    if ((on < 0) || (on > 1))
+    {
+        mirisdr_refuse(p, "unsupported direct sampling %d: 0 off, 1 the I converter\n", on);
+        return -1;
+    }
+
+    c = p->tune;
+    c.frontend.direct_sampling = on;
+    return mirisdr_tune_apply(p, &c, MIRISDR_TUNE_ADJUST, NULL);
+}
+
+int mirisdr_get_direct_sampling(mirisdr_dev_t *p)
+{
+    return p ? p->tune.frontend.direct_sampling : -1;
 }
 
 /* As before: the nearest filter at or above the request, and a narrow one moves the IF */
@@ -1061,6 +1185,21 @@ int mirisdr_set_notch (mirisdr_dev_t *p, int notches)
 int mirisdr_get_notch (mirisdr_dev_t *p)
 {
 	return p ? p->notch : -1;
+}
+
+int mirisdr_set_antenna (mirisdr_dev_t *p, int antenna)
+{
+	mirisdr_tune_config_t c;
+
+	if (!p) return -1;
+	c = p->tune;
+	c.frontend.antenna = antenna;
+	return mirisdr_tune_apply(p, &c, MIRISDR_TUNE_ADJUST, NULL);
+}
+
+int mirisdr_get_antenna (mirisdr_dev_t *p)
+{
+	return p ? p->antenna : -1;
 }
 
 int mirisdr_get_bias (mirisdr_dev_t *p)

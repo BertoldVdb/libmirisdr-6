@@ -3127,6 +3127,115 @@ static tres_t t_plan_frontend (void)
     return plan_bad ? T_FAIL : T_PASS;
 }
 
+/* The expander word a tune sends, from the first hop of a scan of it: the last IODIRA
+   and IODIRB writes (0x0D holds the opcode and register, 0x0C the byte). -1 if none */
+static int plan_exp_word (mirisdr_dev_t *n, const mirisdr_tune_config_t *c)
+{
+    mirisdr_tune_config_t h[2];
+    mirisdr_scan_t *s;
+    const mirisdr_list_entry_t *e;
+    int ne, i, a = -1, b = -1;
+
+    /* L band hops need their LNA code held */
+    h[0] = h[1] = *c;
+    h[0].override.hold_lna = h[1].override.hold_lna = 1;
+    h[0].override.lna_cal = h[1].override.lna_cal = 8;
+    if (mirisdr_scan_compile(n, 0, h, 2, 4, &s) < 0) return -1;
+
+    ne = mirisdr_scan_chunk(s, 0, &e);
+    for (i = 1; i < ne; i++)
+    {
+        if (e[i].reg != 0x0D || e[i - 1].reg != 0x0C) continue;
+        if (e[i].val == 0x4000) a = (int) (e[i - 1].val >> 8) & 0xFF;
+        if (e[i].val == 0x4001) b = (int) (e[i - 1].val >> 8) & 0xFF;
+    }
+
+    mirisdr_scan_free(s);
+
+    return (a < 0 || b < 0) ? -1 : (b << 8) | a;
+}
+
+/* The RSPdx-R2: its band plan and the antenna, bias-T and notch bits on the expander,
+ * as measured with tone sweeps (sdrplay.c), the antenna refused on other boards */
+static tres_t t_plan_dxr2 (void)
+{
+    static const struct { uint32_t hz; int ant, bias, notch, word; } want[] = {
+        {    300000, MIRISDR_ANTENNA_A, 0, 0, 0x3DFB },    /* 2 MHz low pass: the zero IF filter */
+        {   1000000, MIRISDR_ANTENNA_A, 0, 0, 0x3DFB },    /*   reaches past 500 kHz */
+        {   5000000, MIRISDR_ANTENNA_A, 0, 0, 0x3CFB },    /* 2-12 */
+        {  13000000, MIRISDR_ANTENNA_A, 0, 0, 0x3EFB },    /* 12-30 */
+        {  20000000, MIRISDR_ANTENNA_A, 0, 0, 0x3EDB },    /* 12-30 with A5 */
+        {  40000000, MIRISDR_ANTENNA_A, 0, 0, 0x3D5B },    /* 30-60 */
+        { 100000000, MIRISDR_ANTENNA_A, 0, 0, 0xBFDB },    /* VHF */
+        { 150000000, MIRISDR_ANTENNA_A, 0, 0, 0x7FDB },    /* band III */
+        { 270000000, MIRISDR_ANTENNA_A, 0, 0, 0x3F5B },    /* 250-300 */
+        { 340000000, MIRISDR_ANTENNA_A, 0, 0, 0x3C5B },    /* 300-380 */
+        { 400000000, MIRISDR_ANTENNA_A, 0, 0, 0x3E5B },    /* 380-420 */
+        { 600000000, MIRISDR_ANTENNA_A, 0, 0, 0xBFDB },    /* band IV/V */
+        {1400000000, MIRISDR_ANTENNA_A, 0, 0, 0x7FDB },    /* L band */
+        { 100000000, MIRISDR_ANTENNA_B, 0, 0, 0xBFD7 },
+        { 100000000, MIRISDR_ANTENNA_C, 0, 0, 0xBFD3 },
+        { 100000000, MIRISDR_ANTENNA_B, 1, 0, 0xBFD5 },
+        { 100000000, MIRISDR_ANTENNA_A, 0, MIRISDR_NOTCH_FM, 0xBFCB },
+        { 200000000, MIRISDR_ANTENNA_A, 0, MIRISDR_NOTCH_DAB, 0x7F9B },
+    };
+    mirisdr_dev_t *n;
+    mirisdr_tune_config_t c;
+    mirisdr_tune_result_t r;
+    unsigned i;
+    int w;
+
+    plan_bad = 0;
+
+    if (mirisdr_open_null(&n, "252_S16") < 0) { say("no null device"); return T_FAIL; }
+
+    /* a plain board and the RSP1B have only A */
+    mirisdr_tune_config_default(&c);
+    c.frequency = 100000000; c.frontend.antenna = MIRISDR_ANTENNA_B;
+    plan_tune(n, "antenna B on a plain board", &c, 0, &r);
+    if (mirisdr_set_antenna(n, MIRISDR_ANTENNA_C) == 0) { plan_bad++; say("set_antenna on a plain board accepted"); }
+    mirisdr_set_hw_flavour(n, MIRISDR_HW_RSP1B);
+    plan_tune(n, "antenna B on the RSP1B", &c, 0, &r);
+    c.frontend.antenna = MIRISDR_ANTENNA_A;
+    if ((w = plan_exp_word(n, &c)) != 0xBFDF) { plan_bad++; say("RSP1B at 100 MHz: word %04X, not BFDF", w); }
+
+    mirisdr_set_hw_flavour(n, MIRISDR_HW_RSPDXR2);
+    c.frontend.antenna = MIRISDR_ANTENNA_C + 1;
+    plan_tune(n, "an antenna past C", &c, 0, &r);
+
+    for (i = 0; i < sizeof want / sizeof want[0]; i++)
+    {
+        c.frequency = want[i].hz;
+        c.frontend.antenna = want[i].ant;
+        c.frontend.bias = want[i].bias;
+        c.frontend.notch = want[i].notch;
+        w = plan_exp_word(n, &c);
+        if (w != want[i].word) { plan_bad++; say("%u Hz, antenna %c, bias %d, notch %x: word %04X, not %04X", want[i].hz, 'A' + want[i].ant, want[i].bias, want[i].notch, w, want[i].word); }
+    }
+
+    /* the 500 kHz low pass where the filter band fits under it: 450 kHz IF, 200 kHz wide */
+    c.frontend.antenna = MIRISDR_ANTENNA_A; c.frontend.bias = 0; c.frontend.notch = 0;
+    c.if_freq = 450000; c.bandwidth = 200000;
+    c.frequency = 400000;
+    if ((w = plan_exp_word(n, &c)) != 0x3FFB) { plan_bad++; say("400 kHz, 200 kHz wide: word %04X, not 3FFB", w); }
+    c.frequency = 401000;
+    if ((w = plan_exp_word(n, &c)) != 0x3DFB) { plan_bad++; say("401 kHz, 200 kHz wide: word %04X, not 3DFB", w); }
+    c.if_freq = 0; c.bandwidth = 0;
+
+    /* the antenna in the result and through the setter, and back to A on another board */
+    c.frequency = 100000000; c.frontend.bias = 0; c.frontend.notch = 0; c.frontend.antenna = MIRISDR_ANTENNA_C;
+    if (mirisdr_tune(n, 0, &c, &r) < 0 || r.frontend.antenna != MIRISDR_ANTENNA_C) { plan_bad++; say("antenna C not in force"); }
+    if (mirisdr_set_antenna(n, MIRISDR_ANTENNA_B) < 0 || mirisdr_get_antenna(n) != MIRISDR_ANTENNA_B) { plan_bad++; say("set_antenna B"); }
+    mirisdr_get_tune(n, 0, &c, &r);
+    if (c.frontend.antenna != MIRISDR_ANTENNA_B || r.frontend.antenna != MIRISDR_ANTENNA_B) { plan_bad++; say("tune keeps antenna %d", c.frontend.antenna); }
+    mirisdr_set_hw_flavour(n, MIRISDR_HW_DEFAULT);
+    if (mirisdr_get_antenna(n) != MIRISDR_ANTENNA_A || mirisdr_set_bias(n, 0) < 0) { plan_bad++; say("antenna kept on a plain board"); }
+
+    mirisdr_close(n);
+    if (!plan_bad) say("the plan's words from 300 kHz to 1.4 GHz, the 500 kHz low pass by the filter's edge, the antenna, bias-T and notch bits, refused elsewhere");
+    return plan_bad ? T_FAIL : T_PASS;
+}
+
 /* Bandwidth 0 at zero IF: the narrowest filter as wide as the rate, 8 MHz at most,
  * and it follows the rate. One asked for stays */
 static tres_t t_plan_bw_auto (void)
@@ -4130,6 +4239,118 @@ static double bb_fold (double f, double adc, int real, double rate)
    Where the converters do not run at 4 x IF the NCO is in the path, and where the rate
    is not theirs divided by a power of 2 the resampler: the tone must also be clean, as
    a phase jump or a poor interpolation would spread its power */
+/* An RSPdx-R2 null device under direct sampling at f, then (if f2) retuned to f2, which
+   moves only the NCO, baseband at rate. -1 if any of it is refused or restarts */
+static int bb_open_ds (uint32_t f, uint32_t f2, uint32_t rate, mirisdr_stream_result_t *sr)
+{
+    mirisdr_tune_config_t tc;
+    mirisdr_tune_result_t tr;
+    mirisdr_stream_config_t sc;
+    mirisdr_stream_result_t s2;
+
+    if (mirisdr_open_null(&bbo.d, "504_REAL_S16") < 0) return -1;
+    mirisdr_set_hw_flavour(bbo.d, MIRISDR_HW_RSPDXR2);
+    mirisdr_get_tune(bbo.d, 0, &tc, NULL);
+    tc.frequency = f;
+    tc.frontend.direct_sampling = 1;
+    if (mirisdr_tune(bbo.d, 0, &tc, &tr) < 0 || !tr.frontend.direct_sampling) return -1;
+    mirisdr_get_stream(bbo.d, &sc, NULL);
+    sc.baseband = 1;
+    sc.rate = rate;
+    sc.transfer = "BULK";
+    sc.format = "252_S16";
+    sc.format_single = "504_REAL_S16";
+    if (mirisdr_set_stream(bbo.d, &sc, sr) < 0) return -1;
+
+    if (f2) {
+        tc.frequency = f2;
+        if (mirisdr_tune(bbo.d, 0, &tc, &tr) < 0 || !tr.frontend.direct_sampling || tr.offset) return -1;
+        mirisdr_get_stream(bbo.d, NULL, &s2);
+        if (s2.adc_rate != sr->adc_rate || s2.rate != sr->rate) return -1;
+        *sr = s2;
+    }
+
+    free(bbo.x);
+    memset(&bbo, 0, sizeof bbo - sizeof bbo.d);
+    bbo.rate = sr->rate;
+    return 0;
+}
+
+/* Direct sampling on the RSPdx-R2: the band the right way round (the other side of the
+ * one output's converter) at 0 Hz, both low passes, a retune that moves only the NCO */
+static tres_t t_bb_ds (void)
+{
+    static const struct { uint32_t f, f2, rate, adc; double delta; } cases[] = {
+        { 1000000, 0, 250000, 4800000, 40000 },        /* the 2 MHz low pass, the NCO */
+        { 1200000, 0, 2000000, 4800000, 300000 },      /* 4 x f: no NCO */
+        { 100000, 0, 250000, 1300000, -30000 },        /* the 500 kHz low pass */
+        { 1500000, 0, 1000000, 4800000, -200000 },
+        { 300000, 0, 2000000, 4800000, 500000 },
+        { 600000, 1700000, 500000, 4800000, 120000 },  /* retuned: the NCO moved */
+        { 50000, 350000, 250000, 1300000, -60000 },
+        { 1800000, 0, 250000, 4800000, 50000 }, { 1500000, 1900000, 250000, 4800000, 50000 } };
+    mirisdr_stream_result_t sr;
+    mirisdr_tune_config_t tc;
+    mirisdr_tune_result_t tr;
+    mirisdr_dev_t *n;
+    unsigned i;
+    int bad = 0;
+    double worst = 1e9;
+
+    for (i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        uint32_t len, f = cases[i].f2 ? cases[i].f2 : cases[i].f;
+        uint8_t *data;
+        size_t m, s0;
+        double a, mir;
+
+        bb_swap = 0;
+        if (bb_open_ds(cases[i].f, cases[i].f2, cases[i].rate, &sr) < 0) { say("case %u: refused or restarted", i); return T_FAIL; }
+        if (sr.adc_rate != cases[i].adc) { say("case %u: converters at %u, not %u", i, sr.adc_rate, cases[i].adc); bad++; }
+
+        /* a real tone at f + delta: bb_gen's one output is the tuner's, at -IF + delta */
+        data = bb_gen(1, sr.adc_rate, -(double) f, cases[i].delta, 0.5, 0, 0, (int) (0.2 * sr.adc_rate / 504) + 64, -1, 0, &len);
+        bb_feed(data, len, 0);
+        free(data);
+        mirisdr_close(bbo.d);
+
+        m = bbo.n / 2 / 2;
+        s0 = bbo.n / 2 - m;
+        a = bb_tone(bbo.x + 2 * s0, m, cases[i].delta, sr.rate);
+        mir = 20 * log10(a / (bb_tone(bbo.x + 2 * s0, m, -cases[i].delta, sr.rate) + 1e-12));
+        note("%u Hz%s, %u sps from %u: tone at %+.0f Hz %.2f dBFS, mirror %.1f dB down%s", f, cases[i].f2 ? " (retuned)" : "",
+             sr.rate, sr.adc_rate, cases[i].delta, 20 * log10(a), mir, sr.nco ? ", NCO" : "");
+        if (fabs(20 * log10(a) + 6.02) > 0.3 || mir < 60 || bbo.bad_info) {
+            say("%u Hz %u sps: %.2f dBFS, mirror %.1f dB down, %d bad infos", f, sr.rate, 20 * log10(a), mir, bbo.bad_info);
+            bad++;
+        }
+        if (mir < worst) worst = mir;
+    }
+
+    /* above 2 MHz the tuner again, the stream back to both outputs, refused elsewhere */
+    if (mirisdr_open_null(&n, "252_S16") < 0) return T_FAIL;
+    mirisdr_get_tune(n, 0, &tc, NULL);
+    tc.frequency = 1000000;
+    tc.frontend.direct_sampling = 1;
+    if (mirisdr_tune_check(n, 0, &tc, &tr) == 0 || mirisdr_set_direct_sampling(n, 1) == 0) { say("direct sampling on a plain board"); bad++; }
+    mirisdr_set_hw_flavour(n, MIRISDR_HW_RSPDXR2);
+    if (mirisdr_set_direct_sampling(n, 2) == 0) { say("direct sampling on Q accepted"); bad++; }
+    tc.frequency = 3000000;
+    if (mirisdr_tune(n, 0, &tc, &tr) < 0 || tr.frontend.direct_sampling || tr.iq != MIRISDR_IQ_BOTH) { say("3 MHz: direct sampling %d", tr.frontend.direct_sampling); bad++; }
+    tc.frequency = 2000000;
+    tc.gain.mode = MIRISDR_GAIN_TOTAL; tc.gain.total = 10;
+    if (mirisdr_tune(n, 0, &tc, &tr) < 0 || !tr.frontend.direct_sampling || tr.lo || tr.iq != MIRISDR_IQ_ONLY_I ||
+        tr.offset != 2000000 || tr.gain.lna || tr.gain.total) { say("2 MHz: ds %d lo %u iq %d offset %d lna %d total %d", tr.frontend.direct_sampling, tr.lo, tr.iq, tr.offset, tr.gain.lna, tr.gain.total); bad++; }
+    tc.gain.total = 25;
+    if (mirisdr_tune(n, 0, &tc, &tr) < 0 || !tr.gain.lna || tr.gain.total != MIRISDR_DS_LNA_DB) { say("total 25: lna %d", tr.gain.lna); bad++; }
+    tc.gain.mode = MIRISDR_GAIN_STAGES; tc.gain.lna = 0; tc.gain.mixer = 1; tc.gain.baseband = 20;
+    if (mirisdr_tune(n, 0, &tc, &tr) < 0 || tr.gain.lna) { say("stages without the LNA: lna %d", tr.gain.lna); bad++; }
+    if (mirisdr_get_direct_sampling(n) != 1) { say("get_direct_sampling %d", mirisdr_get_direct_sampling(n)); bad++; }
+    mirisdr_close(n);
+
+    if (!bad) say("the band at 0 Hz the right way round, %.0f dB over its mirror, both low passes, a retune moving the NCO alone; the tuner again above 2 MHz", worst);
+    return bad ? T_FAIL : T_PASS;
+}
+
 static tres_t t_bb_tone (void)
 {
     static const struct { uint32_t ifhz; int real; uint32_t rate; double delta, img; int swap; } cases[] = {
@@ -4475,6 +4696,33 @@ static tres_t t_bb_speed (void)
              cases[i].real ? "one" : "both", cases[i].rate, msps, sr.adc_rate / 1e6, msps * 1e6 / sr.adc_rate);
         snprintf(line + strlen(line), sizeof line - strlen(line), "%s%.1fx", i ? ", " : "", msps * 1e6 / sr.adc_rate);
         if (msps * 1e6 < cases[i].least * sr.adc_rate) slow++;
+    }
+
+    /* RSPdx-R2 direct sampling: one output, the NCO at the converters' rate */
+    {
+        static const struct { uint32_t f, rate; } ds[] = { { 1000000, 2000000 }, { 1000000, 250000 }, { 100000, 250000 } };
+
+        for (i = 0; i < sizeof ds / sizeof ds[0]; i++) {
+            uint32_t len, blocks = 16000;
+            uint8_t *data;
+            double t0, dt, msps;
+
+            if (bb_open_ds(ds[i].f, 0, ds[i].rate, &sr) < 0) { say("no direct sampling stream"); return T_FAIL; }
+            data = bb_gen(1, sr.adc_rate, -(double) ds[i].f, 1000, 0.5, 0, 0, (int) blocks, -1, 0, &len);
+            bb_feed_cb(data, len / 8, 0, dec_cb_count);
+            t0 = now();
+            bb_feed_cb(data + len / 8, len - len / 8, 0, dec_cb_count);
+            dt = now() - t0;
+            blocks -= blocks / 8;
+            free(data);
+            mirisdr_close(bbo.d);
+
+            msps = (double) blocks * 504 / dt / 1e6;
+            note("direct sampling at %u Hz, %u sps out: %.1f Msps of %.3f needed (%.0fx)", ds[i].f, ds[i].rate, msps,
+                 sr.adc_rate / 1e6, msps * 1e6 / sr.adc_rate);
+            snprintf(line + strlen(line), sizeof line - strlen(line), ", ds %.1fx", msps * 1e6 / sr.adc_rate);
+            if (msps * 1e6 < 1.5 * sr.adc_rate) slow++;
+        }
     }
 
     /* the same blocks without baseband: the unpacking every stream has */
@@ -4925,12 +5173,14 @@ static const struct {
     { "plan",     "stream config rules",        t_plan_stream         },
     { "plan",     "stream following the tune",  t_plan_follow         },
     { "plan",     "frontend with the tune",     t_plan_frontend       },
+    { "plan",     "RSPdx-R2 front end",         t_plan_dxr2           },
     { "plan",     "reserved room to grow",      t_plan_reserved       },
     { "plan",     "automatic filter",           t_plan_bw_auto        },
     { "plan",     "scan lists",                 t_plan_scan           },
 
     { "baseband", "rates, IF moves and the LO",  t_bb_plan             },
     { "baseband", "tone, mirror and image",     t_bb_tone             },
+    { "baseband", "direct sampling",            t_bb_ds               },
     { "baseband", "counts, buffers and gaps",   t_bb_timing           },
     { "baseband", "DC removal as the tune has it", t_bb_dc            },
     { "baseband", "the filters' group delay",   t_bb_delay            },

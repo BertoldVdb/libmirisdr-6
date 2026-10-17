@@ -197,7 +197,7 @@ void usage(void)
 		"\t    raw mode outputs 2x16 bit IQ pairs, at the rate it says\n"
 		"\t[-s sample_rate (default: 24k)]\n"
 		"\t[-d device_index (default: 0)]\n"
-        "\t[-T device_type device variant: 0 default, 1 SDRplay, 2 RSP1B (default: by VID:PID)]\n"
+        "\t[-T device_type device variant: 0 default, 1 SDRplay, 2 RSP1B, 3 RSPdx-R2 (default: by VID:PID)]\n"
         "\t    0:       Default\n"
         "\t    1:       SDRPlay\n"
 		"\t[-g tuner_gain in 10 dB units, 0-10.2: 4.5 is 45 dB (default: the library's, 43 dB)]\n"
@@ -1144,7 +1144,7 @@ int main(int argc, char **argv)
 			break;
         case 'T':
             intval = atoi(optarg);
-            if ((intval >=0) && (intval <= MIRISDR_HW_RSP1B))
+            if ((intval >=0) && (intval <= MIRISDR_HW_RSPDXR2))
             {
                 hw_flavour = (mirisdr_hw_flavour_t) intval;
             }

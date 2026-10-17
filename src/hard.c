@@ -223,6 +223,7 @@ typedef struct mirisdr_stream_plan
 	int bb_path, bb_stages;         /* MIRISDR_BASEBAND_*, and its half-band stages */
 	uint32_t bb_rate;               /* what the callback gets a second */
 	uint32_t bb_if;                 /* Hz, a low IF path's IF */
+	int bb_ds;                      /* the IF is a directly sampled frequency (baseband.c) */
 } mirisdr_stream_plan_t;
 
 static int mirisdr_set_soft (mirisdr_dev_t *p);
@@ -236,30 +237,42 @@ static uint32_t mirisdr_if_widest_hz (uint32_t if_hz);
 /* The least converter rate a low IF baseband stream takes: the IF's widest filter
    around the IF ends at 1 / 2.4 of it, short of half the rate by what the receiver's
    own filter (unless bypassed) and the tuner filter's skirts need. 450 kHz at 1.8 Msps,
-   the closest of the 4 x IF rates, is just that */
-static uint64_t mirisdr_bb_conv_least (uint32_t if_hz)
+   the closest of the 4 x IF rates, is just that. Direct sampling (ds_edge, the low
+   pass's edge) the same with the whole low pass */
+static uint64_t mirisdr_bb_conv_least (uint32_t if_hz, uint32_t ds_edge)
 {
+	if (ds_edge) return (2 * (uint64_t) ds_edge * 6 + 4) / 5;
 	return ((2 * (uint64_t) if_hz + mirisdr_if_widest_hz(if_hz)) * 6 + 4) / 5;
 }
 
 /* The converter rate a low IF baseband stream prefers, the converters running lo to hi:
    4 x IF, where the shift takes the band to 0 Hz for free, up to MIRISDR_BB_PREFER_MAX;
-   else the least the IF takes, the NCO moving the band the rest of the way */
-static uint64_t mirisdr_bb_conv_pref (uint32_t if_hz, uint32_t lo, uint32_t hi)
+   else the least the IF takes, the NCO moving the band the rest of the way. Direct
+   sampling takes the least, so a retune moves only the NCO */
+static uint64_t mirisdr_bb_conv_pref (uint32_t if_hz, uint32_t ds_edge, uint32_t lo, uint32_t hi)
 {
-	uint64_t r4 = 4 * (uint64_t) if_hz, need = mirisdr_bb_conv_least(if_hz);
+	uint64_t r4 = 4 * (uint64_t) if_hz, need = mirisdr_bb_conv_least(if_hz, ds_edge);
 
 	if (need < lo) need = lo;
-	return (r4 >= need && r4 <= MIRISDR_BB_PREFER_MAX && r4 <= hi) ? r4 : need;
+	return (!ds_edge && r4 >= need && r4 <= MIRISDR_BB_PREFER_MAX && r4 <= hi) ? r4 : need;
 }
 
 /* The output rates a low IF takes: the decimation is under 512 (8 halvings, the one
    output's converter counted, and less than 2 more in the resampler), from just above
    the preferred converter rate over 512 to the converters' most (halved for one output) */
-static void mirisdr_bb_span (uint32_t if_hz, int real, uint32_t lo, uint32_t hi, uint32_t *least, uint32_t *most)
+static void mirisdr_bb_span (uint32_t if_hz, uint32_t ds_edge, int real, uint32_t lo, uint32_t hi,
+                             uint32_t *least, uint32_t *most)
 {
-	*least = (uint32_t) (mirisdr_bb_conv_pref(if_hz, lo, hi) / 512 + 1);
+	*least = (uint32_t) (mirisdr_bb_conv_pref(if_hz, ds_edge, lo, hi) / 512 + 1);
 	*most = hi / (real ? 2 : 1);
+}
+
+/* The low pass direct sampling at f takes: the 500 kHz one when a baseband stream's
+   band fits under it */
+static uint32_t mirisdr_ds_edge (const mirisdr_stream_config_t *s, uint32_t f)
+{
+	return (s->baseband && (uint64_t) f + s->rate / 2 <= MIRISDR_DS_LP500_HZ) ? MIRISDR_DS_LP500_HZ
+	                                                                        : MIRISDR_DS_MAX_HZ;
 }
 
 /* A low IF baseband stream's converter rate and k, its half-band stages after the shift
@@ -269,17 +282,17 @@ static void mirisdr_bb_span (uint32_t if_hz, int real, uint32_t lo, uint32_t hi,
    higher) and as many halvings as leave between 1 and 2 to go, which the resampler
    makes. Returns k with the converter rate in *conv, or -1. With adjust a rate out of
    reach becomes the nearest there is, in *rate */
-static int mirisdr_bb_stages_for (uint32_t if_hz, int real, uint32_t *rate, uint32_t lo, uint32_t hi,
-                                  int adjust, uint32_t *conv)
+static int mirisdr_bb_stages_for (uint32_t if_hz, uint32_t ds_edge, int real, uint32_t *rate, uint32_t lo,
+                                  uint32_t hi, int adjust, uint32_t *conv)
 {
 	const uint64_t m = real ? 2 : 1;
 	const int kmax = 8 - (real ? 1 : 0);
-	uint64_t r4 = 4 * (uint64_t) if_hz, need = mirisdr_bb_conv_least(if_hz), x, r;
+	uint64_t r4 = 4 * (uint64_t) if_hz, need = mirisdr_bb_conv_least(if_hz, ds_edge), x, r;
 	uint32_t least, most;
 	int k;
 
 	if (need < lo) need = lo;
-	mirisdr_bb_span(if_hz, real, lo, hi, &least, &most);
+	mirisdr_bb_span(if_hz, ds_edge, real, lo, hi, &least, &most);
 
 	if ((*rate < least) || (*rate > most)) {
 		if (!adjust) return -1;
@@ -287,13 +300,13 @@ static int mirisdr_bb_stages_for (uint32_t if_hz, int real, uint32_t *rate, uint
 	}
 	x = *rate;
 
-	for (k = 0; k <= kmax; k++)
+	for (k = 0; !ds_edge && (k <= kmax); k++)
 		if (((x * m << k) == r4) && (r4 >= need) && (r4 <= hi)) {
 			*conv = (uint32_t) r4;
 			return k;
 		}
 
-	r = mirisdr_bb_conv_pref(if_hz, lo, hi);
+	r = mirisdr_bb_conv_pref(if_hz, ds_edge, lo, hi);
 	if (x * m > r) r = x * m;
 	for (k = 0; (k < kmax) && ((x * m << (k + 1)) <= r); k++);
 
@@ -302,9 +315,10 @@ static int mirisdr_bb_stages_for (uint32_t if_hz, int real, uint32_t *rate, uint
 }
 
 /* iq: the tuner outputs the tune runs, which a stream following it takes its kind from,
-   if_hz: its IF, which a baseband stream takes its rate from */
+   if_hz: its IF, which a baseband stream takes its rate from. Direct sampling: iq is
+   the I converter, if_hz the frequency, ds_edge the low pass's edge (0 otherwise) */
 static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t *c, int flags, int iq,
-                                uint32_t if_hz, mirisdr_stream_plan_t *pl)
+                                uint32_t if_hz, uint32_t ds_edge, mirisdr_stream_plan_t *pl)
 {
 	int adjust = flags & MIRISDR_STREAM_ADJUST, sauto, sformat, follow;
 	uint32_t rate_min, rate_max, spp;
@@ -331,6 +345,7 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 	pl->bb_stages = 0;
 	pl->bb_rate = 0;
 	pl->bb_if = 0;
+	pl->bb_ds = 0;
 
 	/* baseband follows the tune's outputs too */
 	follow = pl->cfg.follow_tune || pl->cfg.baseband;
@@ -398,7 +413,7 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 
 	/* baseband with a low IF: the converters at a rate the IF fits in, the rate asked for
 	   after the filters */
-	if (pl->cfg.baseband && if_hz)
+	if (pl->cfg.baseband && (if_hz || ds_edge))
 	{
 		int real = iq != MIRISDR_IQ_BOTH, k;
 		uint32_t out = c->rate, conv = 0;
@@ -407,13 +422,15 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 		uint32_t hi = (pl->decimation_bypass == MIRISDR_DECIMATION_BYPASS_OFF) ? MIRISDR_SAMPLE_RATE_MAX
 		                                                                       : 2 * MIRISDR_SAMPLE_RATE_MAX;
 
-		if ((k = mirisdr_bb_stages_for(if_hz, real, &out, lo, hi, adjust, &conv)) < 0)
+		if ((k = mirisdr_bb_stages_for(if_hz, ds_edge, real, &out, lo, hi, adjust, &conv)) < 0)
 		{
 			uint32_t least, most;
 
-			mirisdr_bb_span(if_hz, real, lo, hi, &least, &most);
-			mirisdr_refuse(p, "rate %u is not a baseband rate with a %u Hz IF%s: %u to %u sps\n", c->rate, if_hz,
-			               real ? " and one output" : "", least, most);
+			mirisdr_bb_span(if_hz, ds_edge, real, lo, hi, &least, &most);
+			if (ds_edge) mirisdr_refuse(p, "rate %u is not a direct sampling baseband rate: %u to %u sps\n",
+			                            c->rate, least, most);
+			else mirisdr_refuse(p, "rate %u is not a baseband rate with a %u Hz IF%s: %u to %u sps\n", c->rate,
+			                    if_hz, real ? " and one output" : "", least, most);
 			return -1;
 		}
 
@@ -421,6 +438,7 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 		pl->bb_stages = k;
 		pl->bb_rate = out;
 		pl->bb_if = if_hz;
+		pl->bb_ds = ds_edge != 0;
 		pl->rate = conv;
 	}
 	else if (pl->cfg.baseband) pl->bb_path = MIRISDR_BASEBAND_ZERO_IF;
@@ -536,7 +554,7 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 }
 
 static void mirisdr_stream_result_of (uint32_t rate, int format, int swap, int decim, uint32_t cap,
-                                      int bb_path, uint32_t bb_rate, uint32_t bb_if, int gap_fill,
+                                      int bb_path, uint32_t bb_rate, uint32_t bb_if, int bb_ds, int gap_fill,
                                       mirisdr_stream_result_t *res)
 {
 	memset(res, 0, sizeof *res);
@@ -547,7 +565,7 @@ static void mirisdr_stream_result_of (uint32_t rate, int format, int swap, int d
 	res->group_delay = mirisdr_bb_delay(bb_path, rate, bb_rate);
 	res->gap_fill = gap_fill || (bb_path != MIRISDR_BASEBAND_OFF);
 	res->nco = (bb_path == MIRISDR_BASEBAND_COMPLEX || bb_path == MIRISDR_BASEBAND_REAL) &&
-	           ((uint64_t) rate != 4 * (uint64_t) bb_if);
+	           (bb_ds || ((uint64_t) rate != 4 * (uint64_t) bb_if));
 	res->resampled = (bb_path == MIRISDR_BASEBAND_COMPLEX || bb_path == MIRISDR_BASEBAND_REAL) && bb_rate &&
 	                 ((uint64_t) mirisdr_bb_pow2(rate, bb_rate) * bb_rate != rate);
 	res->format = mirisdr_format_name(format);
@@ -578,6 +596,7 @@ static void mirisdr_stream_regs (mirisdr_dev_t *p, const mirisdr_stream_plan_t *
 	p->bb_stages = pl->bb_stages;
 	p->bb_rate = pl->bb_rate;
 	p->bb_if = pl->bb_if;
+	p->bb_ds = pl->bb_ds;
 	mirisdr_bb_setup(p);
 	p->xfer_out_len = p->bb ? 0 : p->user_out_len;
 	p->xfer_out_pos = 0;
@@ -693,22 +712,36 @@ static int mirisdr_stream_send (mirisdr_dev_t *p, const mirisdr_stream_plan_t *p
 	return (streaming && (mirisdr_start_async(p) < 0)) ? -1 : 0;
 }
 
+/* What a stream c takes from the tune in force: under direct sampling the I converter,
+   the frequency as its IF and the low pass c leads to */
+static uint32_t mirisdr_stream_tune_of (mirisdr_dev_t *p, const mirisdr_stream_config_t *c, uint32_t *ds_edge)
+{
+	*ds_edge = p->ds ? mirisdr_ds_edge(c, p->tune.frequency) : 0;
+
+	return p->ds ? p->tune.frequency : mirisdr_if_hz[p->if_freq];
+}
+
 static int mirisdr_stream_apply (mirisdr_dev_t *p, const mirisdr_stream_config_t *c, int flags,
                                  mirisdr_stream_result_t *res)
 {
 	mirisdr_stream_plan_t pl;
+	uint32_t if_hz, ds_edge;
 	int moved;
 
 	if (!p || !c) return -1;
-	if (mirisdr_stream_plan(p, c, flags, p->tune_iq, mirisdr_if_hz[p->if_freq], &pl) < 0) return -1;
+	if_hz = mirisdr_stream_tune_of(p, c, &ds_edge);
+	if (mirisdr_stream_plan(p, c, flags, p->tune_iq, if_hz, ds_edge, &pl) < 0) return -1;
 
-	moved = (pl.cfg.baseband != p->stream.baseband) && (p->if_freq != MIRISDR_IF_ZERO);
+	/* baseband on or off with a low IF moves the LO. Under direct sampling the stream
+	   picks the low pass, which goes out with the tune */
+	moved = ((pl.cfg.baseband != p->stream.baseband) && (p->if_freq != MIRISDR_IF_ZERO)) ||
+	        (ds_edge != p->ds_edge);
 
 	/* nothing the hardware or the filters hold changes: no restart */
 	if (!(flags & MIRISDR_STREAM_FORCE) && (pl.rate == p->rate) && (pl.format == (int) p->format) &&
 	    (pl.decim == p->decim_on) && (pl.swap == p->swap_iq) && (pl.alt == p->alt_setting) &&
 	    (pl.bb_path == p->bb_path) && (pl.bb_stages == p->bb_stages) && (pl.bb_rate == p->bb_rate) &&
-	    (pl.bb_if == p->bb_if))
+	    (pl.bb_if == p->bb_if) && (pl.bb_ds == p->bb_ds))
 	{
 		p->format_auto = pl.format_auto;
 		p->decimation_bypass = pl.decimation_bypass;
@@ -718,14 +751,13 @@ static int mirisdr_stream_apply (mirisdr_dev_t *p, const mirisdr_stream_config_t
 	}
 	else if (mirisdr_stream_send(p, &pl) < 0) return -1;
 
-	/* baseband on or off with a low IF moves the LO, and at zero IF a filter the tune
-	   left to the library follows the rate */
+	/* at zero IF a filter the tune left to the library follows the rate */
 	if (!p->tune.bandwidth && (p->if_freq == MIRISDR_IF_ZERO) &&
 	    (mirisdr_bw_auto(MIRISDR_IF_ZERO, p->rate) != (int) p->bandwidth)) moved = 1;
 	if (moved && (mirisdr_set_soft(p) < 0)) return -1;
 
 	if (res) mirisdr_stream_result_of(p->rate, p->format, p->swap_iq, p->decim_on, pl.cap,
-	                                  p->bb_path, p->bb_rate, p->bb_if, p->stream.gap_fill, res);
+	                                  p->bb_path, p->bb_rate, p->bb_if, p->bb_ds, p->stream.gap_fill, res);
 
 	return 0;
 }
@@ -755,12 +787,16 @@ int mirisdr_stream_check (mirisdr_dev_t *p, const mirisdr_stream_config_t *cfg, 
 
 	if (!p || !cfg) return -1;
 	p->checking = 1;
-	r = mirisdr_stream_plan(p, cfg, 0, p->tune_iq, mirisdr_if_hz[p->if_freq], &pl);
+	{
+		uint32_t ds_edge, if_hz = mirisdr_stream_tune_of(p, cfg, &ds_edge);
+
+		r = mirisdr_stream_plan(p, cfg, 0, p->tune_iq, if_hz, ds_edge, &pl);
+	}
 	p->checking = 0;
 	if (r < 0) return -1;
 
 	if (res) mirisdr_stream_result_of(pl.rate, pl.format, pl.swap, pl.decim, pl.cap, pl.bb_path, pl.bb_rate,
-	                                  pl.bb_if, pl.cfg.gap_fill, res);
+	                                  pl.bb_if, pl.bb_ds, pl.cfg.gap_fill, res);
 
 	return 0;
 }
@@ -772,7 +808,7 @@ int mirisdr_get_stream (mirisdr_dev_t *p, mirisdr_stream_config_t *cfg, mirisdr_
 	if (cfg) *cfg = p->stream;
 	if (res) mirisdr_stream_result_of(p->rate, p->format, p->swap_iq, p->decim_on,
 	                                  mirisdr_stream_cap(p->transfer, p->alt_setting, p->stream.usb_capacity),
-	                                  p->bb_path, p->bb_rate, p->bb_if, p->stream.gap_fill, res);
+	                                  p->bb_path, p->bb_rate, p->bb_if, p->bb_ds, p->stream.gap_fill, res);
 
 	return 0;
 }

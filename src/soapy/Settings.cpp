@@ -349,8 +349,10 @@ void SoapyMiriSDR::configure(uint32_t rate)
     if (out != rate) SoapySDR_logf(SOAPY_SDR_INFO, "mirisdr: %u S/s, the nearest to %u with a %u Hz IF", out, rate, ifHz);
 
     /* a rate that is not the converters' halved, or with them off 4 x IF: say which
-       nearby ones need neither */
+       nearby ones need neither. Direct sampling always runs the NCO */
     mirisdr_stream_result_t r;
+    mirisdr_tune_result_t tr;
+    if (mirisdr_get_tune(dev, 0, NULL, &tr) == 0 && tr.frontend.direct_sampling) return;
     if (mirisdr_get_stream(dev, NULL, &r) == 0 && (r.nco || r.resampled))
     {
         uint32_t below = 0, above = 0;
@@ -381,6 +383,7 @@ std::string SoapyMiriSDR::getHardwareKey(void) const
     switch (flavour)
     {
     case MIRISDR_HW_RSP1B:   return "RSP1B";
+    case MIRISDR_HW_RSPDXR2: return "RSPdxR2";
     case MIRISDR_HW_SDRPLAY: return "SDRplay";
     default:                 return "MSi2500";
     }
@@ -420,19 +423,34 @@ size_t SoapyMiriSDR::getNumChannels(const int direction) const
  * Antenna
  ******************************************************************/
 
+/* The RSPdx-R2 has three ports, A, B and C, other boards one */
 std::vector<std::string> SoapyMiriSDR::listAntennas(const int direction, const size_t channel) const
 {
+    if (flavour == MIRISDR_HW_RSPDXR2) return { "A", "B", "C" };
     return { "RX" };
 }
 
 void SoapyMiriSDR::setAntenna(const int direction, const size_t channel, const std::string &name)
 {
-    if (name != "RX") SoapySDR_logf(SOAPY_SDR_ERROR, "mirisdr: no antenna %s", name.c_str());
+    std::lock_guard<std::recursive_mutex> lock(devMutex);
+
+    if (flavour == MIRISDR_HW_RSPDXR2 && (name == "A" || name == "B" || name == "C"))
+    {
+        if (mirisdr_set_antenna(dev, MIRISDR_ANTENNA_A + (name[0] - 'A')) < 0)
+            SoapySDR_logf(SOAPY_SDR_ERROR, "mirisdr: antenna %s refused", name.c_str());
+    }
+    else if (name != "RX" || flavour == MIRISDR_HW_RSPDXR2)
+        SoapySDR_logf(SOAPY_SDR_ERROR, "mirisdr: no antenna %s", name.c_str());
 }
 
 std::string SoapyMiriSDR::getAntenna(const int direction, const size_t channel) const
 {
-    return "RX";
+    std::lock_guard<std::recursive_mutex> lock(devMutex);
+    int a;
+
+    if (flavour != MIRISDR_HW_RSPDXR2) return "RX";
+    a = mirisdr_get_antenna(dev);
+    return std::string(1, (char) ('A' + ((a >= MIRISDR_ANTENNA_A && a <= MIRISDR_ANTENNA_C) ? a : 0)));
 }
 
 /*******************************************************************
@@ -512,7 +530,8 @@ SoapyMiriSDR::StageRanges SoapyMiriSDR::stageRanges(void) const
         tc.gain.baseband = v;
         if (mirisdr_tune_check(dev, 0, &tc, &r) == 0) break;
     }
-    sr.baseband = v;
+    /* none where it adds nothing: under direct sampling only the LNA counts */
+    sr.baseband = (v > 0 && r.gain.total == base) ? 0 : v;
 
     return sr;
 }
@@ -921,12 +940,12 @@ SoapySDR::ArgInfoList SoapyMiriSDR::getSettingInfo(void) const
     a.value = "false";
     list.push_back(a);
 
-    if (flavour == MIRISDR_HW_RSP1B)
+    if (flavour == MIRISDR_HW_RSP1B || flavour == MIRISDR_HW_RSPDXR2)
     {
         a = SoapySDR::ArgInfo();
         a.key = "biastee";
         a.name = "Bias-T";
-        a.description = "Power on the antenna input.";
+        a.description = flavour == MIRISDR_HW_RSPDXR2 ? "Power on antenna port B." : "Power on the antenna input.";
         a.type = SoapySDR::ArgInfo::BOOL;
         a.value = "false";
         list.push_back(a);
@@ -951,6 +970,18 @@ SoapySDR::ArgInfoList SoapyMiriSDR::getSettingInfo(void) const
         a.key = "dab_notch";
         a.name = "DAB notch";
         a.description = "Notch for DAB (165-230 MHz).";
+        a.type = SoapySDR::ArgInfo::BOOL;
+        a.value = "false";
+        list.push_back(a);
+    }
+
+    if (flavour == MIRISDR_HW_RSPDXR2)
+    {
+        a = SoapySDR::ArgInfo();
+        a.key = "direct_sampling";
+        a.name = "Direct sampling";
+        a.description = "At 2 MHz and below, sample the antenna directly instead of through the tuner. "
+                        "The gain is then its LNA alone, about 37 dB.";
         a.type = SoapySDR::ArgInfo::BOOL;
         a.value = "false";
         list.push_back(a);
@@ -1014,6 +1045,11 @@ void SoapyMiriSDR::writeSetting(const std::string &key, const std::string &value
         if (mirisdr_set_bias(dev, isTrue(value)) < 0)
             SoapySDR_log(SOAPY_SDR_ERROR, "mirisdr: bias-T refused");
     }
+    else if (key == "direct_sampling")
+    {
+        if (mirisdr_set_direct_sampling(dev, isTrue(value) ? 1 : 0) < 0)
+            SoapySDR_log(SOAPY_SDR_ERROR, "mirisdr: direct sampling refused");
+    }
     else if (key == "fm_notch" || key == "mw_notch" || key == "dab_notch")
     {
         int bit = key == "fm_notch" ? MIRISDR_NOTCH_FM : key == "mw_notch" ? MIRISDR_NOTCH_MW : MIRISDR_NOTCH_DAB;
@@ -1050,6 +1086,7 @@ std::string SoapyMiriSDR::readSetting(const std::string &key) const
         return r.gap_fill ? "true" : "false";
     }
     if (key == "biastee") return mirisdr_get_bias(dev) > 0 ? "true" : "false";
+    if (key == "direct_sampling") return mirisdr_get_direct_sampling(dev) > 0 ? "true" : "false";
     if (key == "fm_notch" || key == "mw_notch" || key == "dab_notch")
     {
         n = mirisdr_get_notch(dev);

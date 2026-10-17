@@ -37,6 +37,10 @@
  * 7 Msps the receiver's analog performance falls off, gradually */
 #define MIRISDR_BB_PREFER_MAX           7000000
 
+/* RSPdx-R2 direct sampling: up to 2 MHz, through its 2 MHz low pass, or the 500 kHz one
+   when a baseband stream's band fits under it */
+#define MIRISDR_DS_LP500_HZ             500000
+
 /* What the automatic format choice plans on in bulk: 32 MB/s is reached on any host
  * tried. It only steers the choice, see mirisdr_stream_plan() */
 #define MIRISDR_BULK_CAPACITY           32000000

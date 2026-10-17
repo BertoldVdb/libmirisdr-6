@@ -124,6 +124,12 @@ static int mirisdr_scan_hop_words (mirisdr_dev_t *sh, mirisdr_dev_t *p, const mi
 
     if (mirisdr_tune_plan(sh, c, 0, &pl) < 0) goto refused;
 
+    if (pl.ds)
+    {
+        fprintf(stderr, "hop %u: direct sampling is not for scans\n", k);
+        return -1;
+    }
+
     if ((pl.w.band == MIRISDR_BAND_L) && !c->override.hold_lna)
     {
         fprintf(stderr, "hop %u: an L band hop needs its LNA code held, see mirisdr_tune_learn()\n", k);
@@ -133,10 +139,10 @@ static int mirisdr_scan_hop_words (mirisdr_dev_t *sh, mirisdr_dev_t *p, const mi
     /* a list cannot restart the stream */
     if (p->stream.follow_tune || p->stream.baseband)
     {
-        if (mirisdr_stream_plan(p, &p->stream, 0, pl.iq, mirisdr_if_hz[pl.ifm], &spl) < 0) goto refused;
+        if (mirisdr_stream_plan(p, &p->stream, 0, pl.siq, pl.sif, pl.ds_edge, &spl) < 0) goto refused;
         if ((spl.format != (int) p->format) || (spl.swap != p->swap_iq) || (spl.rate != p->rate) ||
             (spl.bb_path != p->bb_path) || (spl.bb_stages != p->bb_stages) || (spl.bb_rate != p->bb_rate) ||
-            (spl.bb_if != p->bb_if))
+            (spl.bb_if != p->bb_if) || (spl.bb_ds != p->bb_ds))
         {
             fprintf(stderr, "hop %u: the stream following it would change format\n", k);
             return -1;
