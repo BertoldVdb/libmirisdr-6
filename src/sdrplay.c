@@ -79,14 +79,17 @@
  *     B1 B3 B4 250-300, B1 B3 B5 300-380, B1 B3 380-420 MHz (16 dB weaker)
  *   A0 A1: with B1 B4 in L band, +5-17 dB from 1 to 1.5 GHz, worse from 1.7 GHz
  *
- * Of the second's, on tuner 1 (measured with its filter on, 2026-10-17):
+ * Of the second's, on tuner 1 (measured with its filter on, 2026-10-17, all 65536 words at
+ * eight frequencies from 50 MHz to 1.4 GHz, the plan's word within 1.3 dB of the best):
  *
  *   A2: its 50 ohm input to the filters, +30-47 dB (released: the other input,
- *     probably Hi-Z, not checked)
+ *     probably Hi-Z, not checked, and no word with it released comes within 23 dB)
  *   A7: FM notch, 40 dB at 80 MHz and 61 dB at 95 MHz
  *   B1: DAB notch, 28-30 dB at 180-200 MHz
- *   B5 B6 B7: attenuator, about 6, 12 and 18 dB
- *   A4: 2-15 dB, rising with frequency up to 600 MHz, purpose unknown
+ *   B5 B6 B7: attenuator, three PIN diode pads in parallel, 4-7, 10-15 and 16-24 dB,
+ *     one at a time (two low give less than either sum)
+ *   A4: 4-8 dB down below 1 GHz, +1 dB at 1.4 GHz, purpose unknown
+ *   the rest: nothing on tuner 1 (under 2.3 dB anywhere): tuner 2's, presumably
  *
  * Not mapped yet: tuner 2's front end, the HF bank below 30 MHz, the Hi-Z input and the
  * bias-T.
