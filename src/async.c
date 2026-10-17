@@ -29,6 +29,7 @@ static void mirisdr_cb_call (mirisdr_dev_t *p, unsigned char *buf, uint32_t len)
     in->adc = mirisdr_stream_adc(p);
     in->rate = p->rate;
     in->type = (p->format == MIRISDR_FORMAT_504_S8) ? MIRISDR_SAMPLE_S8 : MIRISDR_SAMPLE_S16;
+    in->tuner = mirisdr_tuner_primary(p);
 
     /* the queue's gaps up to this buffer's end, in order */
     while (k < p->gapq_n && p->gapq[k].at < end) {

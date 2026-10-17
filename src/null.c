@@ -45,6 +45,7 @@ int mirisdr_open_null (mirisdr_dev_t **out, const char *format) {
     p->gap_track = 1;
     p->stream.rate = p->rate = DEFAULT_RATE;    /* so get_stream then set_stream works */
     mirisdr_tuner_defaults(p);   /* so tunes and scan lists come out as on a device */
+    mirisdr_tuner_ctx_init(p);
 
     *out = p;
 

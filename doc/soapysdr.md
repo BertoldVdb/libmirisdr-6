@@ -283,10 +283,21 @@ int main()
 Build it with `g++ example.cpp -lSoapySDR`. At 256000 samples a second the module picks the 450 kHz IF by itself, and 433.5 MHz is at 0 Hz in `buf`.
 
 
+<h3>Two channels</h3>
+
+The RSPduo reports two channels, one for each tuner. Channel 0 is the tuner on the 50 ohm input marked tuner 1, channel 1 the one marked tuner 2. Frequency, gain, bandwidth and the other per channel calls act on their own tuner. The device settings (`if_freq`, `biastee`, the notches and the rest) act on channel 0.
+
+`setupStream()` takes the channels to stream:
+
+  - `{0}` or `{1}`: one tuner, as on any receiver, at the full rates.
+  - `{0, 1}`: both. Each tuner runs a low IF into its own converter, and `readStream()` fills one buffer for each channel, in the order given, with the same number of samples and one time stamp. The rate is shared. `auto` picks a low IF for both: 450 kHz up to 750 ksps and 1620 kHz above, which reaches 3.24 Msps.
+
+With both, the rate the module reports and takes is the one rate of both channels.
+
 <h3>What it does not do</h3>
 
   - Transmit.
-  - More than one channel.
+  - More than one channel, except on the RSPduo (see Two channels).
   - Automatic gain control.
   - Frequency correction.
   - Time from a PPS input. The library can do this, but it is not exposed in this module as you need custom hardware.

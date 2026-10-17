@@ -213,6 +213,8 @@ typedef struct mirisdr_buffer_info
 	                           MIRISDR_IQ_ONLY_I or _ONLY_Q for real */
 	uint32_t rate;          /* samples per second */
 	int      type;          /* MIRISDR_SAMPLE_* */
+	int      tuner;         /* the tuner the samples are from: 0, or on an RSPduo streaming
+	                           tuner 1 or both, 1 too (see the stream config's tuners) */
 	uint32_t reserved[MIRISDR_RESERVED];
 } mirisdr_buffer_info_t;
 
@@ -284,6 +286,9 @@ typedef struct mirisdr_stream_config
 	                                   NULL for "AUTO_REAL" */
 	uint32_t    usb_capacity;       /* B/s the automatic choice may plan on, 0 for the default */
 	int         baseband;           /* complex float centred on the tune's frequency, see above */
+	int         tuners;             /* the tuners streamed, bit n for tuner n, 0 is tuner 0 alone.
+	                                   The RSPduo also takes 2 (tuner 1 alone) and 3 (both, a low IF
+	                                   each on a converter of its own: see "two tuners" below) */
 	uint32_t reserved[MIRISDR_RESERVED];
 } mirisdr_stream_config_t;
 
@@ -311,6 +316,7 @@ typedef struct mirisdr_stream_result
 	uint32_t    adc_clock;          /* Hz the converters sample at: twice adc_rate, or adc_rate with the
 	                                   decimation bypassed. See MIRISDR_ADC_CLOCK_BEST */
 	int         bits;               /* bits per sample the format carries: 14, 12, 10 or 8 */
+	int         tuners;             /* the tuners streamed, as the config's tuners (never 0) */
 	uint32_t reserved[MIRISDR_RESERVED];
 } mirisdr_stream_result_t;
 
@@ -322,6 +328,8 @@ typedef struct mirisdr_stream_result
 #define MIRISDR_BASEBAND_ZERO_IF 1      /* zero IF, as float */
 #define MIRISDR_BASEBAND_COMPLEX 2      /* low IF, both outputs shifted */
 #define MIRISDR_BASEBAND_REAL    3      /* low IF, one output through the real to I/Q converter */
+#define MIRISDR_BASEBAND_DUAL    4      /* two tuners, each a low IF on its own converter, each as
+                                           MIRISDR_BASEBAND_REAL: buffers labelled with their tuner */
 
 MIRISDR_API void mirisdr_stream_config_default (mirisdr_stream_config_t *cfg); /* extra */
 MIRISDR_API int mirisdr_set_stream (mirisdr_dev_t *p, const mirisdr_stream_config_t *cfg,
@@ -497,6 +505,11 @@ typedef struct mirisdr_tune_result
 } mirisdr_tune_result_t;
 
 MIRISDR_API void mirisdr_tune_config_default (mirisdr_tune_config_t *cfg); /* extra */
+
+/* The tuners a receiver has: 2 on the RSPduo, 1 on the others. The tune calls take the
+ * tuner's number, from 0, and each tuner keeps its own tune. The single setters
+ * (mirisdr_set_center_freq() and the rest) act on the first tuner the stream takes */
+MIRISDR_API int mirisdr_get_tuner_count (mirisdr_dev_t *p); /* extra */
 MIRISDR_API int mirisdr_tune (mirisdr_dev_t *p, int tuner, const mirisdr_tune_config_t *cfg,
                               mirisdr_tune_result_t *res); /* extra */
 MIRISDR_API int mirisdr_tune_check (mirisdr_dev_t *p, int tuner, const mirisdr_tune_config_t *cfg,

@@ -127,7 +127,7 @@ if (mirisdr_tune(dev, 0, &tc, &tr) < 0)
     printf("refused\n");
 ```
 
-The second argument is the tuner. It is always 0 for now. It is there for receivers with two tuners, such as the RSPduo.
+The second argument is the tuner, from 0. `mirisdr_get_tuner_count()` says how many there are: 2 on the RSPduo, 1 on the others. Each tuner keeps its own tune, gain and front end. The older single setters, such as `mirisdr_set_center_freq()`, act on the first tuner the stream takes. See Two tuners below.
 
 <h4>The tune config</h4>
 
@@ -252,6 +252,7 @@ printf("%u samples/s as %s, %u bytes/s on the USB\n", sr.rate, sr.format, sr.usb
   - `format_single`: with `follow_tune`, the real format to use for one output. NULL means `"AUTO_REAL"`.
   - `usb_capacity`: the bytes per second the automatic format may plan on. 0 is the default.
   - `baseband`: deliver complex float with the tune's frequency at 0 Hz, at any IF. This has its own section below.
+  - `tuners`: the tuners to stream, bit n for tuner n. 0 means tuner 0 alone. The RSPduo also takes 2 (tuner 1 alone) and 3 (both). See Two tuners below.
 
 <h4>Sample formats</h4>
 
@@ -336,6 +337,7 @@ Inside the callback, `mirisdr_get_buffer_info()` describes the buffer. It only w
   - `sample`: how many samples were delivered before this buffer.
   - `index`: the position of the first sample in time, counting lost samples too.
   - `gap_samples`, `gaps_len` and `gaps`: where samples are missing inside this buffer and how many.
+  - `tuner`: the tuner the samples are from. With two tuners streamed, buffers come in pairs: tuner 0's, then tuner 1's for the same stretch of time.
 
 Each gap has an `offset` (the samples of the buffer before it), `samples` (how many are missing) and `filled` (how many of those gap fill replaced with zeros).
 
@@ -427,6 +429,26 @@ A tune that changes the IF while the stream runs keeps the rate if the new IF ha
   - The processing runs in the callback's thread. On a Raspberry Pi Compute Module 0 (one core at 1 GHz) the 450 kHz IF needs little. Rates off the table above add the resampler: 250 ksps at 450 kHz runs at 10 times real time, 1 Msps at 1620 kHz at 2.9 times and 3 Msps at 2 times. 1 Msps at 2048 kHz, with the NCO too, runs at about 1.9 times.
   - The same signal reads about 12 dB higher with a low IF than at zero IF. This is not explained yet, so do not compare absolute levels between the two.
 
+
+<h3>Two tuners</h3>
+
+The RSPduo has two tuners. Tuner 0 is the one on the 50 ohm input marked tuner 1 (with the Hi-Z input), tuner 1 the one marked tuner 2. Each takes its own tune: `mirisdr_tune(dev, 1, &tc, &tr)` tunes tuner 1 and leaves tuner 0 as it is.
+
+The stream config's `tuners` picks what is streamed:
+
+  - 0 or 1: tuner 0 alone, as on any receiver. Its I and Q outputs go to the two converters.
+  - 2: tuner 1 alone, the same way. The single setters then act on tuner 1.
+  - 3: both. Each tuner runs a low IF into a converter of its own, tuner 0 on I and tuner 1 on Q. This needs `baseband`, a low IF on both tunes and both outputs of each tuner (`iq` both). Otherwise it is refused.
+
+With both, the library runs two baseband chains, one per converter, each the one output path. Each takes its tuner's IF to 0 Hz, so both deliver complex float at the stream's rate. The callback gets each tuner's buffers labelled in `tuner`: tuner 0's buffer, then tuner 1's for the same stretch, with the same `sample` positions. The stream result reports `MIRISDR_BASEBAND_DUAL` and `tuners` 3.
+
+The two tuners may use different IFs. The converters then run at the rate the higher one needs, and each chain takes its own IF the rest of the way with the NCO. The rate has to suit both IFs: from the higher of their lowest rates up to the lower of their highest, which is the one output span of each (450 kHz IF: up to 900 ksps, 1620 kHz: up to 3.24 Msps).
+
+Things to know:
+
+  - Tuner 1's front end is not mapped yet. Its tunes refuse notches, and a bias-T is refused on the RSPduo altogether. Raw front end words work on either.
+  - Scans run on tuner 0 alone.
+  - `mirisdr_get_tuner_status()` and `mirisdr_tune_learn()` take the tuner.
 
 <h3>Stream events and the marker</h3>
 

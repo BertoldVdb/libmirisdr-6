@@ -138,14 +138,27 @@ static int mirisdr_setup (mirisdr_dev_t **out_dev, mirisdr_dev_t *dev) {
     mirisdr_streaming_stop(dev);
     mirisdr_adc_stop(dev);
 
+    if (dev->hw_flavour == MIRISDR_HW_AUTO) dev->hw_flavour = mirisdr_flavour_of(dev->dh);
+    dev->exp_valid = 0;
+
+    /* a readback leaves the tuner holding its answer line until its next word, and a
+       process that ended there leaves it so: on the RSPduo the expander setup then left the
+       other tuner deaf (tuner.c). A register 4 word first lets go of it, on every board. On
+       the RSPduo the route is where it was, so it reaches the tuner that was read. Whether
+       it reached tuner 0 is not known, which is all the tracking could say */
+    if (!dev->external_tuner)
+    {
+        mirisdr_tuner_write(dev, MIRISDR_TUNER_IDLE, 0, 1);
+        dev->tuner_valid = 0;
+        dev->tuner_last = 0;
+    }
+
     /* initialise the tuner */
     mirisdr_tuner_defaults(dev);
+    mirisdr_tuner_ctx_init(dev);
     dev->rate = DEFAULT_RATE;
     dev->format_auto = MIRISDR_FORMAT_AUTO_ON;
     dev->decimation_bypass = MIRISDR_DECIMATION_BYPASS_AUTO;
-
-    if (dev->hw_flavour == MIRISDR_HW_AUTO) dev->hw_flavour = mirisdr_flavour_of(dev->dh);
-    dev->exp_valid = 0;
     mirisdr_set_i2c_rate(dev, 50000);
     dev->ee_size = -1;              /* not probed yet, see eeprom.c */
 
@@ -522,6 +535,13 @@ int mirisdr_set_hw_flavour (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_flavour) {
     }
 
     p->tune.frontend.raw.fields &= mirisdr_frontend_parts(hw_flavour);
+
+    /* one tuner: the stream takes it, the single setters act on it */
+    if (hw_flavour != MIRISDR_HW_RSPDUO)
+    {
+        p->stream.tuners = 0;
+        mirisdr_tuner_select(p, 0);
+    }
 
     if (hw_flavour != MIRISDR_HW_RSPDXR2)
     {

@@ -34,6 +34,7 @@ static int  opt_chars;
 static double opt_step = 1.0;
 static int  opt_verbose;
 static const char *opt_only;
+static const char *opt_test;    /* -t: only tests whose name has this in it */
 static const char *opt_fw;
 static int         opt_rom;
 
@@ -933,6 +934,104 @@ static void *bbd_main (void *arg)
     (void) arg;
     pump_result = mirisdr_read_async(dev, bbd_cb, NULL, 0, 0);
     return NULL;
+}
+
+/* Two tuners on an RSPduo: each tuned apart, streamed together. Buffers come labelled
+ * 0, 1, 0, 1, each tuner's samples continuous and as many as the other's, at the rate
+ * asked, and each tuner's readback follows its own tune */
+static struct { uint64_t pairs[2], want[2]; int calls, order_bad, info_bad, last; uint32_t rate; } dd;
+
+static void dd_cb (unsigned char *buf, uint32_t len, void *ctx)
+{
+    mirisdr_buffer_info_t in;
+    int t;
+
+    (void) buf; (void) ctx;
+    if (mirisdr_get_buffer_info(dev, &in) < 0 || in.type != MIRISDR_SAMPLE_F32 || in.tuner < 0 || in.tuner > 1)
+    { dd.info_bad++; return; }
+    t = in.tuner;
+    if (dd.calls++ && t == dd.last) dd.order_bad++;
+    dd.last = t;
+    if (in.sample != dd.want[t]) dd.info_bad++;
+    dd.want[t] = in.sample + len / 8;
+    dd.pairs[t] += len / 8;
+    dd.rate = in.rate;
+}
+
+static void *dd_main (void *arg)
+{
+    (void) arg;
+    pump_result = mirisdr_read_async(dev, dd_cb, NULL, 0, 0);
+    return NULL;
+}
+
+static tres_t t_dual_device (void)
+{
+    static const struct { uint32_t if0, if1, rate; } cases[] = {
+        { 450000, 450000, 225000 }, { 1620000, 1620000, 810000 }, { 450000, 1620000, 202500 },
+        { 1620000, 1620000, 2000000 }, { 450000, 450000, 250000 } };
+    mirisdr_tune_config_t tc;
+    mirisdr_stream_config_t sc;
+    mirisdr_stream_result_t sr;
+    mirisdr_tuner_status_t st0, st1;
+    unsigned i;
+    int bad = 0, t;
+    double t0, sps[2];
+
+    if (mirisdr_get_tuner_count(dev) < 2) { say("one tuner"); return T_SKIP; }
+
+    pump_stop();
+    for (i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        for (t = 0; t < 2; t++) {
+            mirisdr_get_tune(dev, t, &tc, NULL);
+            tc.frequency = t ? 433000000 : 100000000;
+            tc.if_freq = t ? cases[i].if1 : cases[i].if0;
+            tc.iq = MIRISDR_IQ_BOTH; tc.bandwidth = 0; tc.low_if_auto = 0; tc.gain.mode = MIRISDR_GAIN_KEEP;
+            if (mirisdr_tune(dev, t, &tc, NULL) < 0) { say("tuner %d refused", t); bad++; }
+        }
+        mirisdr_get_stream(dev, &sc, NULL);
+        sc.baseband = 1; sc.rate = cases[i].rate; sc.format = NULL; sc.format_single = NULL; sc.tuners = 3;
+        if (mirisdr_set_stream(dev, &sc, &sr) < 0 || sr.baseband != MIRISDR_BASEBAND_DUAL || sr.tuners != 3)
+        { say("two tuners at %u and %u Hz IF, %u sps, refused", cases[i].if0, cases[i].if1, cases[i].rate); bad++; continue; }
+
+        memset(&dd, 0, sizeof dd);
+        if (mirisdr_reset_buffer(dev) < 0 || pthread_create(&pump_thread, NULL, dd_main, NULL)) return T_FAIL;
+        pump_running = 1;
+        usleep(300000);
+        dd.pairs[0] = dd.pairs[1] = 0;
+        t0 = now();
+        usleep(1000000);
+        sps[0] = dd.pairs[0] / (now() - t0);
+        sps[1] = dd.pairs[1] / (now() - t0);
+        pump_stop();
+
+        note("IFs %u and %u, %u sps from %u: %.0f and %.0f sps, %d buffers, %d out of order, %d bad infos", cases[i].if0,
+             cases[i].if1, cases[i].rate, sr.adc_rate, sps[0], sps[1], dd.calls, dd.order_bad, dd.info_bad);
+        if (dd.order_bad || dd.info_bad || !within(sps[0], cases[i].rate, 0.03) || !within(sps[1], cases[i].rate, 0.03) ||
+            dd.rate != cases[i].rate)
+        { say("IFs %u and %u at %u: %.0f and %.0f sps, %d out of order, %d bad infos", cases[i].if0, cases[i].if1,
+              cases[i].rate, sps[0], sps[1], dd.order_bad, dd.info_bad); bad++; }
+    }
+
+    /* the readback of each, and tuner 0's once more, which a tuner 1 left holding the line ends */
+    if (mirisdr_get_tuner_status(dev, 0, &st0) < 0) { say("no readback of tuner 0"); bad++; }
+    else if (mirisdr_get_tuner_status(dev, 1, &st1) < 0) { say("no readback of tuner 1"); bad++; }
+    else if (mirisdr_get_tuner_status(dev, 0, &st0) < 0) { say("no readback of tuner 0 after tuner 1's"); bad++; }
+    else note("readback: tuner 0 %08X, tuner 1 %08X", st0.raw, st1.raw);
+
+    /* back to tuner 0 alone, at zero IF */
+    mirisdr_get_stream(dev, &sc, NULL);
+    sc.tuners = 0; sc.baseband = 0; sc.rate = 2000000;
+    mirisdr_set_stream(dev, &sc, NULL);
+    for (t = 0; t < 2; t++) {
+        mirisdr_get_tune(dev, t, &tc, NULL);
+        tc.if_freq = 0; tc.bandwidth = 0;
+        mirisdr_tune(dev, t, &tc, NULL);
+    }
+
+    if (!bad) say("%u pairs of IFs: buffers paired 0, 1, each tuner at the rate, the readback per tuner",
+                  (unsigned) (sizeof cases / sizeof cases[0]));
+    return bad ? T_FAIL : T_PASS;
 }
 
 static tres_t t_bb_device (void)
@@ -2965,6 +3064,102 @@ static void plan_stream (mirisdr_dev_t *n, const char *what, mirisdr_stream_conf
     note("%-36s %s%s%s", what, got ? "accepted" : "refused", got ? ", " : "", got ? r->format : "");
 }
 
+/* Two tuners, without streaming: each keeps its tune, the single setters act on the
+ * stream's first, the RSPduo's switch and routing words follow the tuners streamed and
+ * tuned, and what two tuners cannot do is refused */
+static tres_t t_plan_tuners (void)
+{
+    mirisdr_dev_t *n;
+    mirisdr_tune_config_t c, g;
+    mirisdr_tune_result_t r0, r1;
+    mirisdr_stream_config_t s;
+    mirisdr_stream_result_t sr;
+
+    plan_bad = 0;
+
+    if (mirisdr_open_null(&n, "252_S16") < 0) { say("no null device"); return T_FAIL; }
+
+    /* one tuner: tuner 1 refused, tuners 2 too */
+    if (mirisdr_get_tuner_count(n) != 1) { plan_bad++; say("a plain board has %d tuners", mirisdr_get_tuner_count(n)); }
+    mirisdr_tune_config_default(&c);
+    c.frequency = 100000000;
+    if (mirisdr_tune(n, 1, &c, NULL) == 0) { plan_bad++; say("tuner 1 on a plain board accepted"); }
+    mirisdr_stream_config_default(&s);
+    s.tuners = 2;
+    if (mirisdr_stream_check(n, &s, &sr) == 0) { plan_bad++; say("tuners 2 on a plain board accepted"); }
+
+    mirisdr_set_hw_flavour(n, MIRISDR_HW_RSPDUO);
+    if (mirisdr_get_tuner_count(n) != 2) { plan_bad++; say("the RSPduo has %d tuners", mirisdr_get_tuner_count(n)); }
+
+    /* each its own tune, and the single setter on tuner 0 */
+    c.frequency = 100000000;
+    if (mirisdr_tune(n, 0, &c, &r0) < 0) { plan_bad++; say("tuner 0 refused"); }
+    c.frequency = 433000000;
+    if (mirisdr_tune(n, 1, &c, &r1) < 0) { plan_bad++; say("tuner 1 refused"); }
+    mirisdr_set_center_freq(n, 145000000);
+    mirisdr_get_tune(n, 0, &g, &r0);
+    if (g.frequency != 145000000) { plan_bad++; say("tuner 0 at %u after the single setter", g.frequency); }
+    mirisdr_get_tune(n, 1, &g, &r1);
+    if (g.frequency != 433000000) { plan_bad++; say("tuner 1 at %u after a setter for tuner 0", g.frequency); }
+
+    /* the first expander: tuner 0 streamed alone, both converters on it (A7 B0 low), tuner
+       1's words routed with B7 low, tuner 0's filter kept */
+    if ((r0.frontend.raw.expander[0] & 0xC180) != 0xC000)
+    { plan_bad++; say("tuner 0 alone: first word %04X", r0.frontend.raw.expander[0]); }
+    c.frequency = 433000000;
+    mirisdr_tune(n, 1, &c, &r1);
+    if ((r1.frontend.raw.expander[0] & 0xC180) != 0x4000 ||
+        (r1.frontend.raw.expander[0] & 0x3E7F) != (r0.frontend.raw.expander[0] & 0x3E7F))
+    { plan_bad++; say("tuner 1 tuned: first word %04X after tuner 0's %04X", r1.frontend.raw.expander[0], r0.frontend.raw.expander[0]); }
+
+    /* tuner 1 alone: the converters on it (A7 B0 released), the single setters on it */
+    mirisdr_get_stream(n, &s, NULL);
+    s.tuners = 2;
+    if (mirisdr_set_stream(n, &s, &sr) < 0 || sr.tuners != 2) { plan_bad++; say("tuner 1 alone refused"); }
+    mirisdr_get_tune(n, 1, NULL, &r1);
+    if ((r1.frontend.raw.expander[0] & 0x0180) != 0x0180) { plan_bad++; say("tuner 1 alone: first word %04X", r1.frontend.raw.expander[0]); }
+    mirisdr_set_center_freq(n, 434000000);
+    mirisdr_get_tune(n, 1, &g, NULL);
+    if (g.frequency != 434000000) { plan_bad++; say("the single setter did not reach tuner 1 streamed alone"); }
+
+    /* both: refused without baseband, at zero IF, or one output, then A7 low alone */
+    s.tuners = 3;
+    s.baseband = 0;
+    if (mirisdr_stream_check(n, &s, &sr) == 0) { plan_bad++; say("two tuners without baseband accepted"); }
+    s.baseband = 1;
+    s.rate = 225000;
+    if (mirisdr_stream_check(n, &s, &sr) == 0) { plan_bad++; say("two tuners at zero IF accepted"); }
+    mirisdr_get_tune(n, 0, &c, NULL); c.if_freq = 450000; mirisdr_tune(n, 0, &c, NULL);
+    mirisdr_get_tune(n, 1, &c, NULL); c.if_freq = 450000; c.iq = MIRISDR_IQ_ONLY_I; mirisdr_tune(n, 1, &c, NULL);
+    if (mirisdr_stream_check(n, &s, &sr) == 0) { plan_bad++; say("two tuners, one with one output, accepted"); }
+    c.iq = MIRISDR_IQ_BOTH; mirisdr_tune(n, 1, &c, NULL);
+    if (mirisdr_set_stream(n, &s, &sr) < 0 || sr.tuners != 3 || sr.baseband != MIRISDR_BASEBAND_DUAL ||
+        sr.adc_rate != 1800000 || sr.rate != 225000 || sr.nco || sr.resampled)
+    { plan_bad++; say("two tuners at 450 kHz, 225000: %u from %u, path %d, nco %d", sr.rate, sr.adc_rate, sr.baseband, sr.nco); }
+    mirisdr_get_tune(n, 0, NULL, &r0);
+    if ((r0.frontend.raw.expander[0] & 0x0180) != 0x0100) { plan_bad++; say("two tuners: first word %04X", r0.frontend.raw.expander[0]); }
+    /* a tune to one output now refused, a different IF takes the higher converter rate */
+    c.iq = MIRISDR_IQ_ONLY_I;
+    if (mirisdr_tune(n, 1, &c, NULL) == 0) { plan_bad++; say("one output on a tuner of two accepted"); }
+    c.iq = MIRISDR_IQ_BOTH; c.if_freq = 1620000;
+    s.rate = 202500;
+    if (mirisdr_set_stream(n, &s, &sr) < 0) { plan_bad++; say("202500 at 450 kHz refused"); }
+    if (mirisdr_tune(n, 1, &c, NULL) < 0) { plan_bad++; say("tuner 1 to 1620 kHz refused"); }
+    mirisdr_get_stream(n, NULL, &sr);
+    if (sr.adc_rate != 6480000 || sr.rate != 202500 || !sr.nco)
+    { plan_bad++; say("450 and 1620 kHz: %u from %u, nco %d", sr.rate, sr.adc_rate, sr.nco); }
+    /* scans are tuner 0's alone */
+    {
+        mirisdr_scan_t *sc = NULL;
+        if (mirisdr_scan_compile(n, 0, &c, 1, 4, &sc) == 0) { plan_bad++; say("a scan with two tuners compiled"); mirisdr_scan_free(sc); }
+    }
+
+    mirisdr_close(n);
+
+    if (!plan_bad) say("own tunes, the setters on the first, switch and routing words, two tuners refused where they cannot");
+    return plan_bad ? T_FAIL : T_PASS;
+}
+
 /* The converters' clock and the bits a format keeps, in the stream result. Baseband at a
  * low IF keeps the clock at or under MIRISDR_ADC_CLOCK_BEST */
 static tres_t t_plan_adc (void)
@@ -4564,6 +4759,120 @@ static tres_t t_bb_ds (void)
     return bad ? T_FAIL : T_PASS;
 }
 
+/* Two tuners on the RSPduo: tuner 0's real low IF on the I converter, tuner 1's on the Q
+ * one. Each comes out of its own chain, at -6.02 dBFS for a tone of 0.5 at its IF + delta,
+ * without the other's, buffers labelled 0, 1, 0, 1 with the same sample positions */
+static struct {
+    float *x[2];
+    size_t n[2], cap[2];
+    int calls, order_bad, info_bad, last;
+    uint64_t want[2];
+    mirisdr_dev_t *d;
+} dual;
+
+static void dual_cb (unsigned char *buf, uint32_t len, void *ctx)
+{
+    mirisdr_buffer_info_t in;
+    int t;
+
+    (void) ctx;
+    if (mirisdr_get_buffer_info(dual.d, &in) < 0 || in.type != MIRISDR_SAMPLE_F32 || in.tuner < 0 || in.tuner > 1)
+    { dual.info_bad++; return; }
+    t = in.tuner;
+    if (dual.calls++ && t == dual.last) dual.order_bad++;
+    dual.last = t;
+    if (in.sample != dual.want[t]) dual.info_bad++;
+    dual.want[t] += len / 8;
+    if (dual.n[t] + len / 4 > dual.cap[t]) {
+        dual.cap[t] = (dual.n[t] + len / 4) * 2;
+        dual.x[t] = realloc(dual.x[t], dual.cap[t] * sizeof(float));
+    }
+    memcpy(dual.x[t] + dual.n[t], buf, len);
+    dual.n[t] += len / 4;
+}
+
+static tres_t t_bb_dual (void)
+{
+    static const struct { uint32_t if0, if1, rate; double d0, d1; } cases[] = {
+        { 450000, 450000, 225000, 30000, -50000 }, { 1620000, 1620000, 810000, 200000, -150000 },
+        { 450000, 1620000, 202500, 40000, 60000 }, { 2048000, 450000, 512000, -100000, 80000 },
+        { 450000, 450000, 250000, -60000, 45000 } };
+    mirisdr_tune_config_t tc;
+    mirisdr_stream_config_t sc;
+    mirisdr_stream_result_t sr;
+    unsigned i;
+    int bad = 0, t;
+
+    for (i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        uint8_t *data;
+        uint32_t len, blocks, b, k;
+        uint64_t idx = 0;
+        double fs, a[2], x[2], mir[2];
+        const uint32_t ifs[2] = { cases[i].if0, cases[i].if1 };
+        const double ds[2] = { cases[i].d0, cases[i].d1 };
+
+        if (mirisdr_open_null(&dual.d, "252_S16") < 0) { say("no null device"); return T_FAIL; }
+        mirisdr_set_hw_flavour(dual.d, MIRISDR_HW_RSPDUO);
+        for (t = 0; t < 2; t++) {
+            mirisdr_get_tune(dual.d, t, &tc, NULL);
+            tc.frequency = t ? 433000000 : 100000000;
+            tc.if_freq = ifs[t];
+            tc.bandwidth = 0;
+            if (mirisdr_tune(dual.d, t, &tc, NULL) < 0) { say("case %u: tuner %d refused", i, t); return T_FAIL; }
+        }
+        mirisdr_get_stream(dual.d, &sc, NULL);
+        sc.baseband = 1; sc.rate = cases[i].rate; sc.transfer = "BULK"; sc.format = "252_S16"; sc.tuners = 3;
+        if (mirisdr_set_stream(dual.d, &sc, &sr) < 0 || sr.baseband != MIRISDR_BASEBAND_DUAL)
+        { say("case %u: two tuners refused", i); return T_FAIL; }
+        fs = sr.adc_rate;
+
+        /* each converter one tuner's real samples: a tone at -IF + delta, its real part */
+        blocks = (uint32_t) (0.2 * fs / 252) + 64;
+        data = calloc(blocks, 1024);
+        for (b = 0; b < blocks; b++) {
+            uint8_t *h = data + 1024 * b;
+            h[0] = (uint8_t) idx; h[1] = (uint8_t) (idx >> 8); h[2] = (uint8_t) (idx >> 16); h[3] = (uint8_t) (idx >> 24);
+            memcpy(h + 8, "BVDB", 4);
+            for (k = 0; k < 252; k++) {
+                double nn = (double) (idx + k);
+                bb_put14(h + 16 + 4 * k, 0.5 * cos(2 * M_PI * (-(double) ifs[0] + ds[0]) * nn / fs));
+                bb_put14(h + 18 + 4 * k, 0.5 * cos(2 * M_PI * (-(double) ifs[1] + ds[1]) * nn / fs));
+            }
+            idx += 252;
+        }
+        len = blocks * 1024;
+        free(dual.x[0]); free(dual.x[1]);
+        memset(&dual, 0, sizeof dual - sizeof dual.d);
+        for (b = 0; b < len; b += k) {
+            k = 1024 * (1 + (uint32_t) rand() % 24);
+            if (k > len - b) k = len - b;
+            mirisdr_feed_bulk(dual.d, dual_cb, NULL, 0, data + b, k);
+        }
+        free(data);
+        mirisdr_close(dual.d);
+
+        for (t = 0; t < 2; t++) {
+            size_t m = dual.n[t] / 2 / 2, s0 = dual.n[t] / 2 - m;
+            a[t] = 20 * log10(bb_tone(dual.x[t] + 2 * s0, m, ds[t], sr.rate) + 1e-12);
+            x[t] = 20 * log10(bb_tone(dual.x[t] + 2 * s0, m, ds[!t], sr.rate) + 1e-12);
+            mir[t] = a[t] - 20 * log10(bb_tone(dual.x[t] + 2 * s0, m, -ds[t], sr.rate) + 1e-12);
+        }
+        note("IFs %u and %u, %u sps from %u%s%s: tuner 0 %.2f dBFS (mirror %.1f dB down, the other's %.1f), "
+             "tuner 1 %.2f dBFS (%.1f, %.1f), %d calls", ifs[0], ifs[1], sr.rate, sr.adc_rate, sr.nco ? ", NCO" : "",
+             sr.resampled ? ", resampled" : "", a[0], mir[0], x[0], a[1], mir[1], x[1], dual.calls);
+        if (fabs(a[0] + 6.02) > 0.3 || fabs(a[1] + 6.02) > 0.3 || x[0] > -60 || x[1] > -60 || mir[0] < 60 || mir[1] < 60 ||
+            dual.order_bad || dual.info_bad || dual.n[0] != dual.n[1] || !dual.calls)
+        { say("IFs %u and %u at %u: %.2f and %.2f dBFS, crossed %.1f and %.1f, %d out of order, %d bad infos, %zu and %zu samples",
+              ifs[0], ifs[1], cases[i].rate, a[0], a[1], x[0], x[1], dual.order_bad, dual.info_bad, dual.n[0] / 2, dual.n[1] / 2); bad++; }
+    }
+    free(dual.x[0]); free(dual.x[1]);
+    dual.x[0] = dual.x[1] = NULL;
+
+    if (!bad) say("%u cases: each tuner its own tone at -6.02 dBFS, none of the other's, buffers paired 0, 1",
+                  (unsigned) (sizeof cases / sizeof cases[0]));
+    return bad ? T_FAIL : T_PASS;
+}
+
 static tres_t t_bb_tone (void)
 {
     static const struct { uint32_t ifhz; int real; uint32_t rate; double delta, img; int swap; } cases[] = {
@@ -5370,6 +5679,7 @@ static tres_t t_soapy_stream (void) { return soapy_run("stream"); }
 static tres_t t_soapy_cycles (void) { return soapy_run("cycles"); }
 static tres_t t_soapy_retune (void) { return soapy_run("retune"); }
 static tres_t t_soapy_band (void)   { return soapy_run("bandranges"); }
+static tres_t t_soapy_channels (void) { return soapy_run("channels"); }
 static tres_t t_soapy_regress (void) { return soapy_run("regress"); }
 #endif
 
@@ -5385,6 +5695,7 @@ static const struct {
     { "plan",     "tune config rules",          t_plan_tune           },
     { "plan",     "stream config rules",        t_plan_stream         },
     { "plan",     "converter clock and bits",   t_plan_adc            },
+    { "plan",     "two tuners",                 t_plan_tuners         },
     { "plan",     "stream following the tune",  t_plan_follow         },
     { "plan",     "frontend with the tune",     t_plan_frontend       },
     { "plan",     "RSPdx-R2 front end",         t_plan_dxr2           },
@@ -5396,6 +5707,7 @@ static const struct {
     { "baseband", "rates, IF moves and the LO",  t_bb_plan             },
     { "baseband", "tone, mirror and image",     t_bb_tone             },
     { "baseband", "direct sampling",            t_bb_ds               },
+    { "baseband", "two tuners",                 t_bb_dual             },
     { "baseband", "counts, buffers and gaps",   t_bb_timing           },
     { "baseband", "DC removal as the tune has it", t_bb_dc            },
     { "baseband", "the filters' group delay",   t_bb_delay            },
@@ -5429,6 +5741,7 @@ static const struct {
     { "stream",   "stream config",              t_stream_api          },
     { "stream",   "stream following the tune",  t_stream_follow       },
     { "stream",   "baseband on the receiver",   t_bb_device           },
+    { "stream",   "two tuners on the receiver", t_dual_device         },
 
     { "fixes",    "rate changes keep the stream", t_rate_changes      },
     { "fixes",    "counts over restarts",       t_restart_counts      },
@@ -5485,6 +5798,7 @@ static const struct {
     { "soapy",    "start and stop",             t_soapy_cycles        },
     { "soapy",    "retune and rate changes",    t_soapy_retune        },
     { "soapy",    "gain ranges of the band",    t_soapy_band          },
+    { "soapy",    "two channels",               t_soapy_channels      },
     { "soapy",    "review fixes",               t_soapy_regress       },
 #endif
 };
@@ -5498,6 +5812,7 @@ static void usage (const char *me)
            "  -f <image>       load this firmware instead of the built-in one\n"
            "  --rom            run against the factory ROM\n"
            "  -g <group>       run only one group of tests\n"
+           "  -t <text>        run only the tests whose name has this in it\n"
            "  -v               show per test detail\n"
            "  --io             allow tests that drive external pins (uart, i2c)\n"
            "  --characterise   sweep the synthesiser and report this part's limits\n"
@@ -5528,6 +5843,7 @@ int main (int argc, char **argv)
         else if (!strcmp(argv[i], "-f") && (i + 1 < argc)) opt_fw = argv[++i];
         else if (!strcmp(argv[i], "--rom")) opt_rom = 1;
         else if (!strcmp(argv[i], "-g") && (i + 1 < argc)) opt_only = argv[++i];
+        else if (!strcmp(argv[i], "-t") && (i + 1 < argc)) opt_test = argv[++i];
         else if (!strcmp(argv[i], "-v")) opt_verbose = 1;
         else if (!strcmp(argv[i], "--io")) opt_io = 1;
         else if (!strcmp(argv[i], "--eeprom")) opt_eeprom = 1;
@@ -5598,6 +5914,7 @@ run:
         tres_t res;
 
         if (opt_only && strcmp(opt_only, tests[i].group)) continue;
+        if (opt_test && !strstr(tests[i].name, opt_test)) continue;
 
         printf("  %-9s %-32s ", tests[i].group, tests[i].name);
         fflush(stdout);

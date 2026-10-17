@@ -42,6 +42,53 @@ enum {
     MIRISDR_ASYNC_STARTING      /* read_async entered, the transfers not yet running */
 };
 
+/* What a tuner keeps of its own. On a board with two (the RSPduo) the device's fields
+   hold the selected tuner's, the others' wait here: mirisdr_tuner_select() */
+typedef struct mirisdr_tuner_ctx
+{
+    uint32_t            freq;
+    int                 gain;
+    int                 gain_reduction_lna;
+    int                 gain_reduction_mixbuffer;
+    int                 gain_reduction_mixer;
+    int                 gain_reduction_baseband;
+    int                 gain_stages_set;
+    int                 lna_cal_mhz;
+    mirisdr_band_t      band;
+    int                 bandwidth;
+    int                 if_freq;
+    int                 bias;
+    mirisdr_tune_config_t tune;
+    uint32_t            tune_lo;
+    int                 tune_iq;
+    uint32_t            tuner_reg[16];
+    uint16_t            tuner_valid;
+    uint8_t             tuner_turned;
+    uint8_t             tuner_last;
+    uint32_t            tuner_regd;
+    uint32_t            tuner_ovr13;
+    uint32_t            tuner_ovr14;
+    int                 filter_cal;
+    uint8_t             tuner_gap;
+    uint8_t             dc_n;
+    int                 notch;
+    int                 antenna;
+    int                 ds;
+    int                 ds_lna;
+    uint32_t            ds_edge;
+    int                 dc_mode;
+    int                 dc_speedup;
+    int                 dc_track;
+    int                 dc_period;
+} mirisdr_tuner_ctx_t;
+
+/* its fields, as the device has them too (tuner_reg apart, an array) */
+#define MIRISDR_TUNER_CTX(X) X(freq) X(gain) X(gain_reduction_lna) X(gain_reduction_mixbuffer) \
+    X(gain_reduction_mixer) X(gain_reduction_baseband) X(gain_stages_set) X(lna_cal_mhz) X(band) \
+    X(bandwidth) X(if_freq) X(bias) X(tune) X(tune_lo) X(tune_iq) X(tuner_valid) X(tuner_turned) X(tuner_last) \
+    X(tuner_regd) X(tuner_ovr13) X(tuner_ovr14) X(filter_cal) X(tuner_gap) X(dc_n) X(notch) X(antenna) \
+    X(ds) X(ds_lna) X(ds_edge) X(dc_mode) X(dc_speedup) X(dc_track) X(dc_period)
+
 struct mirisdr_dev {
     libusb_context      *ctx;
     struct libusb_device_handle *dh;
@@ -119,12 +166,17 @@ struct mirisdr_dev {
     int                 async_status;
     int                 checking;       /* in a *_check(): refusals are not printed */
 
-    /* the down-converter in front of the callback (baseband.c): NULL without baseband */
+    /* the down-converter in front of the callback (baseband.c): NULL without baseband. With
+       two tuners bb takes tuner 0 off the I converter and bb2 tuner 1 off the Q one */
     struct mirisdr_bb   *bb;
+    struct mirisdr_bb   *bb2;
+    uint8_t             *bb_split;      /* two tuners: a buffer's I values, then its Q values */
+    size_t              bb_split_cap;
     int                 bb_path;        /* MIRISDR_BASEBAND_* the stream runs */
     int                 bb_stages;      /* half-band stages after the shift or the converter */
     uint32_t            bb_rate;        /* output samples per second */
     uint32_t            bb_if;          /* Hz, the low IF the stream was planned for: the NCO's */
+    uint32_t            bb_if2;         /* Hz, tuner 1's IF with two tuners (MIRISDR_BASEBAND_DUAL) */
     int                 bb_ds;          /* bb_if is a directly sampled frequency, not mirrored */
     mirisdr_read_async_cb_t cb;
     void                *cb_ctx;
@@ -160,6 +212,7 @@ struct mirisdr_dev {
     uint32_t            tuner_reg[16];  /* last word written to each MSi001 register, 0 if never */
     uint16_t            tuner_valid;    /* per register: the tuner holds tuner_reg */
     uint8_t             tuner_turned;   /* the next word clocks a readback and is not latched */
+    uint8_t             tuner_last;     /* the register of the last word the tuner took */
     uint8_t             batch[256];     /* register words held for one list request */
     int                 batch_n;
     int                 batch_depth;
@@ -275,6 +328,11 @@ struct mirisdr_dev {
     int                 addr_valid;
     int                 addr_restart;  /* stream start since the last block */
     int                 addr_dropped;  /* blocks dropped since that start */
+
+    /* the tuners: the selected one lives in the fields above, every one's here as last
+       left (the stream's thread reads a tuner's DC removal from here) */
+    mirisdr_tuner_ctx_t tctx[MIRISDR_TUNERS];
+    int                 tuner_cur;
 
     /* dc offset calibration */
     enum {

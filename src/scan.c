@@ -45,7 +45,7 @@ int mirisdr_tune_learn (mirisdr_dev_t *p, int tuner, mirisdr_tune_config_t *cfg)
     mirisdr_tuner_override_t *ov;
     int i;
 
-    if (!p || !cfg || !p->dh || p->external_tuner || (tuner < 0) || (tuner >= MIRISDR_TUNERS)) return -1;
+    if (!p || !cfg || !p->dh || p->external_tuner || (tuner < 0) || (tuner >= mirisdr_tuners_of(p))) return -1;
 
     c = *cfg;
     memset(&c.override, 0, sizeof c.override);
@@ -142,7 +142,7 @@ static int mirisdr_scan_hop_words (mirisdr_dev_t *sh, mirisdr_dev_t *p, const mi
         if (mirisdr_stream_plan(p, &p->stream, 0, pl.siq, pl.sif, pl.ds_edge, &spl) < 0) goto refused;
         if ((spl.format != (int) p->format) || (spl.swap != p->swap_iq) || (spl.rate != p->rate) ||
             (spl.bb_path != p->bb_path) || (spl.bb_stages != p->bb_stages) || (spl.bb_rate != p->bb_rate) ||
-            (spl.bb_if != p->bb_if) || (spl.bb_ds != p->bb_ds))
+            (spl.bb_if != p->bb_if) || (spl.bb_if2 != p->bb_if2) || (spl.bb_ds != p->bb_ds))
         {
             fprintf(stderr, "hop %u: the stream following it would change format\n", k);
             return -1;
@@ -208,8 +208,15 @@ int mirisdr_scan_compile (mirisdr_dev_t *p, int tuner, const mirisdr_tune_config
     mirisdr_scan_t *s = NULL;
     uint32_t k, c, at, size;
 
-    if (!p || !hops || !n || !dwell || !out || (tuner < 0) || (tuner >= MIRISDR_TUNERS)) return -1;
+    if (!p || !hops || !n || !dwell || !out || (tuner < 0) || (tuner >= mirisdr_tuners_of(p))) return -1;
     if (!p->fw_ours || p->external_tuner) return -1;
+
+    /* scans run on tuner 0 alone for now */
+    if (tuner || (mirisdr_stream_tuners(p) != 1))
+    {
+        fprintf(stderr, "scans run on tuner 0 streamed alone\n");
+        return -1;
+    }
 
     if (!(s = calloc(1, sizeof *s))) return -1;
     s->n = n;

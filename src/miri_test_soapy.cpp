@@ -71,7 +71,8 @@ static int probe(Dev *d, soapy_say_t say, soapy_say_t note)
     int bad = 0;
 
     if (d->getDriverKey() != "mirisdr") { say("driver %s", d->getDriverKey().c_str()); bad++; }
-    if (d->getNumChannels(SOAPY_SDR_RX) != 1 || d->getNumChannels(SOAPY_SDR_TX) != 0) { say("channels wrong"); bad++; }
+    if (d->getNumChannels(SOAPY_SDR_RX) != (d->getHardwareKey() == "RSPduo" ? 2u : 1u) || d->getNumChannels(SOAPY_SDR_TX) != 0)
+    { say("channels wrong: %zu", d->getNumChannels(SOAPY_SDR_RX)); bad++; }
     if (!has(f, SOAPY_SDR_CS16) || !has(f, SOAPY_SDR_CF32) || !has(f, SOAPY_SDR_CS8)) { say("formats missing"); bad++; }
     if (d->getNativeStreamFormat(SOAPY_SDR_RX, 0, full) != SOAPY_SDR_CF32 || full != 1.0) { say("native format not CF32 in baseband"); bad++; }
     if (fr.empty() || fr[0].minimum() > 1e6 || fr[0].maximum() < 2e9) { say("frequency range wrong"); bad++; }
@@ -242,8 +243,9 @@ static int stream(Dev *d, soapy_say_t say, soapy_say_t note)
             if (next >= 0 && std::llabs(t - next) > 2) jumps++;
             next = t + (long long) std::llround(n * 1e9 / c.rate);
 
-            /* the power, in the format's own scale */
-            for (int i = 0; i < 2 * n; i += 64)
+            /* the power, in the format's own scale, from I and Q alike (one alone can sit
+               under 8 bits' LSB on a quiet input) */
+            for (int i = 0; i < 2 * n; i += 63)
             {
                 double v = c.fmt == std::string(SOAPY_SDR_CF32) ? ((float *) b)[i] :
                            c.fmt == std::string(SOAPY_SDR_CS8) ? ((int8_t *) b)[i] / 128.0 : ((int16_t *) b)[i] / 32768.0;
@@ -270,6 +272,65 @@ static int stream(Dev *d, soapy_say_t say, soapy_say_t note)
 
     if (!bad) say("CS16, CF32, CS8 at 2 and 8 Msps, low IF at 900k, 256k and one converter at 1024k: full rate, "
                   "time stamps continuous");
+    return bad ? SOAPY_T_FAIL : SOAPY_T_PASS;
+}
+
+/* the RSPduo: channels 0 and 1 apart, then together, each buffer filled with as many
+   samples and one time stamp, and tuner 1 alone too */
+static int channels(Dev *d, soapy_say_t say, soapy_say_t note)
+{
+    int bad = 0;
+
+    if (d->getNumChannels(SOAPY_SDR_RX) < 2) { say("one channel"); return SOAPY_T_SKIP; }
+
+    d->setFrequency(SOAPY_SDR_RX, 0, 100e6);
+    d->setFrequency(SOAPY_SDR_RX, 1, 433e6);
+    if (d->getFrequency(SOAPY_SDR_RX, 0) != 100e6 || d->getFrequency(SOAPY_SDR_RX, 1) != 433e6)
+    { say("frequencies %.0f and %.0f", d->getFrequency(SOAPY_SDR_RX, 0), d->getFrequency(SOAPY_SDR_RX, 1)); bad++; }
+    d->setGain(SOAPY_SDR_RX, 1, 30);
+    d->setSampleRate(SOAPY_SDR_RX, 0, 250000);
+
+    for (int mode = 0; mode < 2; mode++)
+    {
+        std::vector<size_t> ch = mode ? std::vector<size_t>{ 0, 1 } : std::vector<size_t>{ 1 };
+        SoapySDR::Stream *s = d->setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32, ch);
+        size_t mtu = d->getStreamMTU(s);
+        std::vector<float> b0(2 * mtu), b1(2 * mtu);
+        void *bp[2] = { b0.data(), b1.data() };
+        long long total = 0, next = -1, jumps = 0, err = 0;
+        double sum[2] = { 0, 0 }, t0, rate = d->getSampleRate(SOAPY_SDR_RX, 0);
+
+        d->activateStream(s);
+        for (int i = 0; i < 20; i++) { int fl; long long t; d->readStream(s, bp, mtu, fl, t, 1000000); }
+        t0 = now();
+        while (total < (long long) rate && !err)
+        {
+            int fl = 0; long long t = 0;
+            int n = d->readStream(s, bp, mtu, fl, t, 1000000);
+
+            if (n == SOAPY_SDR_OVERFLOW) { next = -1; continue; }
+            if (n < 0) { err = n; break; }
+            if (next >= 0 && std::llabs(t - next) > 2) jumps++;
+            next = t + (long long) std::llround(n * 1e9 / rate);
+            for (int k = 0; k < 2 * n; k += 16) { sum[0] += b0[k] * b0[k]; if (mode) sum[1] += b1[k] * b1[k]; }
+            total += n;
+        }
+        double sps = total / (now() - t0);
+        d->deactivateStream(s);
+        d->closeStream(s);
+
+        note("%s: %.0f sps, rms %.5f%s%.5f, %lld time jumps, error %lld", mode ? "channels 0 and 1" : "channel 1 alone",
+             sps, std::sqrt(sum[0] / (total / 8.0 + 1)), mode ? " and " : "", mode ? std::sqrt(sum[1] / (total / 8.0 + 1)) : 0.0,
+             jumps, err);
+        if (err || jumps || std::fabs(sps / rate - 1) > 0.05 || sum[0] <= 0 || (mode && sum[1] <= 0))
+        { say("%s: %.0f sps, %lld jumps, error %lld", mode ? "two channels" : "channel 1", sps, jumps, err); bad++; }
+    }
+
+    /* back to channel 0 alone */
+    SoapySDR::Stream *s = d->setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32, { 0 });
+    d->closeStream(s);
+
+    if (!bad) say("frequencies apart, channel 1 alone, both together at the rate with one time stamp");
     return bad ? SOAPY_T_FAIL : SOAPY_T_PASS;
 }
 
@@ -567,6 +628,7 @@ extern "C" int soapy_test(const char *which, const char *module, const char *ser
     {
         if (!strcmp(which, "probe")) r = probe(d, say, note);
         else if (!strcmp(which, "stream")) r = stream(d, say, note);
+        else if (!strcmp(which, "channels")) r = channels(d, say, note);
         else if (!strcmp(which, "cycles")) r = cycles(d, say, note);
         else if (!strcmp(which, "retune")) r = retune(d, say, note);
         else if (!strcmp(which, "bandranges")) r = bandRanges(d, say, note);

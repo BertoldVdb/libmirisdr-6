@@ -153,6 +153,8 @@ static void mirisdr_tuner_track (mirisdr_dev_t *p, uint32_t w, int ok)
 {
     unsigned a = w & 15;
 
+    p->tuner_last = (uint8_t) a;
+
     /* clocked the readback out, the line was the other way */
     if (p->tuner_turned)
     {

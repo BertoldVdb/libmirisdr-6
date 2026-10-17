@@ -77,9 +77,31 @@ SoapySDR::Stream *SoapyMiriSDR::setupStream(const int direction, const std::stri
     size_t slots = SOAPY_MIRISDR_SLOTS;
 
     if (direction != SOAPY_SDR_RX) throw std::runtime_error("mirisdr: receive only");
-    if (channels.size() > 1 || (channels.size() == 1 && channels[0] != 0))
-        throw std::runtime_error("mirisdr: one channel, 0");
     if (rxThread.joinable()) throw std::runtime_error("mirisdr: a stream is already set up");
+
+    /* the channels: one tuner, or on the RSPduo both, each a low IF on its converter */
+    {
+        std::lock_guard<std::recursive_mutex> lock(devMutex);
+        const size_t nch = getNumChannels(SOAPY_SDR_RX);
+        int tuners = 0;
+
+        if (channels.size() > nch) throw std::runtime_error("mirisdr: at most " + std::to_string(nch) + " channels");
+        chanOrder[0] = channels.empty() ? 0 : (int) channels[0];
+        chanOrder[1] = channels.size() > 1 ? (int) channels[1] : -1;
+        for (int i = 0; i < 2; i++)
+        {
+            if (chanOrder[i] < 0) continue;
+            if ((size_t) chanOrder[i] >= nch || (tuners & (1 << chanOrder[i])))
+                throw std::runtime_error("mirisdr: channel " + std::to_string(chanOrder[i]) + " not available");
+            tuners |= 1 << chanOrder[i];
+        }
+        if (streamTuners() != tuners)
+        {
+            streamCfg.tuners = tuners == 1 ? 0 : tuners;
+            configure(wantRate);
+            if (streamTuners() != tuners) throw std::runtime_error("mirisdr: these channels together refused");
+        }
+    }
 
     if (format == SOAPY_SDR_CS16) outFormat = OUT_CS16;
     else if (format == SOAPY_SDR_CF32) outFormat = OUT_CF32;
@@ -191,6 +213,7 @@ int SoapyMiriSDR::activateStream(SoapySDR::Stream *stream, const int flags, cons
         std::lock_guard<std::mutex> rl(ringMutex);
         ringHead = ringTail = ringCount = 0;
         dropPending = false;
+        pairOpen = false;
         slotPos = gapPos = 0;
     }
     if (ring.empty()) return SOAPY_SDR_STREAM_ERROR;    /* closed, or never set up */
@@ -249,11 +272,29 @@ void SoapyMiriSDR::rxCallback(unsigned char *buf, uint32_t len)
 
     {
         std::lock_guard<std::mutex> rl(ringMutex);
+        const bool dual = streamTuners() == 3;
 
         if (ring.empty()) return;
+
+        /* two tuners: tuner 1's buffer, for the same span, completes the slot tuner 0's
+           opened (one dropped for a full ring takes its partner with it) */
+        if (dual && info.tuner == 1)
+        {
+            if (!pairOpen) return;
+            Slot &s = ring[ringTail];
+            if (len / bytes < s.n) s.n = len / bytes;
+            s.data2.assign(buf, buf + s.n * bytes);
+            pairOpen = false;
+            ringTail = (ringTail + 1) % ring.size();
+            ringCount++;
+            ringCond.notify_one();
+            return;
+        }
+
         if (ringCount == ring.size())
         {
             dropPending = true;
+            pairOpen = false;
             return;
         }
 
@@ -275,6 +316,13 @@ void SoapyMiriSDR::rxCallback(unsigned char *buf, uint32_t len)
             g.missing = info.gaps[i].samples - info.gaps[i].filled;
             g.lost = info.gaps[i].filled < info.gaps[i].samples;
             s.gaps.push_back(g);
+        }
+
+        /* tuner 0's half: held until tuner 1's comes */
+        if (dual)
+        {
+            pairOpen = true;
+            return;
         }
 
         ringTail = (ringTail + 1) % ring.size();
@@ -344,7 +392,12 @@ int SoapyMiriSDR::readStream(SoapySDR::Stream *stream, void * const *buffs, cons
     lastIndex = (long long) (index + n);
     lastRate = s.rate;
 
-    convert(s.kind, s.data.data() + slotPos * s.bytes, outFormat, buffs[0], n);
+    /* the channels in the order asked: tuner 0's samples, and with two tuners tuner 1's */
+    for (k = 0; k < 2 && chanOrder[k] >= 0; k++)
+    {
+        const std::vector<uint8_t> &d = (streamTuners() == 3 && chanOrder[k] == 1) ? s.data2 : s.data;
+        convert(s.kind, d.data() + slotPos * s.bytes, outFormat, buffs[k], n);
+    }
 
     slotPos += n;
     if (slotPos >= s.n)

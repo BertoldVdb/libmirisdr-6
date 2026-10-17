@@ -344,6 +344,46 @@ static void mirisdr_tune_words (mirisdr_dev_t *p, uint32_t lo, uint32_t rx, int 
 #endif
 }
 
+/* RSPduo: the tuners share the latch, so each word to one makes the other take its last
+   word again. A synthesizer or filter word taken again restarts it, a ~0.2 ms glitch and
+   a phase step (seen 2026-10-17, no expander pin keeps it out). Before the first expander
+   word to moves the words to another tuner, the tuner they leave gets a register 4 word,
+   which does nothing, however often it is taken. It also ends a readback's hold on the
+   answer line, which a route moved away from it would turn against the other tuner */
+static int mirisdr_duo_close (mirisdr_dev_t *p, uint16_t to)
+{
+    int t, cur = p->tuner_cur, r = 0;
+
+    if ((p->hw_flavour != MIRISDR_HW_RSPDUO) || p->external_tuner || !(p->exp_valid & 1)) return 0;
+
+    t = mirisdr_duo_routed(p->exp_iodir[0]);
+    if ((t < 0) || (t == mirisdr_duo_routed(to))) return 0;
+
+    if (t != cur) mirisdr_tuner_select(p, t);
+    if ((p->tuner_last != MIRISDR_TUNER_IDLE) && (mirisdr_tuner_write(p, MIRISDR_TUNER_IDLE, 0, 1) < 0)) r = -1;
+    if (t != cur) mirisdr_tuner_select(p, cur);
+
+    return r;
+}
+
+/* RSPduo: the tuner words to tuner n, for what is sent outside a tune (the readback). A
+   raw first word stays as given */
+static int mirisdr_duo_route_to (mirisdr_dev_t *p, int n)
+{
+    uint16_t w;
+
+    if ((p->hw_flavour != MIRISDR_HW_RSPDUO) || !(p->fe.fields & MIRISDR_FRONTEND_RAW_EXP1) ||
+        (p->fe_raw & MIRISDR_FRONTEND_RAW_EXP1)) return 0;
+
+    w = mirisdr_duo_route(p->fe.expander[0], mirisdr_stream_tuners(p), n);
+    if (w == p->fe.expander[0]) return 0;
+    p->fe.expander[0] = w;
+
+    if (mirisdr_duo_close(p, w) < 0) return -1;
+
+    return mirisdr_sdrplay_send(p, 0, w);
+}
+
 /* The parts of the front end a board has, MIRISDR_FRONTEND_RAW_* */
 static uint32_t mirisdr_frontend_parts (int flavour)
 {
@@ -358,7 +398,8 @@ static int mirisdr_tune_send (mirisdr_dev_t *p, const mirisdr_tune_words_t *w, c
 {
     int r = 0;
 
-    if ((fe->fields & MIRISDR_FRONTEND_RAW_EXP1) && (mirisdr_sdrplay_send(p, 0, fe->expander[0]) < 0)) r = -1;
+    if ((fe->fields & MIRISDR_FRONTEND_RAW_EXP1) &&
+        ((mirisdr_duo_close(p, fe->expander[0]) < 0) || (mirisdr_sdrplay_send(p, 0, fe->expander[0]) < 0))) r = -1;
     if ((fe->fields & MIRISDR_FRONTEND_RAW_EXP2) && (mirisdr_sdrplay_send(p, 1, fe->expander[1]) < 0)) r = -1;
 
     p->reg8 = (w->row->band_select_word & ~0xFF00u) | ((uint32_t) fe->gpio_dir << 12) | ((uint32_t) fe->gpio_level << 8);
@@ -559,6 +600,18 @@ static void mirisdr_frontend_words (mirisdr_dev_t *p, const mirisdr_tune_config_
                                                   c->frontend.antenna, pl->ds, pl->ds_lna);
     if (pl->fe.fields & MIRISDR_FRONTEND_RAW_EXP2) pl->fe.expander[1] = mirisdr_sdrplay_word2(c->frontend.notch);
 
+    /* RSPduo: tuner 1 leaves tuner 0's front end as it is (its own is not mapped yet), and the
+       converters as the stream takes the tuners, the tuner words to this one */
+    if (p->hw_flavour == MIRISDR_HW_RSPDUO)
+    {
+        if (p->tuner_cur && (p->fe.fields & MIRISDR_FRONTEND_RAW_EXP1))
+        {
+            pl->fe.expander[0] = p->fe.expander[0];
+            pl->fe.expander[1] = p->fe.expander[1];
+        }
+        pl->fe.expander[0] = mirisdr_duo_route(pl->fe.expander[0], mirisdr_stream_tuners(p), p->tuner_cur);
+    }
+
     pl->fe_raw = raw->fields;
     if (raw->fields & MIRISDR_FRONTEND_RAW_GPIO)
     {
@@ -653,9 +706,18 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
     pl->sif = pl->ds ? c->frequency : mirisdr_if_hz[pl->ifm];
     pl->ds_edge = pl->ds ? mirisdr_ds_edge(&p->stream, c->frequency) : 0;
 
+    /* two tuners streamed: each converter takes one tuner's output, which one is not known,
+       so both run */
+    if ((mirisdr_stream_tuners(p) == 3) && (pl->siq != MIRISDR_IQ_BOTH))
+    {
+        mirisdr_refuse(p, "two tuners streamed: a tune with one output could cut its converter off\n");
+        return -1;
+    }
+
     /* the stream capturing the output switched off would go dead, unless it follows (as
-       a baseband one does) */
-    if (!adjust && !p->stream.follow_tune && !p->stream.baseband && (pl->siq != MIRISDR_IQ_BOTH) &&
+       a baseband one does). A tuner the stream does not take is free */
+    if (!adjust && (mirisdr_stream_tuners(p) & (1 << p->tuner_cur)) && !p->stream.follow_tune &&
+        !p->stream.baseband && (pl->siq != MIRISDR_IQ_BOTH) &&
         (mirisdr_stream_adc(p) != MIRISDR_IQ_BOTH) && (mirisdr_stream_adc(p) != pl->siq))
     {
         mirisdr_refuse(p, "the stream captures the tuner output this tune switches off\n");
@@ -691,6 +753,12 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
     if (c->frontend.bias && (p->hw_flavour == MIRISDR_HW_RSPDUO))
     {
         mirisdr_refuse(p, "unsupported bias-T: not mapped on the RSPduo yet\n");
+        return -1;
+    }
+
+    if (p->tuner_cur && c->frontend.notch)
+    {
+        mirisdr_refuse(p, "unsupported notch on tuner %d: its front end is not mapped yet\n", p->tuner_cur);
         return -1;
     }
 
@@ -832,6 +900,12 @@ static int mirisdr_tune_adc (mirisdr_dev_t *p, int iq)
     return p->stream.follow_tune ? iq : mirisdr_stream_adc(p);
 }
 
+/* the baseband path the selected tuner comes out of: none when the stream does not take it */
+static int mirisdr_bb_path_of (mirisdr_dev_t *p)
+{
+    return (mirisdr_stream_tuners(p) & (1 << p->tuner_cur)) ? p->bb_path : MIRISDR_BASEBAND_OFF;
+}
+
 static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, int flags,
                                mirisdr_tune_result_t *res)
 {
@@ -843,8 +917,8 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
     if (mirisdr_tune_plan(p, c, flags, &pl) < 0) return -1;
 
     /* a stream following the tune changes kind or converter with it, in one restart; a
-       baseband one its rate too, to the nearest the new IF has */
-    if (p->stream.follow_tune || p->stream.baseband)
+       baseband one its rate too, to the nearest the new IF has. Only a tuner it takes */
+    if ((p->stream.follow_tune || p->stream.baseband) && (mirisdr_stream_tuners(p) & (1 << p->tuner_cur)))
     {
         if (mirisdr_stream_plan(p, &p->stream, ((flags & MIRISDR_TUNE_ADJUST) || p->stream.baseband) ?
                                 MIRISDR_STREAM_ADJUST : 0, pl.siq, pl.sif, pl.ds_edge, &spl) < 0) return -1;
@@ -853,7 +927,8 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
         restream = (spl.format != (int) p->format) || (spl.swap != p->swap_iq) || (spl.rate != p->rate) ||
                    (spl.decim != p->decim_on) || (spl.bb_path != p->bb_path) ||
                    (spl.bb_stages != p->bb_stages) || (spl.bb_rate != p->bb_rate) ||
-                   (spl.bb_ds != p->bb_ds) || ((spl.bb_if != p->bb_if) && !spl.bb_ds);
+                   (spl.bb_ds != p->bb_ds) || ((spl.bb_if != p->bb_if) && !spl.bb_ds) ||
+                   (spl.bb_if2 != p->bb_if2);
         nco = !restream && (spl.bb_if != p->bb_if);
         if (restream && ((streaming = mirisdr_stream_pause(p)) < 0)) return -1;
     }
@@ -916,13 +991,16 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
         mirisdr_gr_get(p, &gr);
         mirisdr_tune_result_of(mirisdr_stream_adc(p), c->frequency, p->tune_lo, p->tune_iq,
                                mirisdr_bw_hz[pl.bw], p->band, &gr, res);
-        mirisdr_tune_result_bb(p->bb_path, mirisdr_if_hz[pl.ifm], c->frequency, p->tune_lo, res);
+        mirisdr_tune_result_bb(mirisdr_bb_path_of(p), mirisdr_if_hz[pl.ifm], c->frequency, p->tune_lo, res);
         res->frontend.bias = p->bias;
         res->frontend.notch = mirisdr_notch_in_force(p->notch);
         res->frontend.antenna = p->antenna;
         res->frontend.raw = p->fe;
-        mirisdr_tune_result_ds(p->ds, p->ds_lna, p->ds_edge, c->frequency, p->bb_path, res);
+        mirisdr_tune_result_ds(p->ds, p->ds_lna, p->ds_edge, c->frequency, mirisdr_bb_path_of(p), res);
     }
+
+    /* as the stream's thread and the other tuner's calls find it */
+    mirisdr_tuner_save(p);
 
     return r;
 }
@@ -969,24 +1047,46 @@ void mirisdr_tune_config_default (mirisdr_tune_config_t *cfg)
     cfg->gain.mode = MIRISDR_GAIN_KEEP;
 }
 
+/* The tune calls each take a tuner, selected around them, and the single setters act on the
+   one left selected, the stream's first */
 int mirisdr_tune (mirisdr_dev_t *p, int tuner, const mirisdr_tune_config_t *cfg, mirisdr_tune_result_t *res)
 {
-    if (!p || (tuner < 0) || (tuner >= MIRISDR_TUNERS)) return -1;
+    int r;
 
-    return mirisdr_tune_apply(p, cfg, 0, res);
+    if (!p || (tuner < 0) || (tuner >= mirisdr_tuners_of(p))) return -1;
+
+    mirisdr_tuner_select(p, tuner);
+    r = mirisdr_tune_apply(p, cfg, 0, res);
+    mirisdr_tuner_select(p, mirisdr_tuner_primary(p));
+
+    return r;
 }
 
+static int mirisdr_tune_check_of (mirisdr_dev_t *p, const mirisdr_tune_config_t *cfg, mirisdr_tune_result_t *res);
+
 int mirisdr_tune_check (mirisdr_dev_t *p, int tuner, const mirisdr_tune_config_t *cfg, mirisdr_tune_result_t *res)
+{
+    int r;
+
+    if (!p || !cfg || (tuner < 0) || (tuner >= mirisdr_tuners_of(p))) return -1;
+
+    mirisdr_tuner_select(p, tuner);
+    r = mirisdr_tune_check_of(p, cfg, res);
+    mirisdr_tuner_select(p, mirisdr_tuner_primary(p));
+
+    return r;
+}
+
+static int mirisdr_tune_check_of (mirisdr_dev_t *p, const mirisdr_tune_config_t *cfg, mirisdr_tune_result_t *res)
 {
     mirisdr_tune_plan_t pl;
     int r;
 
-    if (!p || !cfg || (tuner < 0) || (tuner >= MIRISDR_TUNERS)) return -1;
     p->checking = 1;
     r = mirisdr_tune_plan(p, cfg, 0, &pl);
 
     /* a stream following the tune has to take it too, as mirisdr_tune() asks */
-    if ((r == 0) && (p->stream.follow_tune || p->stream.baseband))
+    if ((r == 0) && (p->stream.follow_tune || p->stream.baseband) && (mirisdr_stream_tuners(p) & (1 << p->tuner_cur)))
     {
         mirisdr_stream_plan_t spl;
 
@@ -997,9 +1097,10 @@ int mirisdr_tune_check (mirisdr_dev_t *p, int tuner, const mirisdr_tune_config_t
     if (r < 0) return -1;
 
     if (res) {
-        int bb = !p->stream.baseband ? MIRISDR_BASEBAND_OFF : (pl.ifm == MIRISDR_IF_ZERO && !pl.ds) ?
-                 MIRISDR_BASEBAND_ZERO_IF : (pl.siq == MIRISDR_IQ_BOTH) ? MIRISDR_BASEBAND_COMPLEX :
-                 MIRISDR_BASEBAND_REAL;
+        int bb = (!p->stream.baseband || !(mirisdr_stream_tuners(p) & (1 << p->tuner_cur))) ? MIRISDR_BASEBAND_OFF :
+                 (mirisdr_stream_tuners(p) == 3) ? MIRISDR_BASEBAND_DUAL :
+                 (pl.ifm == MIRISDR_IF_ZERO && !pl.ds) ? MIRISDR_BASEBAND_ZERO_IF :
+                 (pl.siq == MIRISDR_IQ_BOTH) ? MIRISDR_BASEBAND_COMPLEX : MIRISDR_BASEBAND_REAL;
 
         mirisdr_tune_result_of(mirisdr_tune_adc(p, pl.siq), cfg->frequency, pl.w.lo_real, pl.siq,
                                mirisdr_bw_hz[pl.bw], pl.w.band, &pl.gr, res);
@@ -1018,20 +1119,22 @@ int mirisdr_get_tune (mirisdr_dev_t *p, int tuner, mirisdr_tune_config_t *cfg, m
 {
     mirisdr_gr_t gr;
 
-    if (!p || (tuner < 0) || (tuner >= MIRISDR_TUNERS)) return -1;
+    if (!p || (tuner < 0) || (tuner >= mirisdr_tuners_of(p))) return -1;
 
+    mirisdr_tuner_select(p, tuner);
     mirisdr_gr_get(p, &gr);
     if (cfg) *cfg = p->tune;
     if (res) {
         mirisdr_tune_result_of(mirisdr_stream_adc(p), p->tune.frequency, p->tune_lo, p->tune_iq,
                                mirisdr_bw_hz[p->bandwidth], p->band, &gr, res);
-        mirisdr_tune_result_bb(p->bb_path, mirisdr_if_hz[p->if_freq], p->tune.frequency, p->tune_lo, res);
+        mirisdr_tune_result_bb(mirisdr_bb_path_of(p), mirisdr_if_hz[p->if_freq], p->tune.frequency, p->tune_lo, res);
         res->frontend.bias = p->bias;
         res->frontend.notch = mirisdr_notch_in_force(p->notch);
         res->frontend.antenna = p->antenna;
         res->frontend.raw = p->fe;
-        mirisdr_tune_result_ds(p->ds, p->ds_lna, p->ds_edge, p->tune.frequency, p->bb_path, res);
+        mirisdr_tune_result_ds(p->ds, p->ds_lna, p->ds_edge, p->tune.frequency, mirisdr_bb_path_of(p), res);
     }
+    mirisdr_tuner_select(p, mirisdr_tuner_primary(p));
 
     return 0;
 }
@@ -1044,13 +1147,19 @@ int mirisdr_set_tuner_override (mirisdr_dev_t *p, int tuner, const mirisdr_tuner
 {
     mirisdr_tune_config_t c;
 
-    if (!p || (tuner < 0) || (tuner >= MIRISDR_TUNERS) || p->external_tuner) return -1;
+    int r;
 
+    if (!p || (tuner < 0) || (tuner >= mirisdr_tuners_of(p)) || p->external_tuner) return -1;
+
+    mirisdr_tuner_select(p, tuner);
     c = p->tune;
     if (ov) c.override = *ov;
     else memset(&c.override, 0, sizeof c.override);
 
-    return mirisdr_tune_apply(p, &c, MIRISDR_TUNE_ADJUST, NULL);
+    r = mirisdr_tune_apply(p, &c, MIRISDR_TUNE_ADJUST, NULL);
+    mirisdr_tuner_select(p, mirisdr_tuner_primary(p));
+
+    return r;
 }
 
 int mirisdr_set_center_freq(mirisdr_dev_t *p, uint32_t freq)

@@ -30,6 +30,73 @@
  */
 
 #define MIRISDR_TUNER_READBACK  0x00001C    /* register 12, data bit 0 */
+#define MIRISDR_TUNER_IDLE      4           /* a register with no effect at all */
+
+/* ------------------------------------------------------------------ */
+/* more than one tuner                                                 */
+/* ------------------------------------------------------------------ */
+
+/* the tuners a receiver has */
+static int mirisdr_tuners_of (mirisdr_dev_t *p)
+{
+    return (p->hw_flavour == MIRISDR_HW_RSPDUO && !p->external_tuner) ? 2 : 1;
+}
+
+int mirisdr_get_tuner_count (mirisdr_dev_t *p)
+{
+    return p ? mirisdr_tuners_of(p) : -1;
+}
+
+/* the tuners the stream takes, bit n tuner n */
+static int mirisdr_stream_tuners (mirisdr_dev_t *p)
+{
+    return p->stream.tuners ? p->stream.tuners : 1;
+}
+
+/* the one the single setters act on: the stream's first */
+static int mirisdr_tuner_primary (mirisdr_dev_t *p)
+{
+    return (mirisdr_stream_tuners(p) & 1) ? 0 : 1;
+}
+
+/* the selected tuner's fields into its context, as the stream's thread reads them */
+static void mirisdr_tuner_save (mirisdr_dev_t *p)
+{
+    mirisdr_tuner_ctx_t *t = &p->tctx[p->tuner_cur];
+
+#define MIRISDR_TUNER_SAVE(f) t->f = p->f;
+    MIRISDR_TUNER_CTX(MIRISDR_TUNER_SAVE)
+#undef MIRISDR_TUNER_SAVE
+    memcpy(t->tuner_reg, p->tuner_reg, sizeof t->tuner_reg);
+}
+
+/* tuner n into the device's fields, the one there saved first */
+static void mirisdr_tuner_select (mirisdr_dev_t *p, int n)
+{
+    mirisdr_tuner_ctx_t *t = &p->tctx[n];
+
+    mirisdr_tuner_save(p);
+    if (n == p->tuner_cur) return;
+
+#define MIRISDR_TUNER_LOAD(f) p->f = t->f;
+    MIRISDR_TUNER_CTX(MIRISDR_TUNER_LOAD)
+#undef MIRISDR_TUNER_LOAD
+    memcpy(p->tuner_reg, t->tuner_reg, sizeof p->tuner_reg);
+    p->tuner_cur = n;
+}
+
+/* a fresh device: every tuner as the defaults left the first */
+static void mirisdr_tuner_ctx_init (mirisdr_dev_t *p)
+{
+    int i;
+
+    p->tuner_cur = 0;
+    mirisdr_tuner_save(p);
+    for (i = 1; i < MIRISDR_TUNERS; i++) p->tctx[i] = p->tctx[0];
+}
+
+/* RSPduo, soft.c: the tuner words to tuner n */
+static int mirisdr_duo_route_to (mirisdr_dev_t *p, int n);
 
 static int mirisdr_tuner_readback (mirisdr_dev_t *p, uint8_t *b)
 {
@@ -43,17 +110,21 @@ static int mirisdr_tuner_readback (mirisdr_dev_t *p, uint8_t *b)
         mirisdr_write_reg(p, 0x09, p->tuner_reg[0]) >= 0 &&
         mirisdr_read_reg(p, 4, b, 4) == 4) r = 0;
 
+    /* the tuner now drives its answer line until its next word. Nothing else uses that line
+       (EEPROM and expander reads came back right), but on the RSPduo a route moved away
+       from it left the other tuner deaf until the MSi2500 was reset (seen 2026-10-17): the
+       route only moves after mirisdr_duo_close, and an open first sends register 4 */
+
     p->batch_depth = depth;
 
     return r;
 }
 
-int mirisdr_get_tuner_status (mirisdr_dev_t *p, int tuner, mirisdr_tuner_status_t *st)
+/* the selected tuner's, its words routed to it */
+static int mirisdr_tuner_status_of (mirisdr_dev_t *p, mirisdr_tuner_status_t *st)
 {
     uint8_t b[4];
     uint32_t v, range;
-
-    if (!p || !st || (tuner < 0) || (tuner >= MIRISDR_TUNERS)) goto failed;
 
     /* the tuner port is wired somewhere else, or nowhere */
     if (p->external_tuner) goto failed;
@@ -64,6 +135,7 @@ int mirisdr_get_tuner_status (mirisdr_dev_t *p, int tuner, mirisdr_tuner_status_
     /* clock with the register 0 word the tuner already has, so nothing before the first tune */
     if (!(p->tuner_valid & 1)) goto failed;
 
+    if (mirisdr_duo_route_to(p, p->tuner_cur) < 0) goto failed;
     if (mirisdr_tuner_readback(p, b) < 0) goto failed;
 
     v = b[0] | b[1] << 8 | (uint32_t) b[2] << 16 | (uint32_t) b[3] << 24;
@@ -91,6 +163,19 @@ int mirisdr_get_tuner_status (mirisdr_dev_t *p, int tuner, mirisdr_tuner_status_
 
 failed:
     return -1;
+}
+
+int mirisdr_get_tuner_status (mirisdr_dev_t *p, int tuner, mirisdr_tuner_status_t *st)
+{
+    int r;
+
+    if (!p || !st || (tuner < 0) || (tuner >= mirisdr_tuners_of(p))) return -1;
+
+    mirisdr_tuner_select(p, tuner);
+    r = mirisdr_tuner_status_of(p, st);
+    mirisdr_tuner_select(p, mirisdr_tuner_primary(p));
+
+    return r;
 }
 
 /*

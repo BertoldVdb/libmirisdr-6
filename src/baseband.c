@@ -77,6 +77,7 @@ typedef struct mirisdr_rs
 typedef struct mirisdr_bb
 {
     int     path, stages, sign;
+    int     tuner;          /* the one its samples are from, as the buffers say */
     int     low;            /* direct sampling: the real samples as I with Q 0, the NCO
                                taking the frequency to 0 Hz at the full rate, and a
                                half-band stage in the converter's place to filter its
@@ -84,6 +85,8 @@ typedef struct mirisdr_bb
                                would pass only a little either side of it at the narrow
                                kernels, where the frequency is anywhere from 0 Hz */
     int     nhb;            /* half-band stages run: stages, one more when low */
+    int     low_if;         /* low for a tuner's low IF (two tuners, the IF off a quarter of
+                               the rate): its band at -IF, so the NCO goes the other way */
     uint32_t rate;          /* the converters' */
     int     nco_move;       /* a tune's new IF + 1 for the NCO, taken at the next buffer, 0 for none */
     double  decim;          /* converter samples per output sample */
@@ -185,7 +188,8 @@ static double mirisdr_bb_delay (int path, uint32_t rate, uint32_t out)
     uint32_t p2, w;
     double d = 0;
 
-    if ((path != MIRISDR_BASEBAND_COMPLEX && path != MIRISDR_BASEBAND_REAL) || !out) return 0;
+    if ((path != MIRISDR_BASEBAND_COMPLEX && path != MIRISDR_BASEBAND_REAL && path != MIRISDR_BASEBAND_DUAL) ||
+        !out) return 0;
     p2 = mirisdr_bb_pow2(rate, out);
     for (w = 1; w < p2; w <<= 1)
         d += w * (double) (mirisdr_hb_len_at((w << 1) == p2 ? 0 : (w << 2) == p2 ? 1 : 2) / 2);
@@ -539,9 +543,8 @@ static int mirisdr_hb_run (mirisdr_hb_t *h, float *io, int n)
            (h->len == MIRISDR_HB_MID_LEN) ? mirisdr_hb_run_mid(h, io, n) : mirisdr_hb_run_early(h, io, n);
 }
 
-static void mirisdr_bb_free (mirisdr_dev_t *p)
+static void mirisdr_bb_free_one (mirisdr_bb_t *b)
 {
-    mirisdr_bb_t *b = p->bb;
     int i;
 
     if (!b) return;
@@ -554,13 +557,21 @@ static void mirisdr_bb_free (mirisdr_dev_t *p)
     free(b->work);
     free(b->out);
     free(b);
-    p->bb = NULL;
+}
+
+static void mirisdr_bb_free (mirisdr_dev_t *p)
+{
+    mirisdr_bb_free_one(p->bb);
+    mirisdr_bb_free_one(p->bb2);
+    p->bb = p->bb2 = NULL;
+    free(p->bb_split);
+    p->bb_split = NULL;
+    p->bb_split_cap = 0;
 }
 
 /* the filters' history only: after a restart the samples do not follow on */
-static void mirisdr_bb_restart (mirisdr_dev_t *p)
+static void mirisdr_bb_restart_one (mirisdr_bb_t *b)
 {
-    mirisdr_bb_t *b = p->bb;
     int i;
 
     if (!b) return;
@@ -579,14 +590,26 @@ static void mirisdr_bb_restart (mirisdr_dev_t *p)
     b->produced = b->sample;
 }
 
+static void mirisdr_bb_restart (mirisdr_dev_t *p)
+{
+    mirisdr_bb_restart_one(p->bb);
+    mirisdr_bb_restart_one(p->bb2);
+}
+
 /* a new read: the counts from 0 */
+static void mirisdr_bb_start_one (mirisdr_bb_t *b)
+{
+    if (!b) return;
+    mirisdr_bb_restart_one(b);
+    b->sample = b->produced = 0;
+    b->lost = 0;
+    b->lost_in = 0;
+}
+
 static void mirisdr_bb_start (mirisdr_dev_t *p)
 {
-    if (!p->bb) return;
-    mirisdr_bb_restart(p);
-    p->bb->sample = p->bb->produced = 0;
-    p->bb->lost = 0;
-    p->bb->lost_in = 0;
+    mirisdr_bb_start_one(p->bb);
+    mirisdr_bb_start_one(p->bb2);
 }
 
 /* For the stream the plan chose (p->bb_*), from stream_regs; the counts carry on */
@@ -601,7 +624,7 @@ static void mirisdr_bb_nco_for (mirisdr_bb_t *b, uint32_t if_hz)
 
     at = (double) b->rate / (b->path == MIRISDR_BASEBAND_REAL ? 2 : 1);
     f = ((double) if_hz - (double) b->rate / 4) / at * (b->path == MIRISDR_BASEBAND_COMPLEX ? b->sign : 1);
-    if (b->low) f = -(double) if_hz / b->rate;
+    if (b->low) f = (b->low_if ? 1 : -1) * (double) if_hz / b->rate;
 
     b->nco_step = (uint64_t) (int64_t) (f * 18446744073709551616.0);
     b->nco_w1r = cos(2 * M_PI * f);
@@ -618,18 +641,19 @@ static void mirisdr_bb_move (mirisdr_dev_t *p, uint32_t if_hz)
     if (p->bb) mirisdr_atomic_xchg(&p->bb->nco_move, (int) if_hz + 1);
 }
 
-static int mirisdr_bb_setup (mirisdr_dev_t *p)
+/* One chain: path as it runs (two tuners run two of MIRISDR_BASEBAND_REAL), its IF and
+   tuner, low_if for a tuner's IF off a quarter of the rate (the converter is flat only near
+   it, so the low path takes it as for direct sampling). The counts carry on from old. NULL
+   out of memory */
+static mirisdr_bb_t *mirisdr_bb_create (mirisdr_dev_t *p, int path, uint32_t if_hz, int tuner, int low_if,
+                                        const mirisdr_bb_t *old)
 {
-    mirisdr_bb_t *b, *old = p->bb;
+    mirisdr_bb_t *b;
     int i;
 
-    if (p->bb_path == MIRISDR_BASEBAND_OFF) {
-        mirisdr_bb_free(p);
-        return 0;
-    }
-
-    if (!(b = calloc(1, sizeof *b))) goto failed;
-    b->path = p->bb_path;
+    if (!(b = calloc(1, sizeof *b))) return NULL;
+    b->path = path;
+    b->tuner = tuner;
     b->stages = p->bb_stages;
     b->decim = p->bb_rate ? (double) p->rate / p->bb_rate : 1;
 
@@ -639,7 +663,8 @@ static int mirisdr_bb_setup (mirisdr_dev_t *p)
 
     /* the converter is the last stage when none follow it. Low, a half-band stage with
        its kernel takes its place */
-    b->low = p->bb_ds && (b->path == MIRISDR_BASEBAND_REAL);
+    b->low = (p->bb_ds || low_if) && (b->path == MIRISDR_BASEBAND_REAL);
+    b->low_if = low_if;
     b->nhb = b->stages + b->low;
     if (b->path == MIRISDR_BASEBAND_REAL && !b->low &&
         !(b->cnv = iqconverter_float_create(mirisdr_hb_kernel_at(b->stages), mirisdr_hb_len_at(b->stages)))) goto failed;
@@ -657,24 +682,46 @@ static int mirisdr_bb_setup (mirisdr_dev_t *p)
     b->dc_a = (float) (1.0 / (MIRISDR_BB_DC_TAU * (p->rate ? p->rate : 1)));
 
     b->rate = p->rate;
-    mirisdr_bb_nco_for(b, p->bb_if);
+    mirisdr_bb_nco_for(b, if_hz);
 
     if (old) {
         b->sample = b->produced = old->sample;
         b->lost = old->lost + old->out_n;   /* its buffer being filled is dropped */
         b->lost_in = old->lost_in;
     }
+
+    return b;
+
+failed:
+    mirisdr_bb_free_one(b);
+    return NULL;
+}
+
+static int mirisdr_bb_setup (mirisdr_dev_t *p)
+{
+    mirisdr_bb_t *b = NULL, *b2 = NULL;
+    const int dual = p->bb_path == MIRISDR_BASEBAND_DUAL;
+
+    if (p->bb_path == MIRISDR_BASEBAND_OFF) {
+        mirisdr_bb_free(p);
+        return 0;
+    }
+
+    /* two tuners: tuner 0 on I, tuner 1 on Q, each as one output */
+    if (!(b = mirisdr_bb_create(p, dual ? MIRISDR_BASEBAND_REAL : p->bb_path, p->bb_if,
+                                dual ? 0 : mirisdr_tuner_primary(p),
+                                dual && ((uint64_t) 4 * p->bb_if != p->rate), p->bb))) goto failed;
+    if (dual && !(b2 = mirisdr_bb_create(p, MIRISDR_BASEBAND_REAL, p->bb_if2, 1, (uint64_t) 4 * p->bb_if2 != p->rate,
+                                         p->bb2 ? p->bb2 : p->bb))) goto failed;
+
     mirisdr_bb_free(p);
     p->bb = b;
+    p->bb2 = b2;
 
     return 0;
 
 failed:
-    if (b) {
-        p->bb = b;
-        mirisdr_bb_free(p);
-    }
-    p->bb = old;
+    mirisdr_bb_free_one(b);
     mirisdr_bb_free(p);
     p->bb_path = MIRISDR_BASEBAND_OFF;
     fprintf(stderr, "libmirisdr: out of memory for the baseband filters\n");
@@ -840,9 +887,8 @@ static void mirisdr_bb_nco (mirisdr_bb_t *b, float *w, int n)
 }
 
 /* The converters' samples to output pairs in b->work, returns how many */
-static int mirisdr_bb_process (mirisdr_dev_t *p, const unsigned char *buf, uint32_t len)
+static int mirisdr_bb_process (mirisdr_dev_t *p, mirisdr_bb_t *b, const unsigned char *buf, uint32_t len)
 {
-    mirisdr_bb_t *b = p->bb;
     const int s8 = p->format == MIRISDR_FORMAT_504_S8;
     const uint32_t vals = s8 ? len : len / 2;     /* int8 or int16 values */
     const float full = s8 ? 1.0f / 128.0f : 1.0f / 32768.0f;
@@ -854,9 +900,9 @@ static int mirisdr_bb_process (mirisdr_dev_t *p, const unsigned char *buf, uint3
 
     if ((s = mirisdr_atomic_xchg(&b->nco_move, 0))) mirisdr_bb_nco_for(b, (uint32_t) (s - 1));
 
-    /* the tune's choice, read once a buffer */
-    b->dc_on = (p->tune.dc_removal == MIRISDR_DC_ON) ||
-               ((p->tune.dc_removal == MIRISDR_DC_AUTO) && (b->path != MIRISDR_BASEBAND_ZERO_IF));
+    /* its tuner's tune's choice, read once a buffer */
+    b->dc_on = (p->tctx[b->tuner].tune.dc_removal == MIRISDR_DC_ON) ||
+               ((p->tctx[b->tuner].tune.dc_removal == MIRISDR_DC_AUTO) && (b->path != MIRISDR_BASEBAND_ZERO_IF));
 
     if (b->path == MIRISDR_BASEBAND_COMPLEX) {
         n = s8 ? mirisdr_bb_shift_int8_t(b, (const int8_t *) buf, (int) vals / 2, full, w)
@@ -984,9 +1030,8 @@ static int mirisdr_bb_process (mirisdr_dev_t *p, const unsigned char *buf, uint3
 }
 
 /* One output buffer to the callback, with its info in output samples */
-static void mirisdr_bb_call (mirisdr_dev_t *p, float *iq, uint32_t n)
+static void mirisdr_bb_call (mirisdr_dev_t *p, mirisdr_bb_t *b, float *iq, uint32_t n)
 {
-    mirisdr_bb_t *b = p->bb;
     mirisdr_buffer_info_t *in = &p->cb_info;
     uint64_t start = b->sample, end = start + n;
     int k = 0, j;
@@ -997,6 +1042,7 @@ static void mirisdr_bb_call (mirisdr_dev_t *p, float *iq, uint32_t n)
     in->adc = MIRISDR_IQ_BOTH;
     in->rate = p->bb_rate;
     in->type = MIRISDR_SAMPLE_F32;
+    in->tuner = b->tuner;
 
     while (k < b->gq_n && b->gq[k].at < end) {
         if (in->gaps_len < MIRISDR_GAPS_MAX) {
@@ -1016,11 +1062,11 @@ static void mirisdr_bb_call (mirisdr_dev_t *p, float *iq, uint32_t n)
     p->cb((unsigned char *) iq, n * 2 * sizeof(float), p->cb_ctx);
 }
 
-/* From mirisdr_cb_call, with the converters' buffer and its info in p->cb_info */
-static void mirisdr_bb_feed (mirisdr_dev_t *p, unsigned char *buf, uint32_t len)
+/* One chain's share of a converters' buffer, in its info (whose counts each converter
+   shares. It is a copy, as the deliveries overwrite p->cb_info) */
+static void mirisdr_bb_feed_one (mirisdr_dev_t *p, mirisdr_bb_t *b, unsigned char *buf, uint32_t len,
+                                 const mirisdr_buffer_info_t *in)
 {
-    mirisdr_bb_t *b = p->bb;
-    const mirisdr_buffer_info_t *in = &p->cb_info;
     uint64_t lost_in = in->index - in->sample;
     uint32_t k, n, at, chunk;
     float *w;
@@ -1048,13 +1094,13 @@ static void mirisdr_bb_feed (mirisdr_dev_t *p, unsigned char *buf, uint32_t len)
         b->gq_n++;
     }
 
-    n = (uint32_t) mirisdr_bb_process(p, buf, len);
+    n = (uint32_t) mirisdr_bb_process(p, b, buf, len);
     w = b->work;
     b->produced += n;
 
     /* buffers as they come */
     if (!p->user_out_len || p->user_out_len < 2 * sizeof(float)) {
-        if (n) mirisdr_bb_call(p, w, n);
+        if (n) mirisdr_bb_call(p, b, w, n);
         return;
     }
 
@@ -1072,14 +1118,57 @@ static void mirisdr_bb_feed (mirisdr_dev_t *p, unsigned char *buf, uint32_t len)
         if (chunk > n - at) chunk = n - at;
 
         if (!b->out_n && chunk == b->out_cap) {
-            mirisdr_bb_call(p, w + 2 * at, chunk);
+            mirisdr_bb_call(p, b, w + 2 * at, chunk);
             continue;
         }
         memcpy(b->out + 2 * b->out_n, w + 2 * at, (size_t) chunk * 2 * sizeof(float));
         b->out_n += chunk;
         if (b->out_n == b->out_cap) {
-            mirisdr_bb_call(p, b->out, b->out_cap);
+            mirisdr_bb_call(p, b, b->out, b->out_cap);
             b->out_n = 0;
         }
     }
+}
+
+/* From mirisdr_cb_call, with the converters' buffer and its info in p->cb_info. Two
+   tuners: the I values are tuner 0's real samples and the Q values tuner 1's, each chain
+   takes its own. Tuner 0's buffers come first, then tuner 1's for the same span */
+static void mirisdr_bb_feed (mirisdr_dev_t *p, unsigned char *buf, uint32_t len)
+{
+    const mirisdr_buffer_info_t in = p->cb_info;
+    const uint32_t half = len / 2;
+    uint32_t k, n;
+
+    if (!p->bb2) {
+        mirisdr_bb_feed_one(p, p->bb, buf, len, &in);
+        return;
+    }
+
+    if (len > p->bb_split_cap) {
+        uint8_t *s = realloc(p->bb_split, len);
+        if (!s) return;
+        p->bb_split = s;
+        p->bb_split_cap = len;
+    }
+
+    if (p->format == MIRISDR_FORMAT_504_S8) {
+        const int8_t *in = (const int8_t *) buf;
+        int8_t *o = (int8_t *) p->bb_split;
+        n = len / 2;
+        for (k = 0; k < n; k++) {
+            o[k] = in[2 * k];
+            o[n + k] = in[2 * k + 1];
+        }
+    } else {
+        const int16_t *in = (const int16_t *) buf;
+        int16_t *o = (int16_t *) p->bb_split;
+        n = len / 4;
+        for (k = 0; k < n; k++) {
+            o[k] = in[2 * k];
+            o[n + k] = in[2 * k + 1];
+        }
+    }
+
+    mirisdr_bb_feed_one(p, p->bb, p->bb_split, half, &in);
+    mirisdr_bb_feed_one(p, p->bb2, p->bb_split + half, half, &in);
 }

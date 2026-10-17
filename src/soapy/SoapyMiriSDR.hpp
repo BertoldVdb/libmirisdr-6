@@ -25,6 +25,9 @@
 #define SOAPY_MIRISDR_DRIVER    "mirisdr"
 #define SOAPY_MIRISDR_SLOTS     256     /* callback buffers the ring holds */
 
+/* a channel's call: the device held, its tuner selected */
+#define SOAPY_MIRISDR_CHANNEL(c) std::lock_guard<std::recursive_mutex> chanLock_(devMutex); tunerSel = chanOf(c)
+
 class SoapyMiriSDR : public SoapySDR::Device
 {
 public:
@@ -118,6 +121,7 @@ private:
     struct Slot
     {
         std::vector<uint8_t> data;
+        std::vector<uint8_t> data2; /* two tuners: tuner 1's samples, data tuner 0's */
         size_t   n;         /* samples */
         int      kind;      /* Kind */
         int      bytes;     /* a sample takes */
@@ -164,6 +168,7 @@ private:
     std::vector<Slot> ring;
     size_t ringHead, ringTail, ringCount;
     bool dropPending;
+    bool pairOpen;          /* two tuners: the slot at ringTail has tuner 0's half */
     size_t slotPos, gapPos;
     long long timeOffsetNs;
     std::atomic<long long> lastIndex;
@@ -172,6 +177,14 @@ private:
     std::atomic<long long> timeBaseNs, timeBaseIndex;
     std::atomic<uint32_t> timeBaseRate;
     uint32_t asyncBuffers;
+    int chanOrder[2];       /* the stream's buffers: channel of each, -1 none */
+
+    /* the tuner the call in progress acts on, its channel's: the device-wide settings
+       act on tuner 0 */
+    mutable int tunerSel;
+    int chanOf(size_t channel) const;
+    int streamTuners(void) const { return streamCfg.tuners ? streamCfg.tuners : 1; }
+    bool oneOut(void) const { return converters != MIRISDR_IQ_BOTH || streamTuners() == 3; }
 
     void applyStream(const mirisdr_stream_config_t &cfg);
     void configure(uint32_t rate);

@@ -69,9 +69,13 @@
  * GPIO_2 low except the second chip's. Of the first chip's pins:
  *
  *   A7 B0: which tuner the converters get. Both released I and Q from tuner 2, both
- *     low I and Q from tuner 1, one low a tuner each (low IF from both)
+ *     low I and Q from tuner 1, one low a tuner each (low IF from both): A7 low
+ *     tuner 1 on I and tuner 2 on Q, B0 low the other way round
  *   B7 B6: which tuner takes the tuner words. Both released tuner 1, B6 low both,
- *     B7 low tuner 2, both low neither. Tuner 1 is the one the readback reads
+ *     B7 low tuner 2, both low neither. The readback reads the one addressed
+ *
+ * (Tuner 1 here is the library's tuner 0, on the 50 ohm input marked tuner 1, tuner 2 its
+ * tuner 1.)
  *   A6: held low on the board
  *   B1-B5: tuner 1's filter, a decoder. B4 low with B3 released enables the first
  *     bank, B1 B4 110-240 MHz and L band, B1 B4 B5 60-100 and 420-900 MHz (the
@@ -153,6 +157,36 @@ static uint16_t mirisdr_sdrplay_word2 (int notch)
     if (notch & MIRISDR_NOTCH_DAB) w &= (uint16_t) ~DUO2_NOTCH_DAB;
 
     return w;
+}
+
+/* The RSPduo's first expander: which tuner the converters get (A7 B0) for the tuners
+   streamed (bit n tuner n), and which takes the tuner words (B7 B6), tuner 0 or 1 */
+#define DUO1_SW_A7      (1u << 7)
+#define DUO1_SW_B0      (1u << 8)
+#define DUO1_ROUTE_B6   (1u << 14)
+#define DUO1_ROUTE_B7   (1u << 15)
+
+static uint16_t mirisdr_duo_route (uint16_t w, int tuners, int tuner)
+{
+    w |= DUO1_SW_A7 | DUO1_SW_B0 | DUO1_ROUTE_B6 | DUO1_ROUTE_B7;
+
+    if (tuners == 1) w &= (uint16_t) ~(DUO1_SW_A7 | DUO1_SW_B0);       /* tuner 0 on both */
+    else if (tuners == 3) w &= (uint16_t) ~DUO1_SW_A7;                 /* tuner 0 on I, 1 on Q */
+                                                                       /* (2: tuner 1 on both) */
+    if (tuner == 1) w &= (uint16_t) ~DUO1_ROUTE_B7;                    /* the words to tuner 1 alone */
+
+    return w;
+}
+
+/* The one tuner word w routes the tuner words to, -1 both or none */
+static int mirisdr_duo_routed (uint16_t w)
+{
+    switch (w & (DUO1_ROUTE_B6 | DUO1_ROUTE_B7))
+    {
+    case DUO1_ROUTE_B6 | DUO1_ROUTE_B7: return 0;
+    case DUO1_ROUTE_B6:                 return 1;
+    default:                            return -1;
+    }
 }
 
 /* One write to expander chip (0 the first), register 8 selecting it for the frame and
