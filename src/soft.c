@@ -138,7 +138,8 @@ static hw_switch_freq_plan_t hw_switch_freq_plan_rspdxr2[] = {
 #define DUO_250_300     0xE47F  /* B1 B3 B4 */
 #define DUO_300_380     0xD47F  /* B1 B3 B5 */
 #define DUO_380_420     0xF47F  /* B1 B3 */
-#define DUO_380_420_MHZ 340     /* it beats the 300-380 filter from here: 0.5 dB at 350, 2.8 at 360 */
+#define DUO_380_420_MHZ 350     /* it beats the 300-380 filter from here with the amplifier on: they
+                                   cross at 349 MHz on tuner 0, 351 on tuner 1 (2026-10-17) */
 
 /* The amplifier from 55 MHz: the code with B2 low as well (sdrplay.c's DUO1_AMP1) and its
    supply on (chip 2, DUO2_AMP0/1), against the direct path, the plan's code, on each

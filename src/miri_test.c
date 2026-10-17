@@ -3115,15 +3115,15 @@ static tres_t t_plan_tuners (void)
        (B1-B5) released as it is not streamed, tuner 0's kept */
     if ((r0.frontend.raw.expander[0] & 0xC180) != 0x4180 || (r0.frontend.raw.expander[0] & 0x001F) != 0x0014)
     { plan_bad++; say("tuner 0 alone: first word %04X", r0.frontend.raw.expander[0]); }
-    /* the 380-420 filter from 340 MHz (A0 A2), the 300-380 one below (A0 A2 A4), each with
+    /* the 380-420 filter from 350 MHz (A0 A2), the 300-380 one below (A0 A2 A4), each with
        A1 for the amplifier */
     mirisdr_get_tune(n, 0, &c, NULL);
     c.frequency = 350000000;
     mirisdr_tune(n, 0, &c, &r1);
-    c.frequency = 330000000;
+    c.frequency = 349000000;
     mirisdr_tune(n, 0, &c, &r2);
     if ((r1.frontend.raw.expander[0] & 0x001F) != 0x0018 || (r2.frontend.raw.expander[0] & 0x001F) != 0x0008)
-    { plan_bad++; say("tuner 0 at 350 and 330 MHz: %04X %04X", r1.frontend.raw.expander[0], r2.frontend.raw.expander[0]); }
+    { plan_bad++; say("tuner 0 at 350 and 349 MHz: %04X %04X", r1.frontend.raw.expander[0], r2.frontend.raw.expander[0]); }
     c.frequency = 145000000;
     mirisdr_tune(n, 0, &c, NULL);
 
