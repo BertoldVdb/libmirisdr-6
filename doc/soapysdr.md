@@ -81,6 +81,8 @@ The firmware shows up with libmirisdr-6's own USB ids, 16d0:158c. These ids do n
 
   - **RSPdx-R2**: the same with `C-`.
 
+  - **RSPduo**: the same with `D-`.
+
   - **Other boards**: any serial of up to 12 characters works. `random` makes one up.
 
         miri_eeprom writefw default -s random

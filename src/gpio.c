@@ -38,8 +38,10 @@
 
 static int update_reg_8 (mirisdr_dev_t *p)
 {
-    uint32_t val = p->reg8 | ((p->bias && !MIRISDR_HW_EXPANDER(p->hw_flavour)) ? (1 << (BIAS_GPIO + 8)) : 0) |
-                   (p->ds ? (1 << (DS_GPIO + 8)) : 0);
+    /* a raw GPIO word from the tune decides these too */
+    uint32_t val = p->reg8 | ((p->fe_raw & MIRISDR_FRONTEND_RAW_GPIO) ? 0 :
+                   ((p->bias && !MIRISDR_HW_EXPANDER(p->hw_flavour)) ? (1 << (BIAS_GPIO + 8)) : 0) |
+                   (p->ds ? (1 << (DS_GPIO + 8)) : 0));
     unsigned int pin;
 
     for (pin = 0; pin < MIRISDR_GPIO_COUNT; pin++)

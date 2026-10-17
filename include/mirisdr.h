@@ -37,11 +37,12 @@ typedef enum
 {
     MIRISDR_HW_AUTO = -1,       /* open config only: by VID:PID, else MIRISDR_HW_DEFAULT; under
                                    our own ids (16d0:158c) a serial starting "B-" is an RSP1B,
-                                   "C-" an RSPdx-R2 */
+                                   "C-" an RSPdx-R2, "D-" an RSPduo */
     MIRISDR_HW_DEFAULT,
     MIRISDR_HW_SDRPLAY,
     MIRISDR_HW_RSP1B,           /* SDRplay RSP1B */
     MIRISDR_HW_RSPDXR2,         /* SDRplay RSPdx-R2 */
+    MIRISDR_HW_RSPDUO,          /* SDRplay RSPduo */
 } mirisdr_hw_flavour_t;
 
 typedef enum
@@ -392,15 +393,37 @@ typedef struct mirisdr_gain_config
 	uint32_t reserved[MIRISDR_RESERVED_NESTED];
 } mirisdr_gain_config_t;
 
+/* The words the board's switches get, raw: register 8's GPIO bits and the SDRplay I/O
+ * expanders. A tune works them out from its band plan and the frontend fields. A part
+ * named in fields replaces that word whole, and the fields no longer reach it (a raw
+ * GPIO word decides the RSPdx-R2's direct sampling switch, GPIO_2, too). Pins held with
+ * mirisdr_set_gpio_direction() and friends stay held. For boards not mapped yet and paths
+ * the plan does not choose. A part the board does not have is refused. The tune result
+ * reports the words in force, with fields naming every part the board has */
+#define MIRISDR_FRONTEND_RAW_GPIO   (1 << 0)    /* gpio_dir and gpio_level */
+#define MIRISDR_FRONTEND_RAW_EXP1   (1 << 1)    /* expander[0]: RSP1B, RSPdx-R2, the RSPduo's first */
+#define MIRISDR_FRONTEND_RAW_EXP2   (1 << 2)    /* expander[1]: the RSPduo's second */
+
+typedef struct mirisdr_frontend_raw
+{
+	uint32_t fields;        /* MIRISDR_FRONTEND_RAW_*: the parts replaced, 0 none */
+	uint8_t  gpio_dir;      /* bit n: GPIO_n an output */
+	uint8_t  gpio_level;    /* bit n: GPIO_n high, as an output */
+	uint16_t expander[2];   /* MCP23S18 IODIR, port B in the high byte: a 0 bit pulls the pin low */
+	uint32_t reserved[MIRISDR_RESERVED_NESTED];
+} mirisdr_frontend_raw_t;
+
 /* The front end before the tuner, part of a tune so it goes out with it. The tune
  * result reports what is in force. A notch or an antenna on a board without one is refused */
 typedef struct mirisdr_frontend_config
 {
-	int      bias;          /* bias-T: power on the antenna input (port B on the RSPdx-R2) */
+	int      bias;          /* bias-T: power on the antenna input (port B on the RSPdx-R2, not
+	                           mapped on the RSPduo yet, refused there) */
 	int      notch;         /* MIRISDR_NOTCH_*, RSP1B and RSPdx-R2 only */
 	int      antenna;       /* MIRISDR_ANTENNA_*, B and C on the RSPdx-R2 only */
 	int      direct_sampling; /* RSPdx-R2 only: at MIRISDR_DS_MAX_HZ and below sample the antenna
 	                           directly, see below. The result says whether it is in force */
+	mirisdr_frontend_raw_t raw; /* words replacing the plan's, see above */
 	uint32_t reserved[MIRISDR_RESERVED]; /* Not using _NESTED here as I think this could grow a lot */
 } mirisdr_frontend_config_t;
 

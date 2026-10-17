@@ -112,11 +112,28 @@ static hw_switch_freq_plan_t hw_switch_freq_plan_rspdxr2[] = {
         {2400, -1, 0, 0, 0, 0x0000, 0, 0},
 };
 
-static hw_switch_freq_plan_t *hw_switch_freq_plan[4] = {
+/* RSPduo: the RSP1B's tuner rows, its front end not mapped yet. The first expander gives
+   tuner 1 both converters and the tuner words (sdrplay.c), the second stays released */
+#define DUO_TUNER1      0xFE7F  /* A7 B0 low */
+#define DUO_EXP2        0xFFFF
+
+static hw_switch_freq_plan_t hw_switch_freq_plan_rspduo[] = {
+        {0,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, DUO_TUNER1},
+        {55,   MIRISDR_MODE_VHF, 0, 0, 32, 0xea80, 0, DUO_TUNER1},
+        {108,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, DUO_TUNER1},
+        {255,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 6, DUO_TUNER1},
+        {280,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, DUO_TUNER1},
+        {420,  MIRISDR_MODE_B45, 0, 0, 4,  0xea80, 0, DUO_TUNER1},
+        {960,  MIRISDR_MODE_BL,  0, 0, 2,  0xea80, 0, DUO_TUNER1},
+        {2400, -1, 0, 0, 0, 0x0000, 0, 0},
+};
+
+static hw_switch_freq_plan_t *hw_switch_freq_plan[5] = {
         hw_switch_freq_plan_default,
         hw_switch_freq_plan_sdrplay,
         hw_switch_freq_plan_rsp1b,
-        hw_switch_freq_plan_rspdxr2
+        hw_switch_freq_plan_rspdxr2,
+        hw_switch_freq_plan_rspduo
 };
 
 /* The board's plan; mirisdr_open_ex() and mirisdr_set_hw_flavour() refuse other values */
@@ -124,7 +141,7 @@ static const hw_switch_freq_plan_t *mirisdr_plan_of (mirisdr_dev_t *p)
 {
     int f = (int) p->hw_flavour;
 
-    return hw_switch_freq_plan[(f >= MIRISDR_HW_DEFAULT && f <= MIRISDR_HW_RSPDXR2) ? f : MIRISDR_HW_DEFAULT];
+    return hw_switch_freq_plan[(f >= MIRISDR_HW_DEFAULT && f <= MIRISDR_HW_RSPDUO) ? f : MIRISDR_HW_DEFAULT];
 }
 
 /* The row a frequency falls in */
@@ -318,13 +335,25 @@ static void mirisdr_tune_words (mirisdr_dev_t *p, uint32_t lo, uint32_t rx, int 
 #endif
 }
 
-static int mirisdr_tune_send (mirisdr_dev_t *p, const mirisdr_tune_words_t *w)
+/* The parts of the front end a board has, MIRISDR_FRONTEND_RAW_* */
+static uint32_t mirisdr_frontend_parts (int flavour)
+{
+    return MIRISDR_FRONTEND_RAW_GPIO | (MIRISDR_HW_EXPANDER(flavour) ? MIRISDR_FRONTEND_RAW_EXP1 : 0) |
+           ((flavour == MIRISDR_HW_RSPDUO) ? MIRISDR_FRONTEND_RAW_EXP2 : 0);
+}
+
+/* The tuner words, after the front end: on the RSPduo the first expander decides which
+   tuner takes them. raw: the parts of fe a tune replaced */
+static int mirisdr_tune_send (mirisdr_dev_t *p, const mirisdr_tune_words_t *w, const mirisdr_frontend_raw_t *fe,
+                              uint32_t raw)
 {
     int r = 0;
 
-    if (MIRISDR_HW_EXPANDER(p->hw_flavour) && (mirisdr_sdrplay_frontend(p, w->expander) < 0)) r = -1;
+    if ((fe->fields & MIRISDR_FRONTEND_RAW_EXP1) && (mirisdr_sdrplay_send(p, 0, fe->expander[0]) < 0)) r = -1;
+    if ((fe->fields & MIRISDR_FRONTEND_RAW_EXP2) && (mirisdr_sdrplay_send(p, 1, fe->expander[1]) < 0)) r = -1;
 
-    p->reg8 = w->row->band_select_word;
+    p->reg8 = (w->row->band_select_word & ~0xFF00u) | ((uint32_t) fe->gpio_dir << 12) | ((uint32_t) fe->gpio_level << 8);
+    p->fe_raw = raw;
     if (update_reg_8(p) < 0) r = -1;
 
     p->band = w->band;
@@ -390,7 +419,7 @@ static int mirisdr_lna_cal_tune (int mhz)
 
 /* centred on the frequency received */
 static int mirisdr_lna_calibrate (mirisdr_dev_t *p, const hw_switch_freq_plan_t *row, uint32_t rx,
-                                  int ifm, int bw, int iq)
+                                  int ifm, int bw, int iq, const mirisdr_frontend_raw_t *fe, uint32_t raw)
 {
     int mhz = (int) (rx / 1000000), r;
     uint32_t cal;
@@ -401,7 +430,7 @@ static int mirisdr_lna_calibrate (mirisdr_dev_t *p, const hw_switch_freq_plan_t 
 
     cal = (uint32_t) mirisdr_lna_cal_tune(mhz) * 1000000;
     mirisdr_tune_words(p, cal, cal, ifm, bw, iq, 1, 0, &w);
-    r = mirisdr_tune_send(p, &w);
+    r = mirisdr_tune_send(p, &w, fe, raw);
 
     /* it needs the synthesizer settled, which can take ~400 us; 20 us sufficed in tests */
     if (p->fw_ours && p->fw_list_at) r |= mirisdr_write_reg(p, MIRISDR_LIST_WAIT_US, MIRISDR_LNA_CAL_US);
@@ -497,8 +526,39 @@ typedef struct mirisdr_tune_plan
                                    the low pass direct sampling runs through */
     uint32_t lo, ovr13, ovr14;
     mirisdr_tune_words_t w;
+    mirisdr_frontend_raw_t fe;  /* the front end words it sends, every part the board has */
+    uint32_t fe_raw;            /* the parts of fe the tune replaced */
     mirisdr_gr_t gr;            /* the gain reductions it ends up with */
 } mirisdr_tune_plan_t;
+
+/* The words the front end gets: the plan's with the frontend fields, then the raw parts
+   asked for in their place */
+static void mirisdr_frontend_words (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, mirisdr_tune_plan_t *pl)
+{
+    const mirisdr_frontend_raw_t *raw = &c->frontend.raw;
+    uint32_t r8 = pl->w.row->band_select_word;
+
+    if (c->frontend.bias && !MIRISDR_HW_EXPANDER(p->hw_flavour)) r8 |= 1u << (BIAS_GPIO + 8);
+    if (pl->ds) r8 |= 1u << (DS_GPIO + 8);
+
+    memset(&pl->fe, 0, sizeof pl->fe);
+    pl->fe.fields = mirisdr_frontend_parts(p->hw_flavour);
+    pl->fe.gpio_dir = (uint8_t) ((r8 >> 12) & 15);
+    pl->fe.gpio_level = (uint8_t) ((r8 >> 8) & 15);
+    if (pl->fe.fields & MIRISDR_FRONTEND_RAW_EXP1)
+        pl->fe.expander[0] = mirisdr_sdrplay_word(p->hw_flavour, pl->w.expander, c->frontend.notch, c->frontend.bias,
+                                                  c->frontend.antenna, pl->ds, pl->ds_lna);
+    if (pl->fe.fields & MIRISDR_FRONTEND_RAW_EXP2) pl->fe.expander[1] = DUO_EXP2;
+
+    pl->fe_raw = raw->fields;
+    if (raw->fields & MIRISDR_FRONTEND_RAW_GPIO)
+    {
+        pl->fe.gpio_dir = raw->gpio_dir;
+        pl->fe.gpio_level = raw->gpio_level;
+    }
+    if (raw->fields & MIRISDR_FRONTEND_RAW_EXP1) pl->fe.expander[0] = raw->expander[0];
+    if (raw->fields & MIRISDR_FRONTEND_RAW_EXP2) pl->fe.expander[1] = raw->expander[1];
+}
 
 static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, int flags,
                               mirisdr_tune_plan_t *pl)
@@ -510,7 +570,7 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
     pl->cfg = *c;
 
     if (MIRISDR_RESERVED_SET(*c) || MIRISDR_RESERVED_SET(c->gain) || MIRISDR_RESERVED_SET(c->frontend) ||
-        MIRISDR_RESERVED_SET(c->override))
+        MIRISDR_RESERVED_SET(c->frontend.raw) || MIRISDR_RESERVED_SET(c->override))
     {
         mirisdr_refuse(p, MIRISDR_RESERVED_MSG, "the tune config");
         return -1;
@@ -612,10 +672,26 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
     }
 
     if ((c->frontend.notch & ~(MIRISDR_NOTCH_FM | MIRISDR_NOTCH_DAB | MIRISDR_NOTCH_MW)) ||
-        (c->frontend.notch && !MIRISDR_HW_EXPANDER(p->hw_flavour)))
+        (c->frontend.notch && !MIRISDR_HW_EXPANDER(p->hw_flavour)) ||
+        (c->frontend.notch && (p->hw_flavour == MIRISDR_HW_RSPDUO)))
     {
         mirisdr_refuse(p, "unsupported notch 0x%x: the notches are on the RSP1B and RSPdx-R2 only\n",
                        c->frontend.notch);
+        return -1;
+    }
+
+    if (c->frontend.bias && (p->hw_flavour == MIRISDR_HW_RSPDUO))
+    {
+        mirisdr_refuse(p, "unsupported bias-T: not mapped on the RSPduo yet\n");
+        return -1;
+    }
+
+    if ((c->frontend.raw.fields & ~mirisdr_frontend_parts(p->hw_flavour)) ||
+        ((c->frontend.raw.gpio_dir | c->frontend.raw.gpio_level) & ~0x0F))
+    {
+        mirisdr_refuse(p, "unsupported raw front end: parts 0x%x (this board has 0x%x), GPIO 0x%x 0x%x\n",
+                       c->frontend.raw.fields, mirisdr_frontend_parts(p->hw_flavour),
+                       c->frontend.raw.gpio_dir, c->frontend.raw.gpio_level);
         return -1;
     }
 
@@ -667,6 +743,8 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
         g.lna = 0;
     }
     else if (pl->ds && (g.mode == MIRISDR_GAIN_TOTAL)) pl->ds_lna = g.total >= (MIRISDR_DS_LNA_DB + 1) / 2;
+
+    mirisdr_frontend_words(p, c, pl);
 
     /* the gain in that band */
     if (g.mode == MIRISDR_GAIN_STAGES)
@@ -787,8 +865,9 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
     p->ds_lna = pl.ds_lna;
     p->ds_edge = pl.ds_edge;
 
-    r = mirisdr_lna_calibrate(p, pl.w.row, c->frequency, pl.ifm, pl.bw, pl.iq);
-    if (mirisdr_tune_send(p, &pl.w) < 0) r = -1;
+    r = mirisdr_lna_calibrate(p, pl.w.row, c->frequency, pl.ifm, pl.bw, pl.iq, &pl.fe, pl.fe_raw);
+    if (mirisdr_tune_send(p, &pl.w, &pl.fe, pl.fe_raw) < 0) r = -1;
+    p->fe = pl.fe;
 
     p->freq = pl.lo;
     p->if_freq = pl.ifm;
@@ -833,6 +912,7 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
         res->frontend.bias = p->bias;
         res->frontend.notch = mirisdr_notch_in_force(p->notch);
         res->frontend.antenna = p->antenna;
+        res->frontend.raw = p->fe;
         mirisdr_tune_result_ds(p->ds, p->ds_lna, p->ds_edge, c->frequency, p->bb_path, res);
     }
 
@@ -919,6 +999,7 @@ int mirisdr_tune_check (mirisdr_dev_t *p, int tuner, const mirisdr_tune_config_t
         res->frontend.bias = cfg->frontend.bias ? 1 : 0;
         res->frontend.notch = mirisdr_notch_in_force(cfg->frontend.notch);
         res->frontend.antenna = cfg->frontend.antenna;
+        res->frontend.raw = pl.fe;
         mirisdr_tune_result_ds(pl.ds, pl.ds_lna, pl.ds_edge, cfg->frequency, bb, res);
     }
 
@@ -940,6 +1021,7 @@ int mirisdr_get_tune (mirisdr_dev_t *p, int tuner, mirisdr_tune_config_t *cfg, m
         res->frontend.bias = p->bias;
         res->frontend.notch = mirisdr_notch_in_force(p->notch);
         res->frontend.antenna = p->antenna;
+        res->frontend.raw = p->fe;
         mirisdr_tune_result_ds(p->ds, p->ds_lna, p->ds_edge, p->tune.frequency, p->bb_path, res);
     }
 

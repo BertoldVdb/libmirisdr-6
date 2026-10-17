@@ -106,7 +106,7 @@ The fields you are most likely to use:
 With both `serial` and `usb_port`, the receiver with that serial is taken, in whatever port. When none has it, the receiver in `usb_port` is taken, but only if it reports no serial, as one running from its ROM after a power cycle. One that reports another serial is not.
 
 Avoid opening based on an index: a receiver plugged in or out shifts the index of the others. With `serial` or `usb_port`, the receiver is matched in the same device list it is opened from, so another one cannot take its place. `mirisdr_get_index_by_serial()` followed by `mirisdr_open()` leaves a moment for that to happen. While the firmware loads, the receiver reboots and is opened again by its USB port, whichever way it was chosen.
-  - `hw_flavour`: the kind of board. `MIRISDR_HW_AUTO`, the default, tells from the USB ids. Other values are `MIRISDR_HW_DEFAULT`, `MIRISDR_HW_SDRPLAY`, `MIRISDR_HW_RSP1B` and `MIRISDR_HW_RSPDXR2`. A wrong value can switch things the board does not have, such as a bias-T.
+  - `hw_flavour`: the kind of board. `MIRISDR_HW_AUTO`, the default, tells from the USB ids. Other values are `MIRISDR_HW_DEFAULT`, `MIRISDR_HW_SDRPLAY`, `MIRISDR_HW_RSP1B`, `MIRISDR_HW_RSPDXR2` and `MIRISDR_HW_RSPDUO`. A wrong value can switch things the board does not have, such as a bias-T.
   - `firmware`, `firmware_path` and `keep_running`: the library loads its own firmware into the receiver by default, and replaces a different one that is running. Give another image, or set `keep_running` to use what runs.
 
 `mirisdr_close()` stops any stream and frees everything.
@@ -170,16 +170,29 @@ The older `mirisdr_set_center_freq()` sets the LO directly. It switches `low_if_
 
 `tc.frontend` holds what sits before the tuner. It goes out with the tune, in the same request.
 
-  - `bias`: the bias-T, which powers the antenna input. On the RSPdx-R2 it powers port B.
+  - `bias`: the bias-T, which powers the antenna input. On the RSPdx-R2 it powers port B. The RSPduo refuses it until its front end is mapped.
   - `notch`: notch filters, on the RSP1B and RSPdx-R2 only. `MIRISDR_NOTCH_FM` covers 85 to 100 MHz, `MIRISDR_NOTCH_MW` medium wave from 0.4 to 1.6 MHz, and `MIRISDR_NOTCH_DAB` 165 to 230 MHz. Combine them with `|`.
   - `antenna`: the input, `MIRISDR_ANTENNA_A` (the default), `_B` or `_C`. Only the RSPdx-R2 has B and C.
   - `direct_sampling`: RSPdx-R2 only. See Direct sampling below.
+  - `raw`: the switch words themselves, in place of the band plan's. See Raw front end words below.
 
 A notch, an antenna or direct sampling on a board without it is refused. The config keeps what you asked for, and the tune result reports both as in force.
 
 `mirisdr_set_bias()`, `mirisdr_set_notch()` and `mirisdr_set_antenna()` still work. They change this part of the tune in force and apply it.
 
 The RSP1B and RSPdx-R2 choose their filters from the frequency. The RSPdx-R2 uses its 500 kHz low pass only when the tuner's whole filter band fits under 500 kHz, so with a low IF and a narrow filter. Otherwise it uses the 2 MHz low pass.
+
+<h4>Raw front end words</h4>
+
+A tune works out what the board's switches get from its band plan and the fields above: register 8's GPIO bits and, on SDRplay boards, the words of their I/O expanders. `frontend.raw` can replace any of them, for a board that is not mapped yet or a path the plan does not choose. `raw.fields` names the parts replaced:
+
+  - `MIRISDR_FRONTEND_RAW_GPIO`: `gpio_dir` and `gpio_level`, bit n for GPIO_n: an output, and high.
+  - `MIRISDR_FRONTEND_RAW_EXP1`: `expander[0]`, the expander of the RSP1B and RSPdx-R2, or the RSPduo's first.
+  - `MIRISDR_FRONTEND_RAW_EXP2`: `expander[1]`, the RSPduo's second expander.
+
+An expander word is the MCP23S18's direction word, port B in the high byte. A 0 bit pulls that pin low and a 1 leaves it to the board. A part replaced takes the word whole. The fields above no longer reach it: a raw GPIO word decides the RSPdx-R2's direct sampling switch (GPIO_2) and a plain board's bias-T (GPIO_3) too. Pins held with `mirisdr_set_gpio_direction()` and the other GPIO calls stay held. A part the board does not have, or a GPIO past 3, is refused. The words go out with the tune, before the tuner's own, and scans take them per hop.
+
+The tune result's `frontend.raw` reports the words in force, whether replaced or not. Its `fields` names every part the board has.
 
 <h4>Direct sampling</h4>
 

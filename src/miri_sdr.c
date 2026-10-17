@@ -95,7 +95,7 @@ void usage(void)
 		"\t    on:     always bypass, 2.6 - 30 Msps\n"
 		"\t    off:    never bypass, 1.3 - 15 Msps\n"
 		"\t[-d device_index (default: 0)]\n"
-	    "\t[-T device_type device variant: 0 default, 1 SDRplay, 2 RSP1B, 3 RSPdx-R2 (default: by VID:PID)]\n"
+	    "\t[-T device_type device variant: 0 default, 1 SDRplay, 2 RSP1B, 3 RSPdx-R2, 4 RSPduo (default: by VID:PID)]\n"
         "\t    0:       Default\n"
         "\t    1:       SDRPlay\n"
 		"\t[-g gain in 10 dB units, 0-10.2: 4.5 is 45 dB (default: 0 for auto)]\n"
@@ -227,7 +227,7 @@ int main(int argc, char **argv)
 			break;
         case 'T':
             intval = atoi(optarg);
-            if ((intval >=0) && (intval <= MIRISDR_HW_RSPDXR2))
+            if ((intval >=0) && (intval <= MIRISDR_HW_RSPDUO))
             {
                 hw_flavour = (mirisdr_hw_flavour_t) intval;
             }

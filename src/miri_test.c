@@ -3155,6 +3155,157 @@ static int plan_exp_word (mirisdr_dev_t *n, const mirisdr_tune_config_t *c)
     return (a < 0 || b < 0) ? -1 : (b << 8) | a;
 }
 
+/* The expander frames and register 8 of a tune, from its compiled list: the words each
+ * chip got (-1 none), the register 8 a chip's frames went out with, and the register 8
+ * the tune left */
+typedef struct { int word[2]; uint32_t sel[2]; uint32_t reg8; } plan_fe_t;
+
+static int plan_fe (mirisdr_dev_t *n, const mirisdr_tune_config_t *c, plan_fe_t *f)
+{
+    mirisdr_tune_config_t h[2];
+    mirisdr_scan_t *s;
+    const mirisdr_list_entry_t *e;
+    int ne, i, lo[2] = { -1, -1 }, hi[2] = { -1, -1 }, chip;
+    uint32_t r8 = 0;
+
+    h[0] = h[1] = *c;
+    h[0].override.hold_lna = h[1].override.hold_lna = 1;
+    h[0].override.lna_cal = h[1].override.lna_cal = 8;
+    if (mirisdr_scan_compile(n, 0, h, 2, 4, &s) < 0) return -1;
+
+    memset(f, 0, sizeof *f);
+    ne = mirisdr_scan_chunk(s, 0, &e);
+    for (i = 0; i < ne; i++)
+    {
+        if (e[i].reg == 0x09) break;                    /* the tuner words: the front end is done */
+        if (e[i].reg == 0x08) { r8 = e[i].val; f->reg8 = r8; continue; }
+        if (i == 0 || e[i].reg != 0x0D || e[i - 1].reg != 0x0C) continue;
+
+        chip = !(r8 & 0x0800) ? 0 : (r8 & 0x0400) ? 1 : -1;
+        if (chip < 0) continue;
+        f->sel[chip] = r8;
+        if (e[i].val == 0x4000) lo[chip] = (int) (e[i - 1].val >> 8) & 0xFF;
+        if (e[i].val == 0x4001) hi[chip] = (int) (e[i - 1].val >> 8) & 0xFF;
+    }
+    mirisdr_scan_free(s);
+
+    for (chip = 0; chip < 2; chip++) f->word[chip] = (lo[chip] < 0 || hi[chip] < 0) ? -1 : (hi[chip] << 8) | lo[chip];
+
+    return 0;
+}
+
+static void plan_raw_want (const char *what, const mirisdr_tune_result_t *r, uint32_t fields, int dir, int level,
+                           int e0, int e1)
+{
+    const mirisdr_frontend_raw_t *w = &r->frontend.raw;
+
+    if ((w->fields != fields) || (w->gpio_dir != dir) || (w->gpio_level != level) ||
+        ((fields & MIRISDR_FRONTEND_RAW_EXP1) && (w->expander[0] != e0)) ||
+        ((fields & MIRISDR_FRONTEND_RAW_EXP2) && (w->expander[1] != e1)))
+    {
+        plan_bad++;
+        say("%s: the result has parts %x GPIO %X/%X words %04X %04X", what, w->fields, w->gpio_dir, w->gpio_level,
+            w->expander[0], w->expander[1]);
+    }
+}
+
+/* Raw front end words: reported for every board, replacing the plan's word by word, going
+ * out to the right chip (the RSPduo's two decoded from GPIO_2 and GPIO_3), refused for a
+ * part the board lacks */
+static tres_t t_plan_raw (void)
+{
+    const uint32_t G = MIRISDR_FRONTEND_RAW_GPIO, E1 = MIRISDR_FRONTEND_RAW_EXP1, E2 = MIRISDR_FRONTEND_RAW_EXP2;
+    mirisdr_dev_t *n;
+    mirisdr_tune_config_t c;
+    mirisdr_tune_result_t r;
+    plan_fe_t f;
+
+    plan_bad = 0;
+
+    if (mirisdr_open_null(&n, "252_S16") < 0) { say("no null device"); return T_FAIL; }
+
+    /* a plain board: register 8 only */
+    mirisdr_set_hw_flavour(n, MIRISDR_HW_DEFAULT);
+    mirisdr_tune_config_default(&c);
+    c.frequency = 100000000;
+    plan_tune(n, "plain board, plan words", &c, 1, &r);
+    plan_raw_want("plain board", &r, G, 0xF, 0x3, 0, 0);
+    c.frontend.raw.fields = G; c.frontend.raw.gpio_dir = 0xF; c.frontend.raw.gpio_level = 0x5;
+    plan_tune(n, "plain board, raw GPIO", &c, 1, &r);
+    plan_raw_want("plain board raw GPIO", &r, G, 0xF, 0x5, 0, 0);
+    if (plan_fe(n, &c, &f) < 0 || (f.reg8 & 0xFF00) != 0xF500) { plan_bad++; say("plain board raw GPIO: register 8 %06X", f.reg8); }
+    /* the bias-T is GPIO_3 there: a raw word decides it */
+    c.frontend.bias = 1;
+    if (plan_fe(n, &c, &f) < 0 || (f.reg8 & 0xFF00) != 0xF500) { plan_bad++; say("plain board raw GPIO with the bias-T: register 8 %06X", f.reg8); }
+    c.frontend.raw.fields = 0;
+    if (plan_fe(n, &c, &f) < 0 || (f.reg8 & 0xFF00) != 0xFB00) { plan_bad++; say("plain board bias-T: register 8 %06X", f.reg8); }
+    c.frontend.bias = 0; c.frontend.raw.fields = G;
+    c.frontend.raw.fields = E1;
+    plan_tune(n, "plain board, raw expander", &c, 0, &r);
+    c.frontend.raw.fields = G; c.frontend.raw.gpio_dir = 0x10;
+    plan_tune(n, "a GPIO past 3", &c, 0, &r);
+    c.frontend.raw.gpio_dir = 0xF; c.frontend.raw.reserved[0] = 1;
+    plan_tune(n, "raw with reserved set", &c, 0, &r);
+    memset(&c.frontend.raw, 0, sizeof c.frontend.raw);
+
+    /* RSP1B: the plan's word, the notch in it, both replaced by a raw word */
+    mirisdr_set_hw_flavour(n, MIRISDR_HW_RSP1B);
+    plan_tune(n, "RSP1B, plan words", &c, 1, &r);
+    plan_raw_want("RSP1B", &r, G | E1, 0xE, 0xA, 0xBFDF, 0);
+    c.frontend.notch = MIRISDR_NOTCH_FM;
+    plan_tune(n, "RSP1B, the FM notch", &c, 1, &r);
+    plan_raw_want("RSP1B FM notch", &r, G | E1, 0xE, 0xA, 0xBFCF, 0);
+    c.frontend.raw.fields = E1; c.frontend.raw.expander[0] = 0x1234;
+    plan_tune(n, "RSP1B, raw word", &c, 1, &r);
+    plan_raw_want("RSP1B raw word", &r, G | E1, 0xE, 0xA, 0x1234, 0);
+    if (plan_fe(n, &c, &f) < 0 || f.word[0] != 0x1234 || f.word[1] != -1) { plan_bad++; say("RSP1B raw word sent %04X, %d to a second chip", f.word[0], f.word[1]); }
+    c.frontend.raw.expander[0] = 0;
+    if (plan_fe(n, &c, &f) < 0 || f.word[0] != 0) { plan_bad++; say("RSP1B raw word 0 sent as %d", f.word[0]); }
+    c.frontend.raw.fields = E2;
+    plan_tune(n, "RSP1B, a second expander", &c, 0, &r);
+    memset(&c.frontend.raw, 0, sizeof c.frontend.raw);
+    c.frontend.notch = 0;
+
+    /* RSPdx-R2 direct sampling raises GPIO_2, unless a raw GPIO word says otherwise */
+    mirisdr_set_hw_flavour(n, MIRISDR_HW_RSPDXR2);
+    c.frequency = 1000000; c.frontend.direct_sampling = 1;
+    plan_tune(n, "RSPdx-R2, direct sampling", &c, 1, &r);
+    plan_raw_want("RSPdx-R2 direct sampling", &r, G | E1, 0xE, 0xE, 0x3DFB, 0);
+    c.frontend.raw.fields = G; c.frontend.raw.gpio_dir = 0xE; c.frontend.raw.gpio_level = 0xA;
+    plan_tune(n, "RSPdx-R2, raw GPIO under direct sampling", &c, 1, &r);
+    plan_raw_want("RSPdx-R2 raw GPIO under direct sampling", &r, G | E1, 0xE, 0xA, 0x3DFB, 0);
+    memset(&c.frontend.raw, 0, sizeof c.frontend.raw);
+    c.frontend.direct_sampling = 0; c.frequency = 100000000;
+
+    /* RSPduo: both chips, each selected as decoded, the notch and bias-T refused */
+    mirisdr_set_hw_flavour(n, MIRISDR_HW_RSPDUO);
+    plan_tune(n, "RSPduo, plan words", &c, 1, &r);
+    plan_raw_want("RSPduo", &r, G | E1 | E2, 0xE, 0xA, 0xFE7F, 0xFFFF);
+    if (plan_fe(n, &c, &f) < 0 || f.word[0] != 0xFE7F || f.word[1] != 0xFFFF) { plan_bad++; say("RSPduo sent %04X %04X", f.word[0], f.word[1]); }
+    if ((f.sel[0] & 0xCC00) != 0xC000) { plan_bad++; say("RSPduo first chip selected with register 8 %06X", f.sel[0]); }
+    if ((f.sel[1] & 0xCC00) != 0xCC00) { plan_bad++; say("RSPduo second chip selected with register 8 %06X", f.sel[1]); }
+    c.frontend.raw.fields = E2; c.frontend.raw.expander[1] = 0x00FF;
+    plan_tune(n, "RSPduo, raw second word", &c, 1, &r);
+    plan_raw_want("RSPduo raw second word", &r, G | E1 | E2, 0xE, 0xA, 0xFE7F, 0x00FF);
+    if (plan_fe(n, &c, &f) < 0 || f.word[0] != 0xFE7F || f.word[1] != 0x00FF) { plan_bad++; say("RSPduo raw second word sent %04X %04X", f.word[0], f.word[1]); }
+    memset(&c.frontend.raw, 0, sizeof c.frontend.raw);
+    c.frontend.notch = MIRISDR_NOTCH_FM;
+    plan_tune(n, "RSPduo, a notch", &c, 0, &r);
+    c.frontend.notch = 0; c.frontend.bias = 1;
+    plan_tune(n, "RSPduo, the bias-T", &c, 0, &r);
+    c.frontend.bias = 0;
+
+    /* what a tune sent, read back */
+    c.frontend.raw.fields = E1; c.frontend.raw.expander[0] = 0xABCD;
+    if (mirisdr_tune(n, 0, &c, NULL) < 0 || mirisdr_get_tune(n, 0, NULL, &r) < 0) { plan_bad++; say("RSPduo raw tune failed"); }
+    else plan_raw_want("RSPduo get_tune", &r, G | E1 | E2, 0xE, 0xA, 0xABCD, 0xFFFF);
+
+    mirisdr_close(n);
+
+    if (!plan_bad) say("reported on every board, replacing word by word, the duo's chips selected apart, parts a board lacks refused");
+    return plan_bad ? T_FAIL : T_PASS;
+}
+
 /* The RSPdx-R2: its band plan and the antenna, bias-T and notch bits on the expander,
  * as measured with tone sweeps (sdrplay.c), the antenna refused on other boards */
 static tres_t t_plan_dxr2 (void)
@@ -5174,6 +5325,7 @@ static const struct {
     { "plan",     "stream following the tune",  t_plan_follow         },
     { "plan",     "frontend with the tune",     t_plan_frontend       },
     { "plan",     "RSPdx-R2 front end",         t_plan_dxr2           },
+    { "plan",     "raw front end words",        t_plan_raw            },
     { "plan",     "reserved room to grow",      t_plan_reserved       },
     { "plan",     "automatic filter",           t_plan_bw_auto        },
     { "plan",     "scan lists",                 t_plan_scan           },

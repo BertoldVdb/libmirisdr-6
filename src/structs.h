@@ -170,9 +170,11 @@ struct mirisdr_dev {
     int                 filter_cal;     /* IF filter code under the real crystal's XTALSEL, -1 unknown */
     uint8_t             tuner_gap;      /* tuned with another crystal's XTALSEL: hold filter_cal */
     uint8_t             dc_n;           /* DC calibration divider N of the XTALSEL tuned, 0 before */
-    uint16_t            exp_iodir;      /* SDRplay expander direction word sent, 0 bits pulled low */
-    int                 exp_valid;      /* the expander holds exp_iodir */
-    int                 exp_stale;      /* a list wrote it: send both bytes again, no setup */
+    uint16_t            exp_iodir[2];   /* SDRplay expanders' direction words sent, 0 bits pulled low */
+    int                 exp_valid;      /* bit n: expander n holds exp_iodir[n] */
+    int                 exp_stale;      /* bit n: a list wrote expander n, send both bytes again, no setup */
+    mirisdr_frontend_raw_t fe;          /* the front end words in force, as the tune result has them */
+    uint32_t            fe_raw;         /* MIRISDR_FRONTEND_RAW_* of them replaced by the tune */
     int                 notch;          /* MIRISDR_NOTCH_* asked for */
     int                 antenna;        /* MIRISDR_ANTENNA_* */
     int                 ds;             /* RSPdx-R2 direct sampling in force: GPIO_2 high */
@@ -289,7 +291,7 @@ struct mirisdr_dev {
 };
 
 /* The SDRplay boards with the front end on an SPI expander (sdrplay.c) */
-#define MIRISDR_HW_EXPANDER(f)  (((f) == MIRISDR_HW_RSP1B) || ((f) == MIRISDR_HW_RSPDXR2))
+#define MIRISDR_HW_EXPANDER(f)  (((f) == MIRISDR_HW_RSP1B) || ((f) == MIRISDR_HW_RSPDXR2) || ((f) == MIRISDR_HW_RSPDUO))
 
 #if defined(_WIN32)
 static void mirisdr_xfer_lock_init (mirisdr_dev_t *p)    { InitializeCriticalSection(&p->xfer_lock); }

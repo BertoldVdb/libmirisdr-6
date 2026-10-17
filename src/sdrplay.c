@@ -62,6 +62,20 @@
  * code: the 2 MHz low pass flat from 30 kHz to 1.5 MHz, -15 dB at 2.5 MHz, the 500 kHz
  * low pass flat to 500 kHz and ~60 dB down from 700 kHz. Below 30 kHz it rolls off
  * (-8 dB at 10 kHz, -21 at 5 kHz). It follows the antenna bits.
+ *
+ * RSPduo, 2026-10-17: two MCP23S18, the chip selects decoded from GPIO_3 and GPIO_2 with
+ * the master's own: GPIO_3 low the first, GPIO_2 high (GPIO_3 high) the second, both with
+ * GPIO_3 low and GPIO_2 high, and GPIO_3 high and GPIO_2 low the EEPROM. Every SPI read needs
+ * GPIO_2 low except the second chip's. Of the first chip's pins:
+ *
+ *   A7 B0: which tuner the converters get. Both released I and Q from tuner 2, both
+ *     low I and Q from tuner 1, one low a tuner each (low IF from both)
+ *   B7 B6: which tuner takes the tuner words. Both released tuner 1, B6 low both,
+ *     B7 low tuner 2, both low neither. Tuner 1 is the one the readback reads
+ *   A6: held low on the board
+ *   B4: -8.5 dB on tuner 1 at 1.1 GHz, nothing at 900 MHz
+ *
+ * The rest of the front end (filters, notches, ports, bias-T) is not mapped yet.
  */
 
 #define EXP_WRITE               0x40    /* MCP23S18 opcode, no address pins */
@@ -70,7 +84,12 @@
 #define EXP_IOCON_BANK1         0x05    /* IOCON's address if BANK was set */
 #define EXP_OLATA               0x14
 #define EXP_OLATB               0x15
-#define SDRPLAY_CS              (1 << 11)   /* register 8: GPIO_3's level */
+
+/* register 8: GPIO_2 and GPIO_3 as outputs, and their levels */
+#define SDRPLAY_G2_OUT          (1u << 14)
+#define SDRPLAY_G3_OUT          (1u << 15)
+#define SDRPLAY_G2              (1u << 10)
+#define SDRPLAY_G3              (1u << 11)
 
 #define SDRPLAY_A6              (1u << 6)
 #define SDRPLAY_A4              (1u << 4)
@@ -79,57 +98,79 @@
 #define SDRPLAY_A1              (1u << 1)
 #define SDRPLAY_A0              (1u << 0)
 
-static int mirisdr_sdrplay_xfer (mirisdr_dev_t *p, uint32_t r8, uint32_t cs, uint8_t reg, uint8_t val)
+/* The plan's expander word with the notches, bias-T, antenna and direct sampling asked
+   for: the pins they pull low */
+static uint16_t mirisdr_sdrplay_word (int flavour, uint16_t word, int notch, int bias, int antenna,
+                                      int ds, int ds_lna)
 {
-    if (mirisdr_write_reg(p, 0x08, r8 & ~cs) < 0) return -1;
+    uint16_t w = word;
+
+    if (!w || (flavour == MIRISDR_HW_RSPDUO)) return w;
+
+    if (notch & (MIRISDR_NOTCH_FM | MIRISDR_NOTCH_MW)) w &= (uint16_t) ~SDRPLAY_A4;
+    if (notch & MIRISDR_NOTCH_DAB) w &= (uint16_t) ~SDRPLAY_A6;
+
+    if (bias) w &= (uint16_t) ~SDRPLAY_A1;
+
+    if (flavour == MIRISDR_HW_RSPDXR2)
+    {
+        if (antenna != MIRISDR_ANTENNA_B) w &= (uint16_t) ~SDRPLAY_A2;
+        if (antenna != MIRISDR_ANTENNA_A) w &= (uint16_t) ~SDRPLAY_A3;
+        if (ds && !ds_lna) w &= (uint16_t) ~SDRPLAY_A0;
+    }
+
+    return w;
+}
+
+/* One write to expander chip (0 the first), register 8 selecting it for the frame and
+   then back to idle, which keeps GPIO_3 high. The RSPduo decodes the selects: GPIO_3 low
+   is the first, GPIO_2 high the second, so the first needs GPIO_2 low with it */
+static int mirisdr_sdrplay_xfer (mirisdr_dev_t *p, uint32_t idle, int chip, uint8_t reg, uint8_t val)
+{
+    uint32_t r8 = idle;
+
+    if (chip) r8 |= SDRPLAY_G2_OUT | SDRPLAY_G2;
+    else
+    {
+        r8 &= ~SDRPLAY_G3;
+        if (p->hw_flavour == MIRISDR_HW_RSPDUO) r8 = (r8 | SDRPLAY_G2_OUT) & ~SDRPLAY_G2;
+    }
+
+    if (mirisdr_write_reg(p, 0x08, r8) < 0) return -1;
     if (mirisdr_spi(p, 3, EXP_WRITE, reg, val, 0, NULL) < 0) return -1;
     if (mirisdr_write_reg(p, 0x0B, 0) < 0) return -1;
 
-    return mirisdr_write_reg(p, 0x08, r8);
+    return mirisdr_write_reg(p, 0x08, idle);
 }
 
-/* Bring the expander to a band plan word plus the notches, bias-T and antenna asked
-   for; only bytes that changed are sent */
-static int mirisdr_sdrplay_frontend (mirisdr_dev_t *p, uint16_t word)
+/* Bring expander chip to word w: set up the first time, after that only the bytes that
+   changed */
+static int mirisdr_sdrplay_send (mirisdr_dev_t *p, int chip, uint16_t w)
 {
-    uint16_t w = word;
-    uint32_t r8 = (p->reg8_valid ? p->reg8_sent : 0xEA80) | (1 << 15) | SDRPLAY_CS;
-    int first = !p->exp_valid, r = 0;
+    uint32_t idle = (p->reg8_valid ? p->reg8_sent : 0xEA80) | SDRPLAY_G3_OUT | SDRPLAY_G3;
+    int bit = 1 << chip, first = !(p->exp_valid & bit), stale = p->exp_stale & bit, r = 0;
 
-    if (!w) return 0;
-
-    if (p->notch & (MIRISDR_NOTCH_FM | MIRISDR_NOTCH_MW)) w &= (uint16_t) ~SDRPLAY_A4;
-    if (p->notch & MIRISDR_NOTCH_DAB) w &= (uint16_t) ~SDRPLAY_A6;
-
-    if (p->bias) w &= (uint16_t) ~SDRPLAY_A1;
-
-    if (p->hw_flavour == MIRISDR_HW_RSPDXR2)
-    {
-        if (p->antenna != MIRISDR_ANTENNA_B) w &= (uint16_t) ~SDRPLAY_A2;
-        if (p->antenna != MIRISDR_ANTENNA_A) w &= (uint16_t) ~SDRPLAY_A3;
-        if (p->ds && !p->ds_lna) w &= (uint16_t) ~SDRPLAY_A0;
-    }
-
-    if (!first && !p->exp_stale && (p->exp_iodir == w)) return 0;
+    if (!first && !stale && (p->exp_iodir[chip] == w)) return 0;
 
     if (first)
     {
         uint8_t a;
 
-        r |= mirisdr_sdrplay_xfer(p, r8, SDRPLAY_CS, EXP_IOCON_BANK1, 0);
-        for (a = 0x02; a <= 0x0D; a++) r |= mirisdr_sdrplay_xfer(p, r8, SDRPLAY_CS, a, 0);
-        r |= mirisdr_sdrplay_xfer(p, r8, SDRPLAY_CS, EXP_OLATA, 0);
-        r |= mirisdr_sdrplay_xfer(p, r8, SDRPLAY_CS, EXP_OLATB, 0);
+        r |= mirisdr_sdrplay_xfer(p, idle, chip, EXP_IOCON_BANK1, 0);
+        for (a = 0x02; a <= 0x0D; a++) r |= mirisdr_sdrplay_xfer(p, idle, chip, a, 0);
+        r |= mirisdr_sdrplay_xfer(p, idle, chip, EXP_OLATA, 0);
+        r |= mirisdr_sdrplay_xfer(p, idle, chip, EXP_OLATB, 0);
     }
 
-    if (first || p->exp_stale || ((p->exp_iodir ^ w) & 0x00FF))
-        r |= mirisdr_sdrplay_xfer(p, r8, SDRPLAY_CS, EXP_IODIRA, (uint8_t) w);
-    if (first || p->exp_stale || ((p->exp_iodir ^ w) & 0xFF00))
-        r |= mirisdr_sdrplay_xfer(p, r8, SDRPLAY_CS, EXP_IODIRB, (uint8_t) (w >> 8));
+    if (first || stale || ((p->exp_iodir[chip] ^ w) & 0x00FF))
+        r |= mirisdr_sdrplay_xfer(p, idle, chip, EXP_IODIRA, (uint8_t) w);
+    if (first || stale || ((p->exp_iodir[chip] ^ w) & 0xFF00))
+        r |= mirisdr_sdrplay_xfer(p, idle, chip, EXP_IODIRB, (uint8_t) (w >> 8));
 
-    p->exp_iodir = w;
-    p->exp_valid = !r;
-    p->exp_stale = 0;
+    p->exp_iodir[chip] = w;
+    if (r) p->exp_valid &= ~bit;
+    else p->exp_valid |= bit;
+    p->exp_stale &= ~bit;
 
     return r;
 }

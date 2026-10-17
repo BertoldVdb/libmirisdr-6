@@ -155,8 +155,8 @@ static int mirisdr_scan_hop_words (mirisdr_dev_t *sh, mirisdr_dev_t *p, const mi
     {
         sh->tuner_valid = 0;
         sh->reg8_valid = 0;
-        sh->exp_valid = 1;      /* set up when the device opened: only its two bytes */
-        sh->exp_stale = 1;
+        sh->exp_valid = 3;      /* set up when the device opened: only their two bytes */
+        sh->exp_stale = 3;
     }
     else sh->tuner_valid &= (uint16_t) ~(1u << 2);
 
@@ -429,7 +429,7 @@ int mirisdr_scan_stop (mirisdr_dev_t *p)
     /* the list wrote behind the caches' back */
     p->tuner_valid = 0;
     p->reg8_valid = 0;
-    p->exp_stale = 1;
+    p->exp_stale = 3;
     p->lna_cal_mhz = 0;
 
     if (mirisdr_set_soft(p) < 0) r = -1;
