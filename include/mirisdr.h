@@ -419,7 +419,7 @@ typedef struct mirisdr_frontend_config
 {
 	int      bias;          /* bias-T: power on the antenna input (port B on the RSPdx-R2, not
 	                           mapped on the RSPduo yet, refused there) */
-	int      notch;         /* MIRISDR_NOTCH_*, RSP1B and RSPdx-R2 only */
+	int      notch;         /* MIRISDR_NOTCH_*, RSP1B, RSPdx-R2 and RSPduo only */
 	int      antenna;       /* MIRISDR_ANTENNA_*, B and C on the RSPdx-R2 only */
 	int      direct_sampling; /* RSPdx-R2 only: at MIRISDR_DS_MAX_HZ and below sample the antenna
 	                           directly, see below. The result says whether it is in force */
@@ -542,7 +542,7 @@ MIRISDR_API int mirisdr_get_baseband_gain (mirisdr_dev_t *p);           /* extra
 MIRISDR_API int mirisdr_set_bias (mirisdr_dev_t *p, int bias);          /* extra */
 MIRISDR_API int mirisdr_get_bias (mirisdr_dev_t *p);                    /* extra */
 
-/* The single setters for the tune's frontend. Switchable notch filters, RSP1B and RSPdx-R2 only,
+/* The single setters for the tune's frontend. Switchable notch filters, RSP1B, RSPdx-R2 and RSPduo only,
  * enabling these filters can improve or reduce signal quality depending on your
  * specific scenario, so probably just have to try. */
 #define MIRISDR_NOTCH_FM        0x01    /* 85-100 MHz */

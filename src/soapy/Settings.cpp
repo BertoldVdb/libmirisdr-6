@@ -950,7 +950,10 @@ SoapySDR::ArgInfoList SoapyMiriSDR::getSettingInfo(void) const
         a.type = SoapySDR::ArgInfo::BOOL;
         a.value = "false";
         list.push_back(a);
+    }
 
+    if (flavour == MIRISDR_HW_RSP1B || flavour == MIRISDR_HW_RSPDXR2 || flavour == MIRISDR_HW_RSPDUO)
+    {
         a = SoapySDR::ArgInfo();
         a.key = "fm_notch";
         a.name = "FM notch";

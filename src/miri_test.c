@@ -3280,17 +3280,18 @@ static tres_t t_plan_raw (void)
     /* RSPduo: both chips, each selected as decoded, the notch and bias-T refused */
     mirisdr_set_hw_flavour(n, MIRISDR_HW_RSPDUO);
     plan_tune(n, "RSPduo, plan words", &c, 1, &r);
-    plan_raw_want("RSPduo", &r, G | E1 | E2, 0xE, 0xA, 0xFE7F, 0xFFFF);
-    if (plan_fe(n, &c, &f) < 0 || f.word[0] != 0xFE7F || f.word[1] != 0xFFFF) { plan_bad++; say("RSPduo sent %04X %04X", f.word[0], f.word[1]); }
+    plan_raw_want("RSPduo", &r, G | E1 | E2, 0xE, 0xA, 0xCC7F, 0xFFFB);
+    if (plan_fe(n, &c, &f) < 0 || f.word[0] != 0xCC7F || f.word[1] != 0xFFFB) { plan_bad++; say("RSPduo sent %04X %04X", f.word[0], f.word[1]); }
     if ((f.sel[0] & 0xCC00) != 0xC000) { plan_bad++; say("RSPduo first chip selected with register 8 %06X", f.sel[0]); }
     if ((f.sel[1] & 0xCC00) != 0xCC00) { plan_bad++; say("RSPduo second chip selected with register 8 %06X", f.sel[1]); }
     c.frontend.raw.fields = E2; c.frontend.raw.expander[1] = 0x00FF;
     plan_tune(n, "RSPduo, raw second word", &c, 1, &r);
-    plan_raw_want("RSPduo raw second word", &r, G | E1 | E2, 0xE, 0xA, 0xFE7F, 0x00FF);
-    if (plan_fe(n, &c, &f) < 0 || f.word[0] != 0xFE7F || f.word[1] != 0x00FF) { plan_bad++; say("RSPduo raw second word sent %04X %04X", f.word[0], f.word[1]); }
+    plan_raw_want("RSPduo raw second word", &r, G | E1 | E2, 0xE, 0xA, 0xCC7F, 0x00FF);
+    if (plan_fe(n, &c, &f) < 0 || f.word[0] != 0xCC7F || f.word[1] != 0x00FF) { plan_bad++; say("RSPduo raw second word sent %04X %04X", f.word[0], f.word[1]); }
     memset(&c.frontend.raw, 0, sizeof c.frontend.raw);
-    c.frontend.notch = MIRISDR_NOTCH_FM;
-    plan_tune(n, "RSPduo, a notch", &c, 0, &r);
+    c.frontend.notch = MIRISDR_NOTCH_FM | MIRISDR_NOTCH_DAB;
+    plan_tune(n, "RSPduo, the notches", &c, 1, &r);
+    plan_raw_want("RSPduo notches", &r, G | E1 | E2, 0xE, 0xA, 0xCC7F, 0xFD7B);
     c.frontend.notch = 0; c.frontend.bias = 1;
     plan_tune(n, "RSPduo, the bias-T", &c, 0, &r);
     c.frontend.bias = 0;
@@ -3298,7 +3299,7 @@ static tres_t t_plan_raw (void)
     /* what a tune sent, read back */
     c.frontend.raw.fields = E1; c.frontend.raw.expander[0] = 0xABCD;
     if (mirisdr_tune(n, 0, &c, NULL) < 0 || mirisdr_get_tune(n, 0, NULL, &r) < 0) { plan_bad++; say("RSPduo raw tune failed"); }
-    else plan_raw_want("RSPduo get_tune", &r, G | E1 | E2, 0xE, 0xA, 0xABCD, 0xFFFF);
+    else plan_raw_want("RSPduo get_tune", &r, G | E1 | E2, 0xE, 0xA, 0xABCD, 0xFFFB);
 
     mirisdr_close(n);
 

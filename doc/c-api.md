@@ -171,7 +171,7 @@ The older `mirisdr_set_center_freq()` sets the LO directly. It switches `low_if_
 `tc.frontend` holds what sits before the tuner. It goes out with the tune, in the same request.
 
   - `bias`: the bias-T, which powers the antenna input. On the RSPdx-R2 it powers port B. The RSPduo refuses it until its front end is mapped.
-  - `notch`: notch filters, on the RSP1B and RSPdx-R2 only. `MIRISDR_NOTCH_FM` covers 85 to 100 MHz, `MIRISDR_NOTCH_MW` medium wave from 0.4 to 1.6 MHz, and `MIRISDR_NOTCH_DAB` 165 to 230 MHz. Combine them with `|`.
+  - `notch`: notch filters, on the RSP1B, RSPdx-R2 and RSPduo only (the RSPduo's MW notch is not checked yet). `MIRISDR_NOTCH_FM` covers 85 to 100 MHz, `MIRISDR_NOTCH_MW` medium wave from 0.4 to 1.6 MHz, and `MIRISDR_NOTCH_DAB` 165 to 230 MHz. Combine them with `|`.
   - `antenna`: the input, `MIRISDR_ANTENNA_A` (the default), `_B` or `_C`. Only the RSPdx-R2 has B and C.
   - `direct_sampling`: RSPdx-R2 only. See Direct sampling below.
   - `raw`: the switch words themselves, in place of the band plan's. See Raw front end words below.

@@ -194,9 +194,9 @@ Programs show these as device settings. With SoapySDR's API they are `writeSetti
 | `decimation_bypass` | `AUTO`, `ON`, `OFF` | `AUTO` | Skip the receiver's own filter. `AUTO` does this above 14.5 Msps. |
 | `gap_fill` | `true`, `false` | `false` | Put zeros where samples were lost, for gaps of up to 16 USB packets. Always on with `baseband`, and then read back as `true`. |
 | `biastee` | `true`, `false` | `false` | RSP1B and RSPdx-R2 only. Power on the antenna input, port B on the RSPdx-R2. |
-| `fm_notch` | `true`, `false` | `false` | RSP1B and RSPdx-R2 only. Notch for FM broadcast (85 to 100 MHz). |
-| `mw_notch` | `true`, `false` | `false` | RSP1B and RSPdx-R2 only. Notch for medium wave (0.4 to 1.6 MHz). |
-| `dab_notch` | `true`, `false` | `false` | RSP1B and RSPdx-R2 only. Notch for DAB (165 to 230 MHz). |
+| `fm_notch` | `true`, `false` | `false` | RSP1B, RSPdx-R2 and RSPduo only. Notch for FM broadcast (85 to 100 MHz). |
+| `mw_notch` | `true`, `false` | `false` | RSP1B, RSPdx-R2 and RSPduo only (not checked on the RSPduo). Notch for medium wave (0.4 to 1.6 MHz). |
+| `dab_notch` | `true`, `false` | `false` | RSP1B, RSPdx-R2 and RSPduo only. Notch for DAB (165 to 230 MHz). |
 | `direct_sampling` | `true`, `false` | `false` | RSPdx-R2 only. At 2 MHz and below, sample the antenna directly instead of through the tuner. Above 2 MHz the tuner is used as usual. The gain is then only the LNA, about 37 dB, on from a total of 19 dB. |
 
 A setting the receiver cannot do is refused and logged. The receiver keeps what it had.

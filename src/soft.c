@@ -112,19 +112,28 @@ static hw_switch_freq_plan_t hw_switch_freq_plan_rspdxr2[] = {
         {2400, -1, 0, 0, 0, 0x0000, 0, 0},
 };
 
-/* RSPduo: the RSP1B's tuner rows, its front end not mapped yet. The first expander gives
-   tuner 1 both converters and the tuner words (sdrplay.c), the second stays released */
-#define DUO_TUNER1      0xFE7F  /* A7 B0 low */
-#define DUO_EXP2        0xFFFF
+/* RSPduo, tuner 1 on its 50 ohm input (sdrplay.c). The first expander's word: A7 B0 low
+   give tuner 1 both converters and the tuner words, B1-B5 its filter, A0 A1 the L band's
+   low half. Below 30 MHz the 30-60 MHz filter, the HF bank not mapped yet */
+#define DUO_30_60       0xC67F  /* B3 B4 B5 low */
+#define DUO_VHF_UHF     0xCC7F  /* B1 B4 B5: 60-100 and 420-900 MHz */
+#define DUO_B3          0xEC7F  /* B1 B4: 110-240 MHz, and L band */
+#define DUO_250_300     0xE47F  /* B1 B3 B4 */
+#define DUO_300_380     0xD47F  /* B1 B3 B5 */
+#define DUO_380_420     0xF47F  /* B1 B3 */
+#define DUO_L_LOW       0xEC7C  /* and A0 A1: +5-17 dB from 1 to 1.5 GHz, worse above */
 
 static hw_switch_freq_plan_t hw_switch_freq_plan_rspduo[] = {
-        {0,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, DUO_TUNER1},
-        {55,   MIRISDR_MODE_VHF, 0, 0, 32, 0xea80, 0, DUO_TUNER1},
-        {108,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, DUO_TUNER1},
-        {255,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 6, DUO_TUNER1},
-        {280,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, DUO_TUNER1},
-        {420,  MIRISDR_MODE_B45, 0, 0, 4,  0xea80, 0, DUO_TUNER1},
-        {960,  MIRISDR_MODE_BL,  0, 0, 2,  0xea80, 0, DUO_TUNER1},
+        {0,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, DUO_30_60},
+        {55,   MIRISDR_MODE_VHF, 0, 0, 32, 0xea80, 0, DUO_VHF_UHF},
+        {108,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, DUO_B3},
+        {255,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 6, DUO_250_300},
+        {280,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, DUO_250_300},
+        {300,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, DUO_300_380},
+        {380,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, DUO_380_420},
+        {420,  MIRISDR_MODE_B45, 0, 0, 4,  0xea80, 0, DUO_VHF_UHF},
+        {960,  MIRISDR_MODE_BL,  0, 0, 2,  0xea80, 0, DUO_L_LOW},
+        {1550, MIRISDR_MODE_BL,  0, 0, 2,  0xea80, 0, DUO_B3},
         {2400, -1, 0, 0, 0, 0x0000, 0, 0},
 };
 
@@ -548,7 +557,7 @@ static void mirisdr_frontend_words (mirisdr_dev_t *p, const mirisdr_tune_config_
     if (pl->fe.fields & MIRISDR_FRONTEND_RAW_EXP1)
         pl->fe.expander[0] = mirisdr_sdrplay_word(p->hw_flavour, pl->w.expander, c->frontend.notch, c->frontend.bias,
                                                   c->frontend.antenna, pl->ds, pl->ds_lna);
-    if (pl->fe.fields & MIRISDR_FRONTEND_RAW_EXP2) pl->fe.expander[1] = DUO_EXP2;
+    if (pl->fe.fields & MIRISDR_FRONTEND_RAW_EXP2) pl->fe.expander[1] = mirisdr_sdrplay_word2(c->frontend.notch);
 
     pl->fe_raw = raw->fields;
     if (raw->fields & MIRISDR_FRONTEND_RAW_GPIO)
@@ -672,10 +681,9 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
     }
 
     if ((c->frontend.notch & ~(MIRISDR_NOTCH_FM | MIRISDR_NOTCH_DAB | MIRISDR_NOTCH_MW)) ||
-        (c->frontend.notch && !MIRISDR_HW_EXPANDER(p->hw_flavour)) ||
-        (c->frontend.notch && (p->hw_flavour == MIRISDR_HW_RSPDUO)))
+        (c->frontend.notch && !MIRISDR_HW_EXPANDER(p->hw_flavour)))
     {
-        mirisdr_refuse(p, "unsupported notch 0x%x: the notches are on the RSP1B and RSPdx-R2 only\n",
+        mirisdr_refuse(p, "unsupported notch 0x%x: the notches are on the RSP1B, RSPdx-R2 and RSPduo only\n",
                        c->frontend.notch);
         return -1;
     }

@@ -73,9 +73,23 @@
  *   B7 B6: which tuner takes the tuner words. Both released tuner 1, B6 low both,
  *     B7 low tuner 2, both low neither. Tuner 1 is the one the readback reads
  *   A6: held low on the board
- *   B4: -8.5 dB on tuner 1 at 1.1 GHz, nothing at 900 MHz
+ *   B1-B5: tuner 1's filter, a decoder. B4 low with B3 released enables the first
+ *     bank, B1 B4 110-240 MHz and L band, B1 B4 B5 60-100 and 420-900 MHz (the
+ *     tuner's band picks one), B2 18 dB down. B3 low the second: B3 B4 B5 30-60,
+ *     B1 B3 B4 250-300, B1 B3 B5 300-380, B1 B3 380-420 MHz (16 dB weaker)
+ *   A0 A1: with B1 B4 in L band, +5-17 dB from 1 to 1.5 GHz, worse from 1.7 GHz
  *
- * The rest of the front end (filters, notches, ports, bias-T) is not mapped yet.
+ * Of the second's, on tuner 1 (measured with its filter on, 2026-10-17):
+ *
+ *   A2: its 50 ohm input to the filters, +30-47 dB (released: the other input,
+ *     probably Hi-Z, not checked)
+ *   A7: FM notch, 40 dB at 80 MHz and 61 dB at 95 MHz
+ *   B1: DAB notch, 28-30 dB at 180-200 MHz
+ *   B5 B6 B7: attenuator, about 6, 12 and 18 dB
+ *   A4: 2-15 dB, rising with frequency up to 600 MHz, purpose unknown
+ *
+ * Not mapped yet: tuner 2's front end, the HF bank below 30 MHz, the Hi-Z input and the
+ * bias-T.
  */
 
 #define EXP_WRITE               0x40    /* MCP23S18 opcode, no address pins */
@@ -118,6 +132,22 @@ static uint16_t mirisdr_sdrplay_word (int flavour, uint16_t word, int notch, int
         if (antenna != MIRISDR_ANTENNA_A) w &= (uint16_t) ~SDRPLAY_A3;
         if (ds && !ds_lna) w &= (uint16_t) ~SDRPLAY_A0;
     }
+
+    return w;
+}
+
+/* The RSPduo's second expander: tuner 1's 50 ohm input (A2 low) and its notches. The FM
+   and MW notches share a switch, as mirisdr_notch_in_force() has it */
+#define DUO2_INPUT_50   (1u << 2)       /* A2 */
+#define DUO2_NOTCH_FM   (1u << 7)       /* A7: 61 dB at 95 MHz */
+#define DUO2_NOTCH_DAB  (1u << 9)       /* B1: 30 dB at 180-200 MHz */
+
+static uint16_t mirisdr_sdrplay_word2 (int notch)
+{
+    uint16_t w = (uint16_t) ~DUO2_INPUT_50;
+
+    if (notch & (MIRISDR_NOTCH_FM | MIRISDR_NOTCH_MW)) w &= (uint16_t) ~DUO2_NOTCH_FM;
+    if (notch & MIRISDR_NOTCH_DAB) w &= (uint16_t) ~DUO2_NOTCH_DAB;
 
     return w;
 }
