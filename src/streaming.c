@@ -19,11 +19,13 @@ int mirisdr_streaming_start (mirisdr_dev_t *p) {
     if (!p) goto failed;
     if (!p->dh) goto failed;
 
-    libusb_control_transfer(p->dh, 0x42, 0x43, 0x0, 0x0, NULL, 0, CTRL_TIMEOUT);
-
-    /* Do not report loss on old blocks */
+    /* Do not report loss on old blocks. Set before the control transfer: libusb
+       handles events inside it, so the transfers already submitted can complete
+       there with blocks of the stream before still in the USB FIFO */
     p->addr_restart = 1;
     p->addr_dropped = 0;
+
+    libusb_control_transfer(p->dh, 0x42, 0x43, 0x0, 0x0, NULL, 0, CTRL_TIMEOUT);
 
     return 0;
 
