@@ -153,6 +153,8 @@ static hw_switch_freq_plan_t hw_switch_freq_plan_rspdxr2[] = {
 #define DUO_250_300     0xE47F  /* B1 B3 B4 */
 #define DUO_300_380     0xD47F  /* B1 B3 B5 */
 #define DUO_380_420     0xF47F  /* B1 B3 */
+#define DUO_2_12_KHZ    1600    /* the 2-12 filter beats the 2 MHz low pass from 1.65 MHz on tuner 0,
+                                   1.55 on tuner 1, and 2.4-2.8 dB at 1.95 MHz (2026-10-17) */
 #define DUO_380_420_KHZ 350000  /* it beats the 300-380 filter from here with the amplifier on: they
                                    cross at 349 MHz on tuner 0, 351 on tuner 1 (2026-10-17) */
 
@@ -169,7 +171,7 @@ static hw_switch_freq_plan_t hw_switch_freq_plan_rspdxr2[] = {
 
 static hw_switch_freq_plan_t hw_switch_freq_plan_rspduo[] = {
         {0,       MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, DUO_LPF2, 0},
-        {2000,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, DUO_2_12, 0},
+        {DUO_2_12_KHZ, MIRISDR_MODE_AM, MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, DUO_2_12, 0},
         {12000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, DUO_12_30, 0},
         {30000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, DUO_30_60, 0},
         {55000,   MIRISDR_MODE_VHF, 0, 0, 32, 0xea80, 0, DUO_VHF_UHF, DUO_AMP_VHF},

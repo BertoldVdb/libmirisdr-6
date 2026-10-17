@@ -3126,6 +3126,13 @@ static tres_t t_plan_tuners (void)
     mirisdr_tune(n, 0, &c, &r2);
     if ((r1.frontend.raw.expander[0] & 0x001F) != 0x0018 || (r2.frontend.raw.expander[0] & 0x001F) != 0x0008)
     { plan_bad++; say("tuner 0 at 350 and 349 MHz: %04X %04X", r1.frontend.raw.expander[0], r2.frontend.raw.expander[0]); }
+    /* the 2 MHz low pass (A0-A4) below 1.6 MHz, 2-12 (A0 A2 A3 A4) from it */
+    c.frequency = 1599000;
+    mirisdr_tune(n, 0, &c, &r1);
+    c.frequency = 1600000;
+    mirisdr_tune(n, 0, &c, &r2);
+    if ((r1.frontend.raw.expander[0] & 0x001F) != 0x0000 || (r2.frontend.raw.expander[0] & 0x001F) != 0x0002)
+    { plan_bad++; say("tuner 0 at 1.599 and 1.6 MHz: %04X %04X", r1.frontend.raw.expander[0], r2.frontend.raw.expander[0]); }
     c.frequency = 145000000;
     mirisdr_tune(n, 0, &c, NULL);
 
