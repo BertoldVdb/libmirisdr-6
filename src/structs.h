@@ -53,6 +53,9 @@ typedef struct mirisdr_tuner_ctx
     int                 gain_reduction_mixer;
     int                 gain_reduction_baseband;
     int                 gain_stages_set;
+    int                 gain_reduction_amp;
+    int                 amp_db;
+    int                 attenuator;
     int                 lna_cal_mhz;
     mirisdr_band_t      band;
     int                 bandwidth;
@@ -61,6 +64,7 @@ typedef struct mirisdr_tuner_ctx
     mirisdr_tune_config_t tune;
     uint32_t            tune_lo;
     int                 tune_iq;
+    uint16_t            tune_exp;
     uint32_t            tuner_reg[16];
     uint16_t            tuner_valid;
     uint8_t             tuner_turned;
@@ -84,8 +88,8 @@ typedef struct mirisdr_tuner_ctx
 
 /* its fields, as the device has them too (tuner_reg apart, an array) */
 #define MIRISDR_TUNER_CTX(X) X(freq) X(gain) X(gain_reduction_lna) X(gain_reduction_mixbuffer) \
-    X(gain_reduction_mixer) X(gain_reduction_baseband) X(gain_stages_set) X(lna_cal_mhz) X(band) \
-    X(bandwidth) X(if_freq) X(bias) X(tune) X(tune_lo) X(tune_iq) X(tuner_valid) X(tuner_turned) X(tuner_last) \
+    X(gain_reduction_mixer) X(gain_reduction_baseband) X(gain_stages_set) X(gain_reduction_amp) X(amp_db) X(attenuator) X(lna_cal_mhz) X(band) \
+    X(bandwidth) X(if_freq) X(bias) X(tune) X(tune_lo) X(tune_iq) X(tune_exp) X(tuner_valid) X(tuner_turned) X(tuner_last) \
     X(tuner_regd) X(tuner_ovr13) X(tuner_ovr14) X(filter_cal) X(tuner_gap) X(dc_n) X(notch) X(antenna) \
     X(ds) X(ds_lna) X(ds_edge) X(dc_mode) X(dc_speedup) X(dc_track) X(dc_period)
 
@@ -103,6 +107,10 @@ struct mirisdr_dev {
     int                 gain_reduction_mixer;
     int                 gain_reduction_baseband;
     int                 gain_stages_set;    /* a stage set by hand: retunes keep the split */
+    int                 gain_reduction_amp; /* the board's amplifier before the tuner bypassed */
+    int                 amp_db;             /* that amplifier's gain in the band in force, 0 none */
+    int                 attenuator;         /* dB of the board's pad, 0 none (frontend) */
+    uint32_t            fe_flags;           /* frontend.flags in force: the board's, not a tuner's */
     int                 lna_cal_mhz;        /* the L-band LNA was last calibrated for this, 0 none */
     int                 lna_cal_run;        /* this tune is the calibration one */
     mirisdr_hw_flavour_t hw_flavour;
@@ -204,6 +212,7 @@ struct mirisdr_dev {
     mirisdr_tune_config_t tune;         /* the tune asked for, see mirisdr_tune() */
     uint32_t            tune_lo;        /* Hz the LO reaches, as the received frequency */
     int                 tune_iq;        /* the tuner outputs running, MIRISDR_IQ_* */
+    uint16_t            tune_exp;       /* the plan row's expander word of the tune in force, 0 none */
     mirisdr_stream_config_t stream;     /* the stream asked for, see mirisdr_set_stream() */
     int                 decim_on;       /* the decimator is bypassed */
     int                 reg8;

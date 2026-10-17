@@ -103,6 +103,9 @@ public:
     SoapySDR::ArgInfoList getSettingInfo(void) const;
     void writeSetting(const std::string &key, const std::string &value);
     std::string readSetting(const std::string &key) const;
+    SoapySDR::ArgInfoList getSettingInfo(const int direction, const size_t channel) const;
+    void writeSetting(const int direction, const size_t channel, const std::string &key, const std::string &value);
+    std::string readSetting(const int direction, const size_t channel, const std::string &key) const;
 
     /* what a slot's samples are */
     enum Kind { K_CS16, K_CS8, K_CF32, K_S16 };
@@ -134,13 +137,16 @@ private:
     /* the gain each stage can take in the band of a tune */
     struct StageRanges
     {
-        int lna, mixer, baseband;
+        int lna, mixer, baseband, amp;
         std::vector<int> mixbuffer;
     };
 
     mirisdr_dev_t *dev;
     mutable std::recursive_mutex devMutex;
     int flavour;
+    mirisdr_frontend_caps_t caps[2];    /* each tuner's front end, from the library at open */
+    const mirisdr_frontend_caps_t &cap(void) const { return caps[tunerSel]; }
+    int biasTuner(void) const;          /* the tuner with the bias-T, -1 none */
     std::string serial;     /* the one the device declares, none from ROM */
     std::string usbPort;    /* "1:3", as the list names it */
 
@@ -194,6 +200,7 @@ private:
     uint32_t pickLowIf(uint32_t rate) const;
     void applyTune(const mirisdr_tune_config_t &cfg);
     StageRanges stageRanges(void) const;
+    SoapySDR::ArgInfo attenuatorInfo(void) const;
     std::vector<uint32_t> bandwidthsFor(uint32_t ifHz) const;
     uint32_t pickBandwidth(uint32_t ifHz) const;
     void probeRanges(void);

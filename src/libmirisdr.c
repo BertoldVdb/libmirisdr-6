@@ -522,7 +522,7 @@ int mirisdr_set_hw_flavour (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_flavour) {
 
     /* a notch, antenna or raw part left in the tune on a board without it would refuse every
        later tune */
-    if (!MIRISDR_HW_EXPANDER(hw_flavour) || (hw_flavour == MIRISDR_HW_RSPDUO))
+    if (!MIRISDR_HW_EXPANDER(hw_flavour))
     {
         p->notch = 0;
         p->tune.frontend.notch = 0;
@@ -535,6 +535,7 @@ int mirisdr_set_hw_flavour (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_flavour) {
     }
 
     p->tune.frontend.raw.fields &= mirisdr_frontend_parts(hw_flavour);
+    p->tune.frontend.flags &= mirisdr_frontend_flags(hw_flavour);
 
     /* one tuner: the stream takes it, the single setters act on it */
     if (hw_flavour != MIRISDR_HW_RSPDUO)

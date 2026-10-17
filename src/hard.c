@@ -269,6 +269,17 @@ static void mirisdr_bb_span (uint32_t if_hz, uint32_t ds_edge, int real, uint32_
 	*most = hi / (real ? 2 : 1);
 }
 
+/* Whether direct sampling as mode takes a tune at f: ON at the low pass's frequencies,
+   AUTO when a baseband stream's band (f +- rate / 2) fits under it too (without baseband
+   the frequency alone) */
+static int mirisdr_ds_takes (int mode, const mirisdr_stream_config_t *s, uint32_t f)
+{
+	if (mode == MIRISDR_DS_ON) return f <= MIRISDR_DS_MAX_HZ;
+	if (mode == MIRISDR_DS_AUTO) return (uint64_t) f + (s->baseband ? s->rate / 2 : 0) <= MIRISDR_DS_MAX_HZ;
+
+	return 0;
+}
+
 /* The low pass direct sampling at f takes: the 500 kHz one when a baseband stream's
    band fits under it */
 static uint32_t mirisdr_ds_edge (const mirisdr_stream_config_t *s, uint32_t f)
@@ -832,12 +843,17 @@ static int mirisdr_stream_send (mirisdr_dev_t *p, const mirisdr_stream_plan_t *p
 }
 
 /* What a stream c takes from the tune in force: under direct sampling the I converter,
-   the frequency as its IF and the low pass c leads to */
-static uint32_t mirisdr_stream_tune_of (mirisdr_dev_t *p, const mirisdr_stream_config_t *c, uint32_t *ds_edge)
+   the frequency as its IF and the low pass c leads to. Under MIRISDR_DS_AUTO whether it
+   is in force follows c's band, so a new rate can switch it (the tune follows, as moved) */
+static uint32_t mirisdr_stream_tune_of (mirisdr_dev_t *p, const mirisdr_stream_config_t *c, uint32_t *ds_edge,
+                                        int *iq)
 {
-	*ds_edge = p->ds ? mirisdr_ds_edge(c, p->tune.frequency) : 0;
+	int ds = mirisdr_ds_takes(p->tune.frontend.direct_sampling, c, p->tune.frequency);
 
-	return p->ds ? p->tune.frequency : mirisdr_if_hz[p->if_freq];
+	*ds_edge = ds ? mirisdr_ds_edge(c, p->tune.frequency) : 0;
+	*iq = (ds == p->ds) ? p->tune_iq : ds ? MIRISDR_IQ_ONLY_I : p->tune.iq;
+
+	return ds ? p->tune.frequency : mirisdr_if_hz[p->if_freq];
 }
 
 static int mirisdr_stream_apply (mirisdr_dev_t *p, const mirisdr_stream_config_t *c, int flags,
@@ -845,7 +861,7 @@ static int mirisdr_stream_apply (mirisdr_dev_t *p, const mirisdr_stream_config_t
 {
 	mirisdr_stream_plan_t pl;
 	uint32_t if_hz, ds_edge;
-	int moved, old, t, sel;
+	int moved, old, t, sel, iq;
 
 	if (!p || !c) return -1;
 
@@ -854,8 +870,8 @@ static int mirisdr_stream_apply (mirisdr_dev_t *p, const mirisdr_stream_config_t
 	sel = (c->tuners && !(c->tuners & 1) && (mirisdr_tuners_of(p) > 1)) ? 1 : 0;
 	mirisdr_tuner_select(p, sel);
 
-	if_hz = mirisdr_stream_tune_of(p, c, &ds_edge);
-	if (mirisdr_stream_plan(p, c, flags, p->tune_iq, if_hz, ds_edge, &pl) < 0)
+	if_hz = mirisdr_stream_tune_of(p, c, &ds_edge, &iq);
+	if (mirisdr_stream_plan(p, c, flags, iq, if_hz, ds_edge, &pl) < 0)
 	{
 		mirisdr_tuner_select(p, mirisdr_tuner_primary(p));
 		return -1;
@@ -932,9 +948,11 @@ int mirisdr_stream_check (mirisdr_dev_t *p, const mirisdr_stream_config_t *cfg, 
 	p->checking = 1;
 	mirisdr_tuner_select(p, (cfg->tuners && !(cfg->tuners & 1) && (mirisdr_tuners_of(p) > 1)) ? 1 : 0);
 	{
-		uint32_t ds_edge, if_hz = mirisdr_stream_tune_of(p, cfg, &ds_edge);
+		uint32_t ds_edge;
+		int iq;
+		uint32_t if_hz = mirisdr_stream_tune_of(p, cfg, &ds_edge, &iq);
 
-		r = mirisdr_stream_plan(p, cfg, 0, p->tune_iq, if_hz, ds_edge, &pl);
+		r = mirisdr_stream_plan(p, cfg, 0, iq, if_hz, ds_edge, &pl);
 	}
 	mirisdr_tuner_select(p, mirisdr_tuner_primary(p));
 	p->checking = 0;

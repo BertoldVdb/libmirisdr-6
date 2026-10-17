@@ -170,13 +170,28 @@ The older `mirisdr_set_center_freq()` sets the LO directly. It switches `low_if_
 
 `tc.frontend` holds what sits before the tuner. It goes out with the tune, in the same request.
 
-  - `bias`: the bias-T, which powers the antenna input. On the RSPdx-R2 it powers port B. The RSPduo refuses it until its front end is mapped.
-  - `notch`: notch filters, on the RSP1B, RSPdx-R2 and RSPduo only (the RSPduo's MW notch is not checked yet). `MIRISDR_NOTCH_FM` covers 85 to 100 MHz, `MIRISDR_NOTCH_MW` medium wave from 0.4 to 1.6 MHz, and `MIRISDR_NOTCH_DAB` 165 to 230 MHz. Combine them with `|`.
-  - `antenna`: the input, `MIRISDR_ANTENNA_A` (the default), `_B` or `_C`. Only the RSPdx-R2 has B and C.
+  - `bias`: the bias-T, which powers the antenna input. On the RSPdx-R2 it powers port B. On the RSPduo it powers the port marked tuner 2, so only tuner 1 takes it.
+  - `notch`: notch filters, on the RSP1B, RSPdx-R2 and RSPduo only. `MIRISDR_NOTCH_FM` covers 85 to 100 MHz, `MIRISDR_NOTCH_MW` medium wave from 0.4 to 1.6 MHz, and `MIRISDR_NOTCH_DAB` 165 to 230 MHz. Combine them with `|`.
+  - `antenna`: the input, `MIRISDR_ANTENNA_A` (the default), `_B` or `_C`. Only the RSPdx-R2 has B and C. On the RSPduo, tuner 0 takes `MIRISDR_ANTENNA_HIZ` (the same as B), its Hi-Z input, below 30 MHz. It goes to the tuner's other AM input, past the filters, so its mixbuffer stage steps 0, 6, 12 and 18 dB instead of 0 and 24. A gain kept across the switch keeps its dB, the mixbuffer to the nearest step the input has. The MW notch has its own switch there.
+  - `attenuator`: pads before the tuner, in dB, 0 (none) by default. It is apart from the gain: the total does not count it, and a `MIRISDR_GAIN_TOTAL` tune leaves it as the config has it. Use it against strong signals, since it comes before the tuner's LNA. `mirisdr_set_attenuator()` changes it alone.
+    - RSPduo: 6, 13 or 19 dB, one pad at a time. In L band the last two give about 11 and 14 dB. The Hi-Z input does not pass through them.
+    - RSPdx-R2: 3 to 36 dB in 3 dB steps. Its four pads are in series, so they add: within 1 dB of the step up to 900 MHz. At 1.5 GHz the larger steps give less, 31 dB at most.
+  - `flags`: the board's switches, a bit for each that is on. A flag the board does not have is refused. They belong to the board, not to a tuner: a tune of either tuner sets them for both, and both tuners' configs and results then show them, the last tune's winning. `mirisdr_set_frontend_flags()` changes them alone.
+    - `MIRISDR_FRONTEND_PORT_TIE`, RSPduo only: ties the two 50 ohm ports together, so both tuners hear both, as from one antenna. It works at HF, 50 to 200 MHz and 600 to 900 MHz, where the other tuner hears a port within 5 to 10 dB of its own tuner. It works much less at 300 to 433 MHz and in L band. The port's own tuner loses 0 to 5 dB at HF and 3 to 10 dB at 50 to 600 MHz.
+    - `MIRISDR_FRONTEND_REF_OUT`, RSPduo only: the board's 24 MHz clock out of its reference connector, for another receiver. Off by default.
   - `direct_sampling`: RSPdx-R2 only. See Direct sampling below.
   - `raw`: the switch words themselves, in place of the band plan's. See Raw front end words below.
 
-A notch, an antenna or direct sampling on a board without it is refused. The config keeps what you asked for, and the tune result reports both as in force.
+A notch, an antenna, a pad or direct sampling on a board without it is refused. The config keeps what you asked for, and the tune result reports both as in force.
+
+`mirisdr_get_frontend_caps()` says what a tuner's front end has, so a program can offer only that: the notches, the antennas and which is a Hi-Z input, the bias-T, direct sampling, the amplifier (from which frequency, and its gain in its best band), the pad values, the flags and the raw parts. It does not change while the device is open. What depends on the frequency comes with a tune result, and `mirisdr_tune_check()` says what a given tune would get.
+
+```c
+mirisdr_frontend_caps_t caps;
+mirisdr_get_frontend_caps(dev, 0, &caps);
+for (int k = 0; k < caps.attenuator_count; k++)
+    printf("%d dB\n", caps.attenuator[k]);
+```
 
 `mirisdr_set_bias()`, `mirisdr_set_notch()` and `mirisdr_set_antenna()` still work. They change this part of the tune in force and apply it.
 
@@ -196,10 +211,16 @@ The tune result's `frontend.raw` reports the words in force, whether replaced or
 
 <h4>Direct sampling</h4>
 
-The RSPdx-R2 can take the antenna past the tuner, through its 2 MHz low pass, straight to the I converter. `frontend.direct_sampling` allows it: a tune at 2 MHz (`MIRISDR_DS_MAX_HZ`) or below then uses it, and a tune above uses the tuner as usual. The tune result's `frontend.direct_sampling` says which is in force, so a program can sweep across 2 MHz without doing anything itself. `mirisdr_set_direct_sampling(dev, 1)` sets it on the tune in force, as in librtlsdr. 2 (the Q converter) is refused, as the RSPdx-R2 has it on I only.
+The RSPdx-R2 can take the antenna past the tuner, through its 2 MHz low pass, straight to the I converter. `frontend.direct_sampling` says when:
+
+  - `MIRISDR_DS_OFF` (0): never.
+  - `MIRISDR_DS_ON` (1): every tune at 2 MHz (`MIRISDR_DS_MAX_HZ`) or below.
+  - `MIRISDR_DS_AUTO` (3): every tune whose band fits under 2 MHz: with a baseband stream the frequency plus half the rate, without one the frequency alone. A rate whose band stops fitting moves the tune to the tuner, and back.
+
+Other tunes use the tuner as usual. The tune result's `frontend.direct_sampling` says which is in force, so a program can sweep across 2 MHz without doing anything itself. `mirisdr_set_direct_sampling(dev, 1)` sets it on the tune in force, as in librtlsdr, and also takes `MIRISDR_DS_AUTO`. 2 (librtlsdr's Q converter) is refused, as the RSPdx-R2 has it on I only.
 
   - **The stream.** Direct sampling is like a single tuner output on I whose IF is the frequency. A stream that follows the tune, or a baseband one, switches to I by itself. With baseband the frequency comes out at 0 Hz, the right way round. The converters run at 4.8 Msps whatever the frequency, so a retune only moves the NCO and the stream does not restart. When a baseband stream's band fits under 500 kHz, the 500 kHz low pass is used instead, with the converters at 1.3 Msps. Rates go from about 9.4 ksps (2.5 ksps with the 500 kHz low pass) up. Without baseband the I samples are the band itself, from 0 Hz to half the rate.
-  - **The gain.** The tuner is not in the path. The only gain is an amplifier of about 37 dB (`MIRISDR_DS_LNA_DB`), on by default. With `MIRISDR_GAIN_STAGES` it is `gain.lna`. With `MIRISDR_GAIN_TOTAL` it is on from 19 dB. The tune result then reports it alone. Leave it on unless the signals are very strong: it raises the noise floor only 4 to 5 dB.
+  - **The gain.** The tuner is not in the path. The only gain is an amplifier of about 37 dB (`MIRISDR_DS_LNA_DB`), on by default. With `MIRISDR_GAIN_STAGES` it is `gain.lna`. With `MIRISDR_GAIN_TOTAL` it is on from 19 dB. `mirisdr_set_lna_gain()` and `mirisdr_set_tuner_gain()` switch it the same way. The tune result then reports it alone. Leave it on unless the signals are very strong: it raises the noise floor only 4 to 5 dB.
   - **What stays.** The tune's IF, bandwidth and `iq` are kept for tunes above 2 MHz. The tune result shows `lo` 0, `iq` `MIRISDR_IQ_ONLY_I`, and the low pass's edge as `bandwidth`. Scans refuse direct sampling.
   - **Response.** Flat from about 30 kHz to 1.5 MHz, 15 dB down at 2.5 MHz. Below 30 kHz it rolls off, 8 dB down at 10 kHz.
 
@@ -214,12 +235,15 @@ The gain goes with the tune, in `tc.gain`. Its `mode` decides what happens.
 
 The stages:
 
+  - `amp_bypass`: the board's amplifier before the tuner, from 55 MHz up. 0 keeps it in, 1 bypasses it. `MIRISDR_GAIN_TOTAL` turns it on first, and bypasses it only for a total below its own gain. Other boards and bands have none: they report 0.
+    - RSPduo (not on the Hi-Z): about 25 dB up to 108 MHz, 24 to 250 MHz, 22 to 420 MHz, 20 to 960 MHz and 17 in L band.
+    - RSPdx-R2: about 24 dB up to 108 MHz, 25 to 250 MHz, 24 to 420 MHz, 21 to 960 MHz and 15 in L band.
   - `lna`: on or off. It adds 24 dB on most bands, 7 dB in band IV/V and about 4 dB in L band. The AM inputs have none.
   - `mixer`: on or off. It adds 19 dB.
   - `mixbuffer`: only on the AM inputs. 0, 6, 12 or 18 dB on AM1, 0 or 24 dB on AM2.
   - `baseband`: 0 to 59 dB.
 
-The total therefore goes from 0 to 102 dB on most bands. The tune result reports the stages and the total in force. There is no automatic gain control.
+The total therefore goes from 0 to 102 dB on most bands, plus the RSPduo's or RSPdx-R2's amplifier from 55 MHz. `mirisdr_set_tuner_gain()` switches that amplifier too. The tune result reports the stages and the total in force. There is no automatic gain control.
 
 
 <h3>The stream</h3>
@@ -446,7 +470,7 @@ The two tuners may use different IFs. The converters then run at the rate the hi
 
 Things to know:
 
-  - Tuner 1's front end is not mapped yet. Its tunes refuse notches, and a bias-T is refused on the RSPduo altogether. Raw front end words work on either.
+  - Each tuner has its own filters, amplifier, pads and notches. A tuner not streamed gets no filter path, which keeps its amplifier from passing its port to the other (up to 20 dB better isolation at 300 to 433 MHz). With both streamed, the ports are 44 to 63 dB apart up to 250 MHz and at 600 MHz, but only 23 to 30 dB at 300 to 433 MHz and 14 to 24 dB at 1.5 to 1.8 GHz. The bias-T powers the port marked tuner 2, so only tuner 1 takes it. The board can join the two 50 ohm ports, so both tuners hear one antenna: `MIRISDR_FRONTEND_PORT_TIE` in `frontend.flags`. They are apart by default. Tuner 0 also takes the Hi-Z input below 30 MHz (`antenna`, see Tuning).
   - Scans run on tuner 0 alone.
   - `mirisdr_get_tuner_status()` and `mirisdr_tune_learn()` take the tuner.
 
@@ -482,7 +506,7 @@ The comments in `mirisdr.h` describe the timing in detail.
 
 <h3>Board features</h3>
 
-  - The bias-T, the notches and the RSPdx-R2's antenna input are part of the tune. See the front end under Tuning.
+  - The bias-T, the notches, the pads, the antenna input and the RSPduo's port tie are part of the tune. See the front end under Tuning. `mirisdr_get_frontend_caps()` says which ones a board has.
   - GPIO: `mirisdr_set_gpio_direction()`, `mirisdr_set_gpio_output()`, `mirisdr_get_gpio_input()` and related calls, for 4 pins.
   - I2C on GPIO 1 and 2: `mirisdr_i2c_write()`, `mirisdr_i2c_read()` and `mirisdr_i2c_transfer()`.
   - Serial output on GPIO 2: `mirisdr_uart_write()`.

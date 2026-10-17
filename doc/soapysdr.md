@@ -36,7 +36,7 @@ The device string can hold these keys:
   - `driver=mirisdr`: this module.
   - `serial=...`: a receiver by its serial, when more than one is plugged in. `SoapySDRUtil --find` lists the serials.
   - `usb_port=...`: a receiver by the USB port it is in, such as `1:3`. `SoapySDRUtil --find` lists the port of every receiver.
-  - `if_freq`, `converters` and `baseband`: the settings of the same name, described below. They are here for programs that only let you type a device string. An example is `driver=mirisdr,if_freq=450000`.
+  - `if_freq`, `converters`, `baseband` and `direct_sampling`: the settings of the same name, described below. They are here for programs that only let you type a device string. An example is `driver=mirisdr,if_freq=450000`.
   - `bandwidth`: the tuner filter in Hz, for programs such as GQRX that have no field for it. See Bandwidth below.
   - `gain_ranges`: `max`, the default, or `band`. See Gain below.
 
@@ -93,7 +93,7 @@ After replugging the USB VID:PID will change, which may require retriggering ude
 
 The module reports a range of 1 kHz to 2400 MHz, which is what the library accepts. The frequency you set is at 0 Hz in the samples, at every IF. You never need to add or subtract an IF yourself.
 
-There is one tuning element, called `RF`, and one antenna, called `RX`. The RSPdx-R2 has three antennas instead, `A`, `B` and `C`, with `A` the default.
+There is one tuning element, called `RF`, and one antenna, called `RX`. The RSPdx-R2 has three antennas instead, `A`, `B` and `C`, with `A` the default. The RSPduo's channel 0 also has `Hi-Z`, its Hi-Z input, below 30 MHz.
 
 
 <h3>Sample rates</h3>
@@ -160,16 +160,17 @@ Some programs, have no field for the filter. For those, put it in the device str
 
 <h3>Gain</h3>
 
-Set the gain as one total, from 0 to 102 dB on most bands. The library splits it over the stages in the way that works best, with the front end first so the noise stays low. It does this again when you tune to another band.
+Set the gain as one total, from 0 to 102 dB on most bands, plus the RSPduo's or RSPdx-R2's amplifier from 55 MHz. The library splits it over the stages in the way that works best, with the front end first so the noise stays low. It does this again when you tune to another band.
 
 The stages can also be set one by one:
 
+  - `AMP`: RSPduo and RSPdx-R2. 0 or the full gain of the amplifier before the tuner, from 55 MHz up. On the RSPduo about 25 dB up to 108 MHz, 24 to 250 MHz, 22 to 420 MHz, 20 to 960 MHz and 17 in L band. On the RSPdx-R2 it is about 24, 25, 24, 21 and 15 dB in the same bands. A total turns it on first, and bypasses it only below its own gain. The RSPduo's Hi-Z and the bands below 55 MHz have none.
   - `LNA`: 0 or its full gain, which is 24 dB on most bands, 7 dB in band IV/V and about 4 dB in L band. The AM inputs have none.
   - `MIX`: 0 or 19 dB.
   - `MIXBUF`: 0 or 24 dB, only where the receiver uses its AM input: below 55 MHz, and from 255 to 420 MHz through the up-converter. On the RSP1 that is below 50 MHz only. The tuner's other AM input, with steps of 6 dB, is not used.
   - `BB`: 0 to 59 dB.
 
-The ranges the module reports are the most each stage has in any band, because programs such as GQRX read them only once, when the device opens. A value the band you are tuned to cannot take gives the nearest one it can, and a stage the band does not have stays at 0. For ranges that follow the band, add `gain_ranges=band` to the device string. There is no automatic gain control.
+The ranges the module reports are the most each stage has in any band, because programs such as GQRX read them only once, when the device opens. A value the band you are tuned to cannot take gives the nearest one it can, and a stage the band does not have stays at 0. For ranges that follow the band, add `gain_ranges=band` to the device string. On the RSPduo `MIXBUF` steps by 6: the Hi-Z takes 0, 6, 12 and 18, the 50 ohm ports 0 and 24. There is no automatic gain control.
 
 
 <h3>Sample formats</h3>
@@ -195,11 +196,14 @@ Programs show these as device settings. With SoapySDR's API they are `writeSetti
 | `transfer` | `ISOC`, `ISOC1`, `ISOC2`, `BULK` | `ISOC` on Linux, `BULK` on Windows | The USB transfer type. |
 | `decimation_bypass` | `AUTO`, `ON`, `OFF` | `AUTO` | Skip the receiver's own filter. `AUTO` does this above 14.5 Msps. |
 | `gap_fill` | `true`, `false` | `false` | Put zeros where samples were lost, for gaps of up to 16 USB packets. Always on with `baseband`, and then read back as `true`. |
-| `biastee` | `true`, `false` | `false` | RSP1B and RSPdx-R2 only. Power on the antenna input, port B on the RSPdx-R2. |
+| `biastee` | `true`, `false` | `false` | RSP1B, RSPdx-R2 and RSPduo only. Power on the antenna input: port B on the RSPdx-R2, the port marked tuner 2 (channel 1) on the RSPduo. |
 | `fm_notch` | `true`, `false` | `false` | RSP1B, RSPdx-R2 and RSPduo only. Notch for FM broadcast (85 to 100 MHz). |
-| `mw_notch` | `true`, `false` | `false` | RSP1B, RSPdx-R2 and RSPduo only (not checked on the RSPduo). Notch for medium wave (0.4 to 1.6 MHz). |
+| `mw_notch` | `true`, `false` | `false` | RSP1B, RSPdx-R2 and RSPduo only. Notch for medium wave (0.4 to 1.6 MHz). |
 | `dab_notch` | `true`, `false` | `false` | RSP1B, RSPdx-R2 and RSPduo only. Notch for DAB (165 to 230 MHz). |
-| `direct_sampling` | `true`, `false` | `false` | RSPdx-R2 only. At 2 MHz and below, sample the antenna directly instead of through the tuner. Above 2 MHz the tuner is used as usual. The gain is then only the LNA, about 37 dB, on from a total of 19 dB. |
+| `attenuator` | RSPduo `0`, `6`, `13`, `19`, and RSPdx-R2 `0` to `36` in steps of 3 | `0` | RSPduo and RSPdx-R2. Pads in dB before channel 0's tuner, against strong signals. They are apart from the gain: the total does not count them. Another value takes the nearest step. On the RSPduo each channel has its own as a channel setting, see Two channels. |
+| `ref_out` | `true`, `false` | `false` | RSPduo only. The board's 24 MHz clock out of its reference connector, for another receiver. |
+| `port_tie` | `true`, `false` | `false` | RSPduo only. Ties the two 50 ohm ports together, so both channels hear both, as from one antenna. It works at HF, 50 to 200 MHz and 600 to 900 MHz, and much less at 300 to 433 MHz and in L band. |
+| `direct_sampling` | `OFF`, `ON`, `AUTO` | `AUTO` | RSPdx-R2 only. Sample the antenna directly instead of through the tuner: `ON` whenever the frequency is 2 MHz or below, `AUTO` only where the whole band (the frequency plus half the rate) fits under 2 MHz. Otherwise the tuner is used as usual. `true` and `false` work as `ON` and `OFF`. The gain is then only the LNA, about 37 dB, on from a total of 19 dB. |
 
 A setting the receiver cannot do is refused and logged. The receiver keeps what it had.
 
@@ -285,7 +289,9 @@ Build it with `g++ example.cpp -lSoapySDR`. At 256000 samples a second the modul
 
 <h3>Two channels</h3>
 
-The RSPduo reports two channels, one for each tuner. Channel 0 is the tuner on the 50 ohm input marked tuner 1, channel 1 the one marked tuner 2. Frequency, gain, bandwidth and the other per channel calls act on their own tuner. The device settings (`if_freq`, `biastee`, the notches and the rest) act on channel 0.
+The RSPduo reports two channels, one for each tuner. Channel 0 is the tuner on the 50 ohm input marked tuner 1, channel 1 the one marked tuner 2. Frequency, gain, bandwidth and the other per channel calls act on their own tuner. The device settings (`if_freq`, the notches and the rest) act on channel 0, except `biastee`, which powers channel 1's port, and `port_tie` and `ref_out`, which are the board's. Each channel has the channel setting `attenuator`, its own pad (`writeSetting(SOAPY_SDR_RX, 1, "attenuator", "13")`).
+
+A channel not streamed gets no filter path, so an antenna on its port leaks less into the other. With both streamed, the ports are 44 to 63 dB apart up to 250 MHz and at 600 MHz, but only 23 to 30 dB at 300 to 433 MHz and 14 to 24 dB at 1.5 to 1.8 GHz.
 
 `setupStream()` takes the channels to stream:
 

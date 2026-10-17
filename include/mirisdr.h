@@ -390,9 +390,11 @@ MIRISDR_API mirisdr_band_t mirisdr_get_band (mirisdr_dev_t *p);         /* extra
 #define MIRISDR_IQ_ONLY_Q       2
 
 /* The gain with a tune. TOTAL is split as mirisdr_set_tuner_gain() does, the front end
- * first so noise figure and IIP3 stay low, again for each band. Above the band's
- * maximum is clamped. STAGES sets each stage and keeps them through retunes, as the
- * single stage setters do. A tune result reports both. */
+ * first so noise figure and IIP3 stay low, again for each band: the board's amplifier
+ * before the tuner's stages. Above the band's maximum is clamped. STAGES sets each
+ * stage and keeps them through retunes, as the single stage setters do. A tune result
+ * reports both. The RSPduo's pads are apart, frontend.attenuator: the total does not
+ * count them. */
 #define MIRISDR_GAIN_KEEP       0       /* do not change */
 #define MIRISDR_GAIN_TOTAL      1
 #define MIRISDR_GAIN_STAGES     2
@@ -405,6 +407,10 @@ typedef struct mirisdr_gain_config
 	int      mixer;         /* on or off: 19 dB */
 	int      mixbuffer;     /* dB, the AM ports only: 0, 6, 12 or 18 on AM1, 0 or 24 on AM2 */
 	int      baseband;      /* dB, 0-59 */
+	int      amp_bypass;    /* the board's amplifier before the tuner bypassed, from 55 MHz:
+	                           RSPduo (not on the Hi-Z) about 25 dB to 108 MHz, 24 to 250, 22
+	                           to 420, 20 to 960, 17 in L band. RSPdx-R2 about 24 to 108, 25
+	                           to 250, 24 to 420, 21 to 960, 15 in L band. 0 elsewhere */
 	uint32_t reserved[MIRISDR_RESERVED_NESTED];
 } mirisdr_gain_config_t;
 
@@ -428,16 +434,35 @@ typedef struct mirisdr_frontend_raw
 	uint32_t reserved[MIRISDR_RESERVED_NESTED];
 } mirisdr_frontend_raw_t;
 
+/* frontend.flags: the board's switches, a bit set on. A flag the board does not have is
+ * refused. They are the board's, not a tuner's: a tune of either tuner sets them for both,
+ * and both tuners' tune configs and results then have them, the last tune's winning */
+#define MIRISDR_FRONTEND_PORT_TIE   (1 << 0)    /* RSPduo: ties its two 50 ohm ports, so each
+                                                   tuner hears both, as from one antenna. The
+                                                   port's own chain loses 0-5 dB at HF, 3-10 dB
+                                                   at 50-600 MHz, and the other tuner hears it within
+                                                   5-10 dB at 50-200 and 600-900 MHz, much less at
+                                                   300-433 MHz and in L band */
+#define MIRISDR_FRONTEND_REF_OUT    (1 << 1)    /* RSPduo: the board's 24 MHz out of its
+                                                   reference connector, for another board */
+
 /* The front end before the tuner, part of a tune so it goes out with it. The tune
  * result reports what is in force. A notch or an antenna on a board without one is refused */
 typedef struct mirisdr_frontend_config
 {
-	int      bias;          /* bias-T: power on the antenna input (port B on the RSPdx-R2, not
-	                           mapped on the RSPduo yet, refused there) */
+	int      bias;          /* bias-T: power on the antenna input (port B on the RSPdx-R2, on
+	                           the RSPduo the port marked tuner 2, tuner 1's) */
 	int      notch;         /* MIRISDR_NOTCH_*, RSP1B, RSPdx-R2 and RSPduo only */
-	int      antenna;       /* MIRISDR_ANTENNA_*, B and C on the RSPdx-R2 only */
-	int      direct_sampling; /* RSPdx-R2 only: at MIRISDR_DS_MAX_HZ and below sample the antenna
-	                           directly, see below. The result says whether it is in force */
+	int      antenna;       /* MIRISDR_ANTENNA_*, B and C on the RSPdx-R2, and the RSPduo's tuner 0
+	                           takes B, its Hi-Z input */
+	int      direct_sampling; /* RSPdx-R2 only, MIRISDR_DS_*: when to sample the antenna directly,
+	                           see below. The result says whether it is in force (0 or 1) */
+	int      attenuator;    /* dB, pads before the tuner, apart from the gain's total. RSPduo:
+	                           0, 6, 13 or 19 (to 900 MHz, 11 and 14 for the last two in L
+	                           band), one pad at a time, not on the Hi-Z. RSPdx-R2: 0 to 36 in
+	                           3 dB steps, its pads in series (31 at most at 1.5 GHz).
+	                           mirisdr_get_frontend_caps() lists them */
+	uint32_t flags;         /* MIRISDR_FRONTEND_*, the board's switches, see above */
 	mirisdr_frontend_raw_t raw; /* words replacing the plan's, see above */
 	uint32_t reserved[MIRISDR_RESERVED]; /* Not using _NESTED here as I think this could grow a lot */
 } mirisdr_frontend_config_t;
@@ -524,21 +549,28 @@ MIRISDR_API int mirisdr_set_tuner_override (mirisdr_dev_t *p, int tuner,
 /* not implemented yet */
 MIRISDR_API int mirisdr_set_freq_correction (mirisdr_dev_t *p, int ppm);
 
-/* Direct sampling, RSPdx-R2 only (refused elsewhere). With frontend.direct_sampling set,
- * a tune at MIRISDR_DS_MAX_HZ or below takes the antenna past the tuner, through the
- * 2 MHz low pass, straight to the I converter, and above it the tuner as usual. The tune
- * result's frontend.direct_sampling says which. In force it is like a single output (I)
+/* Direct sampling, RSPdx-R2 only (refused elsewhere). frontend.direct_sampling says when a
+ * tune takes the antenna past the tuner, through the 2 MHz low pass, straight to the I
+ * converter: MIRISDR_DS_ON at MIRISDR_DS_MAX_HZ and below, MIRISDR_DS_AUTO when a baseband
+ * stream's band (the frequency + rate / 2) fits under it (without baseband the frequency
+ * alone), otherwise the tuner as usual. Under AUTO a new rate whose band does not fit
+ * moves the tune to the tuner, and back. The tune result's frontend.direct_sampling says
+ * which. In force it is like a single output (I)
  * whose IF is the frequency, the right way round: a stream following the tune switches
  * to I, and a baseband one puts the frequency at 0 Hz, its converters at 2.4 x the low
  * pass's edge whatever the frequency, so a retune moves only the NCO, no restart. The
  * 500 kHz low pass is taken when a baseband stream's band fits under it. The gain is
  * then the low pass's amplifier alone, about 37 dB: gain.lna in STAGES, a total from
  * 19 dB. The tuner's IF, bandwidth and iq are kept for above. Not in scans.
- * mirisdr_set_direct_sampling(): 0 off, 1 on (the I converter), as librtlsdr's. */
+ * mirisdr_set_direct_sampling(): 0 off, 1 on (the I converter), as librtlsdr's, or
+ * MIRISDR_DS_AUTO. The 2 of librtlsdr, the Q converter, is refused. */
+#define MIRISDR_DS_OFF          0
+#define MIRISDR_DS_ON           1
+#define MIRISDR_DS_AUTO         3
 #define MIRISDR_DS_MAX_HZ       2000000
 #define MIRISDR_DS_LNA_DB       37
 MIRISDR_API int mirisdr_set_direct_sampling (mirisdr_dev_t *p, int on);
-MIRISDR_API int mirisdr_get_direct_sampling (mirisdr_dev_t *p);  /* extra: as set, -1 on error */
+MIRISDR_API int mirisdr_get_direct_sampling (mirisdr_dev_t *p);  /* extra: MIRISDR_DS_* as set, -1 on error */
 
 /* transfer */
 MIRISDR_API int mirisdr_set_transfer (mirisdr_dev_t *p, const char *v);       /* extra */
@@ -561,6 +593,38 @@ MIRISDR_API int mirisdr_get_lna_gain (mirisdr_dev_t *p);                /* extra
 MIRISDR_API int mirisdr_get_baseband_gain (mirisdr_dev_t *p);           /* extra */
 MIRISDR_API int mirisdr_set_bias (mirisdr_dev_t *p, int bias);          /* extra */
 MIRISDR_API int mirisdr_get_bias (mirisdr_dev_t *p);                    /* extra */
+/* The tune's frontend.attenuator, dB: RSPduo and RSPdx-R2, see above */
+MIRISDR_API int mirisdr_set_attenuator (mirisdr_dev_t *p, int db);      /* extra */
+MIRISDR_API int mirisdr_get_attenuator (mirisdr_dev_t *p);              /* extra */
+/* The tune's frontend.flags, MIRISDR_FRONTEND_*: the board's, see above */
+MIRISDR_API int mirisdr_set_frontend_flags (mirisdr_dev_t *p, uint32_t flags); /* extra */
+MIRISDR_API int mirisdr_get_frontend_flags (mirisdr_dev_t *p);          /* extra */
+
+/* What a tuner's front end has, for a program to offer: a field 0 (or none listed) the
+ * board does not have. It does not change while the device is open. What depends on the
+ * frequency comes with a tune: the amplifier's gain in the band (the result's gain), the
+ * Hi-Z only below 30 MHz, smaller pads in L band, and mirisdr_tune_check() says what a tune
+ * would get. -1 for a tuner the board does not have */
+#define MIRISDR_ATTENUATOR_MAX  16
+
+typedef struct mirisdr_frontend_caps
+{
+	int      notches;           /* MIRISDR_NOTCH_* the board has */
+	uint32_t antennas;          /* bit n: frontend.antenna n (MIRISDR_ANTENNA_*) taken */
+	int      antenna_hiz;       /* the antenna that is a Hi-Z input, -1 none */
+	int      bias;              /* a bias-T on this tuner's input (plain boards take frontend.bias
+	                               as libmirisdr did, on GPIO_3, but have none known) */
+	int      direct_sampling;   /* frontend.direct_sampling taken */
+	uint32_t amp_bypass_hz;     /* gain.amp_bypass from this frequency up, 0 no amplifier */
+	int      amp_max_db;        /* the amplifier's gain in its best band */
+	int      attenuator_count;  /* the values frontend.attenuator takes, 1 (0 dB) without pads */
+	int      attenuator[MIRISDR_ATTENUATOR_MAX]; /* dB, from 0 up */
+	uint32_t flags;             /* MIRISDR_FRONTEND_* the board has */
+	uint32_t raw_parts;         /* MIRISDR_FRONTEND_RAW_* the board has */
+	uint32_t reserved[MIRISDR_RESERVED];
+} mirisdr_frontend_caps_t;
+
+MIRISDR_API int mirisdr_get_frontend_caps (mirisdr_dev_t *p, int tuner, mirisdr_frontend_caps_t *caps); /* extra */
 
 /* The single setters for the tune's frontend. Switchable notch filters, RSP1B, RSPdx-R2 and RSPduo only,
  * enabling these filters can improve or reduce signal quality depending on your
@@ -571,10 +635,12 @@ MIRISDR_API int mirisdr_get_bias (mirisdr_dev_t *p);                    /* extra
 MIRISDR_API int mirisdr_set_notch (mirisdr_dev_t *p, int notches);      /* extra */
 MIRISDR_API int mirisdr_get_notch (mirisdr_dev_t *p);                   /* extra */
 
-/* The antenna input. Other boards have only A */
+/* The antenna input. Other boards have only A, but for the RSPduo's Hi-Z input on tuner 0
+   (up to 30 MHz) */
 #define MIRISDR_ANTENNA_A       0
 #define MIRISDR_ANTENNA_B       1
 #define MIRISDR_ANTENNA_C       2
+#define MIRISDR_ANTENNA_HIZ     MIRISDR_ANTENNA_B
 MIRISDR_API int mirisdr_set_antenna (mirisdr_dev_t *p, int antenna);    /* extra */
 MIRISDR_API int mirisdr_get_antenna (mirisdr_dev_t *p);                 /* extra */
 

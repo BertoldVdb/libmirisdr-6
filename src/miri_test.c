@@ -3071,7 +3071,7 @@ static tres_t t_plan_tuners (void)
 {
     mirisdr_dev_t *n;
     mirisdr_tune_config_t c, g;
-    mirisdr_tune_result_t r0, r1;
+    mirisdr_tune_result_t r0, r1, r2;
     mirisdr_stream_config_t s;
     mirisdr_stream_result_t sr;
 
@@ -3087,6 +3087,13 @@ static tres_t t_plan_tuners (void)
     mirisdr_stream_config_default(&s);
     s.tuners = 2;
     if (mirisdr_stream_check(n, &s, &sr) == 0) { plan_bad++; say("tuners 2 on a plain board accepted"); }
+    mirisdr_get_tune(n, 0, &c, NULL);
+    c.frontend.attenuator = 6;
+    if (mirisdr_tune_check(n, 0, &c, NULL) == 0) { plan_bad++; say("a pad on a plain board accepted"); }
+    c.frontend.attenuator = 0;
+    c.frontend.flags = MIRISDR_FRONTEND_PORT_TIE;
+    if (mirisdr_tune_check(n, 0, &c, NULL) == 0) { plan_bad++; say("the port tie on a plain board accepted"); }
+    c.frontend.flags = 0;
 
     mirisdr_set_hw_flavour(n, MIRISDR_HW_RSPDUO);
     if (mirisdr_get_tuner_count(n) != 2) { plan_bad++; say("the RSPduo has %d tuners", mirisdr_get_tuner_count(n)); }
@@ -3102,27 +3109,139 @@ static tres_t t_plan_tuners (void)
     mirisdr_get_tune(n, 1, &g, &r1);
     if (g.frequency != 433000000) { plan_bad++; say("tuner 1 at %u after a setter for tuner 0", g.frequency); }
 
-    /* the first expander: tuner 0 streamed alone, both converters on it (A7 B0 low), tuner
-       1's words routed with B7 low, tuner 0's filter kept */
-    if ((r0.frontend.raw.expander[0] & 0xC180) != 0xC000)
+    /* the first expander: tuner 0 streamed alone, both converters on it (A7 B0 released),
+       its words routed with B7 low, its filter on A0-A4 (145 MHz: A0 A3, and A1 for the
+       amplifier the default gain takes), tuner 1's words with B6 B7 released, its filter
+       (B1-B5) released as it is not streamed, tuner 0's kept */
+    if ((r0.frontend.raw.expander[0] & 0xC180) != 0x4180 || (r0.frontend.raw.expander[0] & 0x001F) != 0x0014)
     { plan_bad++; say("tuner 0 alone: first word %04X", r0.frontend.raw.expander[0]); }
+    /* the 380-420 filter from 340 MHz (A0 A2), the 300-380 one below (A0 A2 A4), each with
+       A1 for the amplifier */
+    mirisdr_get_tune(n, 0, &c, NULL);
+    c.frequency = 350000000;
+    mirisdr_tune(n, 0, &c, &r1);
+    c.frequency = 330000000;
+    mirisdr_tune(n, 0, &c, &r2);
+    if ((r1.frontend.raw.expander[0] & 0x001F) != 0x0018 || (r2.frontend.raw.expander[0] & 0x001F) != 0x0008)
+    { plan_bad++; say("tuner 0 at 350 and 330 MHz: %04X %04X", r1.frontend.raw.expander[0], r2.frontend.raw.expander[0]); }
+    c.frequency = 145000000;
+    mirisdr_tune(n, 0, &c, NULL);
+
+    /* the amplifier (24 dB in band III) in the total, on first: its path, A1 low (B2 for
+       tuner 1), and its supply, the second chip's A5 low (B0 for tuner 1). Bypassed, both
+       released. Clamped at 126 */
+    c.gain.mode = MIRISDR_GAIN_TOTAL;
+    c.gain.total = 200;
+    if (mirisdr_tune(n, 0, &c, &r1) < 0 || r1.gain.total != 126 || r1.gain.amp_bypass || (r1.frontend.raw.expander[0] & 0x0002) ||
+        (r1.frontend.raw.expander[1] & 0x0120) != 0x0100)
+    { plan_bad++; say("total 200 at 145 MHz: %d, bypass %d, words %04X %04X", r1.gain.total, r1.gain.amp_bypass, r1.frontend.raw.expander[0], r1.frontend.raw.expander[1]); }
+    c.gain.total = 24;
+    if (mirisdr_tune(n, 0, &c, &r1) < 0 || r1.gain.total != 24 || r1.gain.amp_bypass || (r1.frontend.raw.expander[0] & 0x001F) != 0x0014)
+    { plan_bad++; say("total 24 at 145 MHz: %d, bypass %d, word %04X", r1.gain.total, r1.gain.amp_bypass, r1.frontend.raw.expander[0]); }
+    c.gain.total = 23;
+    if (mirisdr_tune(n, 0, &c, &r1) < 0 || r1.gain.total != 23 || !r1.gain.amp_bypass || (r1.frontend.raw.expander[0] & 0x001F) != 0x0016 ||
+        (r1.frontend.raw.expander[1] & 0x0120) != 0x0120)
+    { plan_bad++; say("total 23 at 145 MHz: %d, bypass %d, words %04X %04X", r1.gain.total, r1.gain.amp_bypass, r1.frontend.raw.expander[0], r1.frontend.raw.expander[1]); }
+    /* the single setter switches it too */
+    mirisdr_set_tuner_gain(n, 60);
+    mirisdr_get_tune(n, 0, NULL, &r1);
+    if (r1.gain.total != 60 || r1.gain.amp_bypass || (r1.frontend.raw.expander[0] & 0x001F) != 0x0014)
+    { plan_bad++; say("the setter's 60 at 145 MHz: %d, bypass %d, word %04X", r1.gain.total, r1.gain.amp_bypass, r1.frontend.raw.expander[0]); }
+    mirisdr_set_tuner_gain(n, 10);
+    mirisdr_get_tune(n, 0, NULL, &r1);
+    if (r1.gain.total != 10 || !r1.gain.amp_bypass || (r1.frontend.raw.expander[0] & 0x001F) != 0x0016)
+    { plan_bad++; say("the setter's 10 at 145 MHz: %d, bypass %d, word %04X", r1.gain.total, r1.gain.amp_bypass, r1.frontend.raw.expander[0]); }
+    if (mirisdr_get_tuner_gain(n) != 10) { plan_bad++; say("the getter says %d", mirisdr_get_tuner_gain(n)); }
+
+    /* the pads, apart from the total: tuner 0's 13 dB on B3 of the second chip, the
+       amplifier back on by STAGES */
+    mirisdr_get_tune(n, 0, &c, &r1);
+    c.gain = r1.gain;
+    c.gain.amp_bypass = 0;
+    c.frontend.attenuator = 13;
+    if (mirisdr_tune(n, 0, &c, &r1) < 0 || r1.frontend.attenuator != 13 || r1.gain.amp_bypass || r1.gain.total != 34 ||
+        (r1.frontend.raw.expander[1] & 0x1C00) != 0x1400)
+    { plan_bad++; say("the 13 dB pad: %d, total %d, second word %04X", r1.frontend.attenuator, r1.gain.total, r1.frontend.raw.expander[1]); }
+    c.frontend.attenuator = 7;
+    if (mirisdr_tune_check(n, 0, &c, NULL) == 0) { plan_bad++; say("a 7 dB pad accepted"); }
+    mirisdr_get_tune(n, 0, &c, NULL);
+    c.gain.mode = MIRISDR_GAIN_TOTAL;
+    c.gain.total = 50;
+    if (mirisdr_tune(n, 0, &c, &r1) < 0 || r1.frontend.attenuator != 13 || r1.gain.total != 50)
+    { plan_bad++; say("total 50 with the pad: %d, total %d", r1.frontend.attenuator, r1.gain.total); }
+    if (mirisdr_set_attenuator(n, 19) < 0 || mirisdr_get_attenuator(n) != 19 || mirisdr_set_attenuator(n, 5) == 0 ||
+        mirisdr_get_attenuator(n) != 19)
+    { plan_bad++; say("the attenuator setter: %d", mirisdr_get_attenuator(n)); }
+    mirisdr_get_tune(n, 0, NULL, &r1);
+    if ((r1.frontend.raw.expander[1] & 0x1C00) != 0x0C00) { plan_bad++; say("the 19 dB pad: second word %04X", r1.frontend.raw.expander[1]); }
+    mirisdr_set_attenuator(n, 0);
+
+    /* the port tie (A2 of the second chip), the board's: set by tuner 0's setter, tuner 1's
+       tune config has it and keeps it, its result reports it, and a flag the board lacks refused */
+    if (mirisdr_set_frontend_flags(n, MIRISDR_FRONTEND_PORT_TIE) < 0 ||
+        mirisdr_get_frontend_flags(n) != MIRISDR_FRONTEND_PORT_TIE)
+    { plan_bad++; say("the port tie refused: flags %d", mirisdr_get_frontend_flags(n)); }
+    mirisdr_get_tune(n, 0, NULL, &r1);
+    if ((r1.frontend.raw.expander[1] & 0x0004) || r1.frontend.flags != MIRISDR_FRONTEND_PORT_TIE)
+    { plan_bad++; say("the port tie: flags %x, second word %04X", r1.frontend.flags, r1.frontend.raw.expander[1]); }
+    mirisdr_get_tune(n, 1, &g, NULL);
+    g.frequency = 433000000;
+    if (!(g.frontend.flags & MIRISDR_FRONTEND_PORT_TIE) || mirisdr_tune(n, 1, &g, &r2) < 0 ||
+        (r2.frontend.raw.expander[1] & 0x0004) || r2.frontend.flags != MIRISDR_FRONTEND_PORT_TIE)
+    { plan_bad++; say("the port tie on tuner 1: config %x, flags %x, second word %04X", g.frontend.flags,
+                      r2.frontend.flags, r2.frontend.raw.expander[1]); }
+    g.frontend.flags = 0;
+    if (mirisdr_tune(n, 1, &g, &r2) < 0 || !(r2.frontend.raw.expander[1] & 0x0004) || mirisdr_get_frontend_flags(n) != 0)
+    { plan_bad++; say("the port tie left on: second word %04X", r2.frontend.raw.expander[1]); }
+    mirisdr_get_tune(n, 0, &c, &r1);
+    if (c.frontend.flags || r1.frontend.flags) { plan_bad++; say("tuner 0 still has the tie: %x %x", c.frontend.flags, r1.frontend.flags); }
+    c.frontend.flags = 1u << 5;
+    if (mirisdr_tune_check(n, 0, &c, NULL) == 0) { plan_bad++; say("an unknown front end flag accepted"); }
+
+    /* the reference output (A5 of the first chip), the board's too, and tuner 1's HF codes leave
+       A5 released */
+    if (mirisdr_set_frontend_flags(n, MIRISDR_FRONTEND_REF_OUT) < 0) { plan_bad++; say("the reference output refused"); }
+    mirisdr_get_tune(n, 0, NULL, &r1);
+    if ((r1.frontend.raw.expander[0] & 0x0020) || r1.frontend.flags != MIRISDR_FRONTEND_REF_OUT)
+    { plan_bad++; say("the reference output: flags %x, first word %04X", r1.frontend.flags, r1.frontend.raw.expander[0]); }
+    mirisdr_set_frontend_flags(n, 0);
+    mirisdr_get_tune(n, 0, NULL, &r1);
+    if (!(r1.frontend.raw.expander[0] & 0x0020)) { plan_bad++; say("the reference output left on: %04X", r1.frontend.raw.expander[0]); }
+    mirisdr_get_tune(n, 1, &g, NULL);
+    g.frequency = 7000000;
+    if (mirisdr_tune_check(n, 1, &g, &r2) < 0 || !(r2.frontend.raw.expander[0] & 0x0020))
+    { plan_bad++; say("tuner 1 at 7 MHz pulls A5: %04X", r2.frontend.raw.expander[0]); }
+
+    /* no amplifier at HF: a bypass asked for changes nothing */
+    mirisdr_get_tune(n, 0, &c, &r1);
+    c.frequency = 10000000;
+    c.gain = r1.gain;
+    c.gain.amp_bypass = 1;
+    if (mirisdr_tune_check(n, 0, &c, &r2) < 0 || r2.gain.amp_bypass || r2.gain.total != r2.gain.baseband + (r2.gain.mixer ? 19 : 0) + r2.gain.mixbuffer)
+    { plan_bad++; say("a bypass at 10 MHz: %d, total %d", r2.gain.amp_bypass, r2.gain.total); }
+    mirisdr_get_tune(n, 0, &c, NULL);
+    c.gain.mode = MIRISDR_GAIN_TOTAL;
+    c.gain.total = 40;
+    mirisdr_tune(n, 0, &c, &r0);
     c.frequency = 433000000;
     mirisdr_tune(n, 1, &c, &r1);
-    if ((r1.frontend.raw.expander[0] & 0xC180) != 0x4000 ||
-        (r1.frontend.raw.expander[0] & 0x3E7F) != (r0.frontend.raw.expander[0] & 0x3E7F))
+    if ((r1.frontend.raw.expander[0] & 0xC180) != 0xC180 || (r1.frontend.raw.expander[0] & 0x3E20) != 0x3E20 ||
+        (r1.frontend.raw.expander[0] & 0x001F) != (r0.frontend.raw.expander[0] & 0x001F))
     { plan_bad++; say("tuner 1 tuned: first word %04X after tuner 0's %04X", r1.frontend.raw.expander[0], r0.frontend.raw.expander[0]); }
 
-    /* tuner 1 alone: the converters on it (A7 B0 released), the single setters on it */
+    /* tuner 1 alone: the converters on it (A7 B0 low), its filter on (433 MHz: B1 B4 B5,
+       and B2 for its amplifier) and tuner 0's released, the single setters on it */
     mirisdr_get_stream(n, &s, NULL);
     s.tuners = 2;
     if (mirisdr_set_stream(n, &s, &sr) < 0 || sr.tuners != 2) { plan_bad++; say("tuner 1 alone refused"); }
     mirisdr_get_tune(n, 1, NULL, &r1);
-    if ((r1.frontend.raw.expander[0] & 0x0180) != 0x0180) { plan_bad++; say("tuner 1 alone: first word %04X", r1.frontend.raw.expander[0]); }
+    if ((r1.frontend.raw.expander[0] & 0x0180) != 0x0000 || (r1.frontend.raw.expander[0] & 0x3E3F) != 0x083F)
+    { plan_bad++; say("tuner 1 alone: first word %04X", r1.frontend.raw.expander[0]); }
     mirisdr_set_center_freq(n, 434000000);
     mirisdr_get_tune(n, 1, &g, NULL);
     if (g.frequency != 434000000) { plan_bad++; say("the single setter did not reach tuner 1 streamed alone"); }
 
-    /* both: refused without baseband, at zero IF, or one output, then A7 low alone */
+    /* both: refused without baseband, at zero IF, or one output, then B0 low alone */
     s.tuners = 3;
     s.baseband = 0;
     if (mirisdr_stream_check(n, &s, &sr) == 0) { plan_bad++; say("two tuners without baseband accepted"); }
@@ -3137,7 +3256,9 @@ static tres_t t_plan_tuners (void)
         sr.adc_rate != 1800000 || sr.rate != 225000 || sr.nco || sr.resampled)
     { plan_bad++; say("two tuners at 450 kHz, 225000: %u from %u, path %d, nco %d", sr.rate, sr.adc_rate, sr.baseband, sr.nco); }
     mirisdr_get_tune(n, 0, NULL, &r0);
-    if ((r0.frontend.raw.expander[0] & 0x0180) != 0x0100) { plan_bad++; say("two tuners: first word %04X", r0.frontend.raw.expander[0]); }
+    if ((r0.frontend.raw.expander[0] & 0x0180) != 0x0080 || (r0.frontend.raw.expander[0] & 0x3E3F) != 0x0834 ||
+        (r0.frontend.raw.expander[1] & 0x0120))
+    { plan_bad++; say("two tuners: first word %04X", r0.frontend.raw.expander[0]); }
     /* a tune to one output now refused, a different IF takes the higher converter rate */
     c.iq = MIRISDR_IQ_ONLY_I;
     if (mirisdr_tune(n, 1, &c, NULL) == 0) { plan_bad++; say("one output on a tuner of two accepted"); }
@@ -3531,29 +3652,67 @@ static tres_t t_plan_raw (void)
     memset(&c.frontend.raw, 0, sizeof c.frontend.raw);
     c.frontend.direct_sampling = 0; c.frequency = 100000000;
 
-    /* RSPduo: both chips, each selected as decoded, the notch and bias-T refused */
+    /* RSPduo: both chips, each selected as decoded, tuner 0's filter on A0-A4 (100 MHz: A0
+       A3 A4, and a total under the amplifier's gain bypasses it), the ports' tie open, its
+       notches A4 and A6, the bias-T (tuner 1's) refused */
     mirisdr_set_hw_flavour(n, MIRISDR_HW_RSPDUO);
+    c.gain.mode = MIRISDR_GAIN_TOTAL; c.gain.total = 10;
     plan_tune(n, "RSPduo, plan words", &c, 1, &r);
-    plan_raw_want("RSPduo", &r, G | E1 | E2, 0xE, 0xA, 0xCC7F, 0xFFFB);
-    if (plan_fe(n, &c, &f) < 0 || f.word[0] != 0xCC7F || f.word[1] != 0xFFFB) { plan_bad++; say("RSPduo sent %04X %04X", f.word[0], f.word[1]); }
+    plan_raw_want("RSPduo", &r, G | E1 | E2, 0xE, 0xA, 0x7FE6, 0xFFFF);
+    if (plan_fe(n, &c, &f) < 0 || f.word[0] != 0x7FE6 || f.word[1] != 0xFFFF) { plan_bad++; say("RSPduo sent %04X %04X", f.word[0], f.word[1]); }
     if ((f.sel[0] & 0xCC00) != 0xC000) { plan_bad++; say("RSPduo first chip selected with register 8 %06X", f.sel[0]); }
     if ((f.sel[1] & 0xCC00) != 0xCC00) { plan_bad++; say("RSPduo second chip selected with register 8 %06X", f.sel[1]); }
     c.frontend.raw.fields = E2; c.frontend.raw.expander[1] = 0x00FF;
     plan_tune(n, "RSPduo, raw second word", &c, 1, &r);
-    plan_raw_want("RSPduo raw second word", &r, G | E1 | E2, 0xE, 0xA, 0xCC7F, 0x00FF);
-    if (plan_fe(n, &c, &f) < 0 || f.word[0] != 0xCC7F || f.word[1] != 0x00FF) { plan_bad++; say("RSPduo raw second word sent %04X %04X", f.word[0], f.word[1]); }
+    plan_raw_want("RSPduo raw second word", &r, G | E1 | E2, 0xE, 0xA, 0x7FE6, 0x00FF);
+    if (plan_fe(n, &c, &f) < 0 || f.word[0] != 0x7FE6 || f.word[1] != 0x00FF) { plan_bad++; say("RSPduo raw second word sent %04X %04X", f.word[0], f.word[1]); }
     memset(&c.frontend.raw, 0, sizeof c.frontend.raw);
     c.frontend.notch = MIRISDR_NOTCH_FM | MIRISDR_NOTCH_DAB;
     plan_tune(n, "RSPduo, the notches", &c, 1, &r);
-    plan_raw_want("RSPduo notches", &r, G | E1 | E2, 0xE, 0xA, 0xCC7F, 0xFD7B);
+    plan_raw_want("RSPduo notches", &r, G | E1 | E2, 0xE, 0xA, 0x7FE6, 0xFFAF);
     c.frontend.notch = 0; c.frontend.bias = 1;
     plan_tune(n, "RSPduo, the bias-T", &c, 0, &r);
     c.frontend.bias = 0;
+    c.gain.mode = MIRISDR_GAIN_KEEP;
+
+    /* the Hi-Z: tuner 0's AM input 1 (its own gain steps) up to 30 MHz, its own MW notch (A3,
+       with the 50 ohm port's A4), refused at 30 MHz and on tuner 1 */
+    {
+        mirisdr_gain_config_t g = c.gain;
+
+        c.frequency = 7000000; c.frontend.antenna = MIRISDR_ANTENNA_HIZ; c.frontend.notch = MIRISDR_NOTCH_MW;
+        plan_tune(n, "RSPduo, the Hi-Z", &c, 1, &r);
+        if (r.band != MIRISDR_BAND_AM1 || r.frontend.raw.expander[1] != 0xFFE7)
+        { plan_bad++; say("RSPduo Hi-Z: band %d, second word %04X", (int) r.band, r.frontend.raw.expander[1]); }
+        c.gain.mode = MIRISDR_GAIN_STAGES; c.gain.lna = 0; c.gain.mixer = 1; c.gain.baseband = 30; c.gain.mixbuffer = 24;
+        plan_tune(n, "RSPduo, the Hi-Z at mixbuffer 24", &c, 0, &r);
+        c.gain.mixbuffer = 18;
+        plan_tune(n, "RSPduo, the Hi-Z at mixbuffer 18", &c, 1, &r);
+        c.gain = g;
+        c.frequency = 30000000;
+        plan_tune(n, "RSPduo, the Hi-Z at 30 MHz", &c, 0, &r);
+        c.frequency = 7000000;
+        if (mirisdr_tune_check(n, 1, &c, &r) == 0) { plan_bad++; say("the Hi-Z on tuner 1 accepted"); }
+
+        /* a kept stage gain keeps its dB between the inputs: the mixbuffer's 24 on the 50 ohm
+           port the nearest the Hi-Z has, 18, and back */
+        c.frontend.antenna = MIRISDR_ANTENNA_A; c.frontend.notch = 0;
+        c.gain.mode = MIRISDR_GAIN_STAGES; c.gain.lna = 0; c.gain.mixer = 1; c.gain.baseband = 30; c.gain.mixbuffer = 24;
+        if (mirisdr_tune(n, 0, &c, &r) < 0 || r.gain.mixbuffer != 24) { plan_bad++; say("RSPduo 50 ohm at mixbuffer 24 refused"); }
+        c.gain.mode = MIRISDR_GAIN_KEEP; c.frontend.antenna = MIRISDR_ANTENNA_HIZ;
+        if (mirisdr_tune(n, 0, &c, &r) < 0 || r.gain.mixbuffer != 18 || r.gain.baseband != 30)
+        { plan_bad++; say("the Hi-Z kept mixbuffer %d baseband %d, not 18 30", r.gain.mixbuffer, r.gain.baseband); }
+        c.frontend.antenna = MIRISDR_ANTENNA_A;
+        if (mirisdr_tune(n, 0, &c, &r) < 0 || r.gain.mixbuffer != 24)
+        { plan_bad++; say("back on 50 ohm the mixbuffer kept %d, not 24", r.gain.mixbuffer); }
+        c.gain = g;
+        c.frequency = 100000000;
+    }
 
     /* what a tune sent, read back */
     c.frontend.raw.fields = E1; c.frontend.raw.expander[0] = 0xABCD;
     if (mirisdr_tune(n, 0, &c, NULL) < 0 || mirisdr_get_tune(n, 0, NULL, &r) < 0) { plan_bad++; say("RSPduo raw tune failed"); }
-    else plan_raw_want("RSPduo get_tune", &r, G | E1 | E2, 0xE, 0xA, 0xABCD, 0xFFFB);
+    else plan_raw_want("RSPduo get_tune", &r, G | E1 | E2, 0xE, 0xA, 0xABCD, 0xFFDF);   /* tuner 0's amplifier supply */
 
     mirisdr_close(n);
 
@@ -3628,6 +3787,55 @@ static tres_t t_plan_dxr2 (void)
     if ((w = plan_exp_word(n, &c)) != 0x3DFB) { plan_bad++; say("401 kHz, 200 kHz wide: word %04X, not 3DFB", w); }
     c.if_freq = 0; c.bandwidth = 0;
 
+    /* HF: 2-12 up to 13 MHz, then 12-30 with A5 low only from 17 to 26 MHz (port A's A2 low) */
+    {
+        static const struct { uint32_t hz; uint16_t word; } hf[] = {
+            { 12500000, 0x3CFB }, { 13000000, 0x3EFB }, { 16900000, 0x3EFB }, { 17000000, 0x3EDB },
+            { 25900000, 0x3EDB }, { 26000000, 0x3EFB }, { 29900000, 0x3EFB },
+        };
+        mirisdr_tune_config_default(&c);
+        for (i = 0; i < sizeof hf / sizeof hf[0]; i++)
+        {
+            c.frequency = hf[i].hz;
+            if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.frontend.raw.expander[0] != hf[i].word)
+            { plan_bad++; say("RSPdx-R2 at %u Hz: word %04X, not %04X", hf[i].hz, r.frontend.raw.expander[0], hf[i].word); }
+        }
+    }
+
+    /* the amplifier (A5 low) in the total from 55 MHz, a total under its 24 dB at 100 MHz
+       bypassing it (A5 released), none to bypass at 10 MHz, the plan's word as it is. The pads in series on B2-B5,
+       apart from the total: 21 dB is B3 and B5, 36 all four, and 4 and 39 are refused */
+    c.frequency = 100000000; c.frontend.antenna = MIRISDR_ANTENNA_A;
+    c.gain.mode = MIRISDR_GAIN_TOTAL; c.gain.total = 200;
+    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.gain.total != 126 || r.gain.amp_bypass || r.frontend.raw.expander[0] != 0xBFDB)
+    { plan_bad++; say("RSPdx-R2 total 200 at 100 MHz: %d, bypass %d, word %04X", r.gain.total, r.gain.amp_bypass, r.frontend.raw.expander[0]); }
+    c.gain.total = 23;
+    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.gain.total != 23 || !r.gain.amp_bypass || r.frontend.raw.expander[0] != 0xBFFB)
+    { plan_bad++; say("RSPdx-R2 total 23 at 100 MHz: %d, bypass %d, word %04X", r.gain.total, r.gain.amp_bypass, r.frontend.raw.expander[0]); }
+    c.gain.mode = MIRISDR_GAIN_STAGES; c.gain.lna = 1; c.gain.mixer = 1; c.gain.mixbuffer = 0; c.gain.baseband = 30; c.gain.amp_bypass = 0;
+    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.gain.total != 24 + 24 + 19 + 30 || r.frontend.raw.expander[0] != 0xBFDB)
+    { plan_bad++; say("RSPdx-R2 stages with the amplifier: %d, word %04X", r.gain.total, r.frontend.raw.expander[0]); }
+    c.gain.amp_bypass = 1;
+    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.gain.total != 24 + 19 + 30 || r.frontend.raw.expander[0] != 0xBFFB)
+    { plan_bad++; say("RSPdx-R2 stages bypassed: %d, word %04X", r.gain.total, r.frontend.raw.expander[0]); }
+    c.frequency = 10000000;
+    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.gain.amp_bypass || r.frontend.raw.expander[0] != 0x3CFB)
+    { plan_bad++; say("RSPdx-R2 bypass at 10 MHz: %d, word %04X", r.gain.amp_bypass, r.frontend.raw.expander[0]); }
+    c.frequency = 100000000; c.gain.amp_bypass = 0;
+    c.frontend.attenuator = 21;
+    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.frontend.attenuator != 21 || r.gain.total != 97 || r.frontend.raw.expander[0] != 0x97DB)
+    { plan_bad++; say("RSPdx-R2 21 dB of pads: %d, total %d, word %04X", r.frontend.attenuator, r.gain.total, r.frontend.raw.expander[0]); }
+    c.frontend.attenuator = 36;
+    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.frontend.raw.expander[0] != 0x83DB)
+    { plan_bad++; say("RSPdx-R2 36 dB of pads: word %04X", r.frontend.raw.expander[0]); }
+    c.frontend.attenuator = 4;
+    if (mirisdr_tune_check(n, 0, &c, &r) == 0) { plan_bad++; say("RSPdx-R2 4 dB of pads accepted"); }
+    c.frontend.attenuator = 39;
+    if (mirisdr_tune_check(n, 0, &c, &r) == 0) { plan_bad++; say("RSPdx-R2 39 dB of pads accepted"); }
+    if (mirisdr_set_attenuator(n, 12) < 0 || mirisdr_get_attenuator(n) != 12) { plan_bad++; say("RSPdx-R2 attenuator setter: %d", mirisdr_get_attenuator(n)); }
+    mirisdr_set_attenuator(n, 0);
+    mirisdr_tune_config_default(&c);
+
     /* the antenna in the result and through the setter, and back to A on another board */
     c.frequency = 100000000; c.frontend.bias = 0; c.frontend.notch = 0; c.frontend.antenna = MIRISDR_ANTENNA_C;
     if (mirisdr_tune(n, 0, &c, &r) < 0 || r.frontend.antenna != MIRISDR_ANTENNA_C) { plan_bad++; say("antenna C not in force"); }
@@ -3639,6 +3847,51 @@ static tres_t t_plan_dxr2 (void)
 
     mirisdr_close(n);
     if (!plan_bad) say("the plan's words from 300 kHz to 1.4 GHz, the 500 kHz low pass by the filter's edge, the antenna, bias-T and notch bits, refused elsewhere");
+    return plan_bad ? T_FAIL : T_PASS;
+}
+
+/* What each board's front end has, as mirisdr_get_frontend_caps() lists it */
+static tres_t t_plan_caps (void)
+{
+    static const struct {
+        int flavour, tuner, notches; uint32_t antennas; int hiz, bias, ds; uint32_t amp_hz; int amp_max, natt, att_top;
+        uint32_t flags, raw;
+    } want[] = {
+        { MIRISDR_HW_DEFAULT, 0, 0, 0x1, -1, 0, 0, 0, 0, 1, 0, 0, 0x1 },
+        { MIRISDR_HW_RSP1B,   0, 7, 0x1, -1, 1, 0, 0, 0, 1, 0, 0, 0x3 },
+        { MIRISDR_HW_RSPDXR2, 0, 7, 0x7, -1, 1, 1, 55000000, 25, 13, 36, 0, 0x3 },
+        { MIRISDR_HW_RSPDUO,  0, 7, 0x3, MIRISDR_ANTENNA_HIZ, 0, 0, 55000000, 25, 4, 19, MIRISDR_FRONTEND_PORT_TIE | MIRISDR_FRONTEND_REF_OUT, 0x7 },
+        { MIRISDR_HW_RSPDUO,  1, 7, 0x1, -1, 1, 0, 55000000, 25, 4, 19, MIRISDR_FRONTEND_PORT_TIE | MIRISDR_FRONTEND_REF_OUT, 0x7 },
+    };
+    mirisdr_dev_t *n;
+    mirisdr_frontend_caps_t c;
+    unsigned i;
+
+    plan_bad = 0;
+
+    if (mirisdr_open_null(&n, "252_S16") < 0) { say("no null device"); return T_FAIL; }
+
+    for (i = 0; i < sizeof want / sizeof want[0]; i++)
+    {
+        mirisdr_set_hw_flavour(n, want[i].flavour);
+        if (mirisdr_get_frontend_caps(n, want[i].tuner, &c) < 0) { plan_bad++; say("board %d tuner %d: no caps", want[i].flavour, want[i].tuner); continue; }
+        if (c.notches != want[i].notches || c.antennas != want[i].antennas || c.antenna_hiz != want[i].hiz ||
+            c.bias != want[i].bias || c.direct_sampling != want[i].ds || c.amp_bypass_hz != want[i].amp_hz ||
+            c.amp_max_db != want[i].amp_max || c.attenuator_count != want[i].natt || c.attenuator[0] != 0 ||
+            c.attenuator[c.attenuator_count - 1] != want[i].att_top || c.flags != want[i].flags || c.raw_parts != want[i].raw)
+        {
+            plan_bad++;
+            say("board %d tuner %d: notches %x antennas %x hiz %d bias %d ds %d amp %u/%d pads %d to %d flags %x raw %x",
+                want[i].flavour, want[i].tuner, c.notches, c.antennas, c.antenna_hiz, c.bias, c.direct_sampling,
+                c.amp_bypass_hz, c.amp_max_db, c.attenuator_count, c.attenuator[c.attenuator_count - 1], c.flags, c.raw_parts);
+        }
+    }
+    if (mirisdr_get_frontend_caps(n, 2, &c) == 0) { plan_bad++; say("caps of the RSPduo's tuner 2"); }
+    mirisdr_set_hw_flavour(n, MIRISDR_HW_RSPDXR2);
+    if (mirisdr_get_frontend_caps(n, 1, &c) == 0) { plan_bad++; say("caps of the RSPdx-R2's tuner 1"); }
+
+    mirisdr_close(n);
+    if (!plan_bad) say("notches, antennas, bias-T, direct sampling, amplifier, pads, flags and raw parts for each board and tuner");
     return plan_bad ? T_FAIL : T_PASS;
 }
 
@@ -4003,7 +4256,9 @@ static tres_t t_tune_api (void)
         mirisdr_tune_config_t g;
 
         mirisdr_tune_config_default(&g);
+        /* the RSPduo's amplifier bypassed: the tuner's stages alone */
         g.frequency = 100000000; g.gain.mode = MIRISDR_GAIN_STAGES; g.gain.mixer = 1; g.gain.baseband = 20;
+        g.gain.amp_bypass = 1;
         if (mirisdr_tune(dev, 0, &g, &r) < 0) { say("a tune with stages refused"); return T_FAIL; }
         if (mirisdr_get_lna_gain(dev) != 0 || mirisdr_get_mixer_gain(dev) != 19 || mirisdr_get_baseband_gain(dev) != 20 ||
             r.gain.total != 39 || mirisdr_get_tuner_gain(dev) != 39)
@@ -4752,7 +5007,46 @@ static tres_t t_bb_ds (void)
     if (mirisdr_tune(n, 0, &tc, &tr) < 0 || !tr.gain.lna || tr.gain.total != MIRISDR_DS_LNA_DB) { say("total 25: lna %d", tr.gain.lna); bad++; }
     tc.gain.mode = MIRISDR_GAIN_STAGES; tc.gain.lna = 0; tc.gain.mixer = 1; tc.gain.baseband = 20;
     if (mirisdr_tune(n, 0, &tc, &tr) < 0 || tr.gain.lna) { say("stages without the LNA: lna %d", tr.gain.lna); bad++; }
+    /* the single setters reach the amplifier too (A0 low bypasses it) */
+    if (mirisdr_set_lna_gain(n, 1) < 0 || mirisdr_get_tune(n, 0, NULL, &tr) < 0 || !tr.gain.lna ||
+        !(tr.frontend.raw.expander[0] & 1)) { say("set_lna_gain 1: lna %d, word %04X", tr.gain.lna, tr.frontend.raw.expander[0]); bad++; }
+    if (mirisdr_set_tuner_gain(n, 10) < 0 || mirisdr_get_tune(n, 0, NULL, &tr) < 0 || tr.gain.lna ||
+        (tr.frontend.raw.expander[0] & 1)) { say("set_tuner_gain 10: lna %d, word %04X", tr.gain.lna, tr.frontend.raw.expander[0]); bad++; }
+    if (mirisdr_set_tuner_gain(n, 30) < 0 || mirisdr_get_tune(n, 0, NULL, &tr) < 0 || !tr.gain.lna ||
+        !tr.frontend.direct_sampling) { say("set_tuner_gain 30: lna %d, ds %d", tr.gain.lna, tr.frontend.direct_sampling); bad++; }
     if (mirisdr_get_direct_sampling(n) != 1) { say("get_direct_sampling %d", mirisdr_get_direct_sampling(n)); bad++; }
+
+    /* auto: a baseband stream's band decides, it has to fit under 2 MHz, so 1.9 MHz at 250
+       ksps takes the tuner (at a 450 kHz IF, which carries the rate) where on does not, and
+       at 1.7 MHz a rate whose band does not fit switches to it and back */
+    {
+        mirisdr_stream_config_t sc;
+        mirisdr_stream_result_t sr2;
+
+        tc.gain.mode = MIRISDR_GAIN_TOTAL; tc.gain.total = 30;
+        tc.frontend.direct_sampling = MIRISDR_DS_AUTO;
+        tc.if_freq = 450000;
+        tc.frequency = 1700000;
+        if (mirisdr_tune(n, 0, &tc, &tr) < 0) { say("1.7 MHz at a 450 kHz IF refused"); bad++; }
+        mirisdr_get_stream(n, &sc, NULL);
+        sc.baseband = 1; sc.rate = 250000;
+        if (mirisdr_set_stream(n, &sc, &sr2) < 0) { say("baseband 250 ksps refused"); bad++; }
+        tc.frequency = 1900000;
+        if (mirisdr_tune(n, 0, &tc, &tr) < 0 || tr.frontend.direct_sampling) { say("auto, 1.9 MHz at 250 ksps: direct sampling %d", tr.frontend.direct_sampling); bad++; }
+        tc.frontend.direct_sampling = MIRISDR_DS_ON;
+        if (mirisdr_tune(n, 0, &tc, &tr) < 0 || !tr.frontend.direct_sampling) { say("on, 1.9 MHz at 250 ksps: direct sampling %d", tr.frontend.direct_sampling); bad++; }
+        if (mirisdr_set_direct_sampling(n, MIRISDR_DS_AUTO) < 0 || mirisdr_get_direct_sampling(n) != MIRISDR_DS_AUTO ||
+            mirisdr_get_tune(n, 0, NULL, &tr) < 0 || tr.frontend.direct_sampling) { say("set_direct_sampling auto at 1.9 MHz: in force %d", tr.frontend.direct_sampling); bad++; }
+        tc.frontend.direct_sampling = MIRISDR_DS_AUTO;
+        tc.frequency = 1700000;
+        if (mirisdr_tune(n, 0, &tc, &tr) < 0 || !tr.frontend.direct_sampling) { say("1.7 MHz at 250 ksps: direct sampling %d", tr.frontend.direct_sampling); bad++; }
+        sc.rate = 800000;
+        if (mirisdr_set_stream(n, &sc, &sr2) < 0 || mirisdr_get_tune(n, 0, NULL, &tr) < 0 || tr.frontend.direct_sampling ||
+            tr.iq != MIRISDR_IQ_BOTH) { say("1.7 MHz at 800 ksps: direct sampling %d, iq %d", tr.frontend.direct_sampling, tr.iq); bad++; }
+        sc.rate = 250000;
+        if (mirisdr_set_stream(n, &sc, &sr2) < 0 || mirisdr_get_tune(n, 0, NULL, &tr) < 0 || !tr.frontend.direct_sampling ||
+            sr2.adc_rate != 4800000) { say("1.7 MHz back at 250 ksps: direct sampling %d, converters %u", tr.frontend.direct_sampling, sr2.adc_rate); bad++; }
+    }
     mirisdr_close(n);
 
     if (!bad) say("the band at 0 Hz the right way round, %.0f dB over its mirror, both low passes, a retune moving the NCO alone; the tuner again above 2 MHz", worst);
@@ -5699,6 +5993,7 @@ static const struct {
     { "plan",     "stream following the tune",  t_plan_follow         },
     { "plan",     "frontend with the tune",     t_plan_frontend       },
     { "plan",     "RSPdx-R2 front end",         t_plan_dxr2           },
+    { "plan",     "front end caps",             t_plan_caps           },
     { "plan",     "raw front end words",        t_plan_raw            },
     { "plan",     "reserved room to grow",      t_plan_reserved       },
     { "plan",     "automatic filter",           t_plan_bw_auto        },
