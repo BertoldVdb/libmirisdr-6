@@ -46,8 +46,8 @@
  *
  *   B1 B0: HF bank (A7 released), 500 kHz low pass both released, 2 MHz low pass
  *     B1 low, 2-12 both low, 12-30 B0 low. A5 low with 12-30 takes 11-20 dB
- *     more off below 12 MHz, and in band it moves the filter's dip from 21 MHz to
- *     28 MHz (soft.c's plan takes the better one)
+ *     more off below 12 MHz and raises the floor 3-5 dB in band. The plan keeps
+ *     it released at HF
  *   A3 A2: antenna, A2 low A, A3 low B, both low C. Both released connects A and B
  *     together. The other ports are 26-45 dB down
  *   A1: bias-T, on port B

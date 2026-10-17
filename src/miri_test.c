@@ -3729,7 +3729,7 @@ static tres_t t_plan_dxr2 (void)
         {   1000000, MIRISDR_ANTENNA_A, 0, 0, 0x3DFB },    /*   reaches past 500 kHz */
         {   5000000, MIRISDR_ANTENNA_A, 0, 0, 0x3CFB },    /* 2-12 */
         {  13000000, MIRISDR_ANTENNA_A, 0, 0, 0x3EFB },    /* 12-30 */
-        {  20000000, MIRISDR_ANTENNA_A, 0, 0, 0x3EDB },    /* 12-30 with A5 */
+        {  20000000, MIRISDR_ANTENNA_A, 0, 0, 0x3EFB },    /* 12-30, A5 released */
         {  40000000, MIRISDR_ANTENNA_A, 0, 0, 0x3D5B },    /* 30-60 */
         { 100000000, MIRISDR_ANTENNA_A, 0, 0, 0xBFDB },    /* VHF */
         { 150000000, MIRISDR_ANTENNA_A, 0, 0, 0x7FDB },    /* band III */
@@ -3787,11 +3787,13 @@ static tres_t t_plan_dxr2 (void)
     if ((w = plan_exp_word(n, &c)) != 0x3DFB) { plan_bad++; say("401 kHz, 200 kHz wide: word %04X, not 3DFB", w); }
     c.if_freq = 0; c.bandwidth = 0;
 
-    /* HF: 2-12 up to 13 MHz, then 12-30 with A5 low only from 17 to 26 MHz (port A's A2 low) */
+    /* HF: the 2 MHz low pass to 1.7 MHz, 2-12 up to 13 MHz, then 12-30, A5 released throughout
+       (port A's A2 low) */
     {
         static const struct { uint32_t hz; uint16_t word; } hf[] = {
-            { 12500000, 0x3CFB }, { 13000000, 0x3EFB }, { 16900000, 0x3EFB }, { 17000000, 0x3EDB },
-            { 25900000, 0x3EDB }, { 26000000, 0x3EFB }, { 29900000, 0x3EFB },
+            { 1699000, 0x3DFB }, { 1700000, 0x3CFB }, { 12500000, 0x3CFB }, { 13000000, 0x3EFB }, { 17000000, 0x3EFB }, { 21000000, 0x3EFB },
+            { 25900000, 0x3EFB }, { 29900000, 0x3EFB },
+            { 344000000, 0x3C5B }, { 345000000, 0x3E5B },          /* the 380-420 filter from 345 MHz */
         };
         mirisdr_tune_config_default(&c);
         for (i = 0; i < sizeof hf / sizeof hf[0]; i++)

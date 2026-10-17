@@ -59,7 +59,7 @@
 
 typedef struct
 {
-    uint32_t low_cut;
+    uint32_t low_khz;   /* the row from this frequency, kHz */
     int mode;
     int upconvert_mixer_on;
     int am_port;
