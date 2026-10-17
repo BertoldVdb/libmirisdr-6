@@ -66,10 +66,10 @@ static int mirisdr_ee_put (mirisdr_dev_t *p, uint16_t addr, uint8_t v)
     return -1;
 }
 
-static int mirisdr_ee_probe (mirisdr_dev_t *p)
+/* strap: the GPIO inputs read before GPIO_2 was driven low, GPIO_2 is the strap */
+static int mirisdr_ee_probe (mirisdr_dev_t *p, int strap)
 {
     uint8_t wren = 0, wrdi = 0;
-    int g;
 
     /* a failure leaves it unknown, to probe again; only an answer is kept */
     if (mirisdr_spi(p, 1, MIRISDR_EE_WREN, 0, 0, 0, NULL) < 0) return -1;
@@ -79,9 +79,7 @@ static int mirisdr_ee_probe (mirisdr_dev_t *p)
 
     if (!(wren & MIRISDR_EE_WEL) || (wrdi & MIRISDR_EE_WEL)) return p->ee_size = 0;
 
-    if ((g = mirisdr_get_gpio_inputs(p)) < 0) return -1;
-
-    p->ee_size = (g & 0x04) ? MIRISDR_EE_LARGE : MIRISDR_EE_SMALL;
+    p->ee_size = (strap & 0x04) ? MIRISDR_EE_LARGE : MIRISDR_EE_SMALL;
 
     return p->ee_size;
 }
@@ -90,22 +88,28 @@ static void mirisdr_ee_end (mirisdr_dev_t *p);
 
 static int mirisdr_ee_begin (mirisdr_dev_t *p)
 {
+    int strap = 0;
+
     if (!p || !p->dh) return -1;
 
     /* the tuner is programmed over this same port */
     if (mirisdr_async_get(p) != MIRISDR_ASYNC_INACTIVE) return -1;
 
-    /* set GPIO for EEPROM access */
+    /* GPIO for EEPROM access as the ROM has it: the strap (the GPIO_2 pad) read with
+       the pin an input, then GPIO_2 low, as the RSPduo's EEPROM and expander only
+       drive MISO then */
     if (mirisdr_write_reg(p, 0x08, MIRISDR_HW_EXPANDER(p->hw_flavour) ? 0x00AA80 : 0x002280) < 0) return -1;
+    if ((p->ee_size < 0) && ((strap = mirisdr_get_gpio_inputs(p)) < 0)) goto failed;
+    if (mirisdr_write_reg(p, 0x08, MIRISDR_HW_EXPANDER(p->hw_flavour) ? 0x00EA80 : 0x006280) < 0) goto failed;
 
     /* register 8 is the EEPROM's now: give it back if this fails */
-    if ((p->ee_size < 0) && (mirisdr_ee_probe(p) < 0))
-    {
-        mirisdr_ee_end(p);
-        return -1;
-    }
+    if ((p->ee_size < 0) && (mirisdr_ee_probe(p, strap) < 0)) goto failed;
 
     return p->ee_size;
+
+failed:
+    mirisdr_ee_end(p);
+    return -1;
 }
 
 static void mirisdr_ee_end (mirisdr_dev_t *p)

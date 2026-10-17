@@ -221,7 +221,8 @@ static int patch (uint8_t *img, long len, long vid, long pid, const char *serial
 #define SD_TIMEOUT          1000
 #define SD_POLL             200
 #define SD_MIN              256
-#define SD_GPIO             0x002280    /* GPIO_1 an output, high, the rest inputs */
+#define SD_STRAP_GPIO       0x002280    /* GPIO_1 an output, high, the rest inputs */
+#define SD_GPIO             0x006280    /* as the ROM reads it: GPIO_1 high, GPIO_2 low */
 
 static libusb_device_handle *sd_dh;
 
@@ -326,9 +327,12 @@ static int cmd_saferead (const char *path, int len, long vid, long pid, uint32_t
         return -1;
     }
 
-    if (sd_wreg(0x08, (uint32_t) ((reg8 >= 0) ? reg8 : SD_GPIO))) goto out;
-
+    /* The strap is the GPIO_2 pad, so it is read with the pin an input. The ROM then
+       drives GPIO_2 low before it reads, which the RSPduo needs to enable its EEPROM */
+    if (sd_wreg(0x08, SD_STRAP_GPIO)) goto out;
     if (sd_rreg(6, &strap)) goto out;
+
+    if (sd_wreg(0x08, (uint32_t) ((reg8 >= 0) ? reg8 : SD_GPIO))) goto out;
 
     large = (strap & 0x04) != 0;
     max = large ? 0x10000 : 0x200;
