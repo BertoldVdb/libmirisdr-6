@@ -149,14 +149,26 @@ static int mirisdr_setup (mirisdr_dev_t **out_dev, mirisdr_dev_t *dev) {
 
     /* a readback leaves the tuner holding its answer line until its next word, and a
        process that ended there leaves it so: on the RSPduo the expander setup then left the
-       other tuner deaf (tuner.c). A register 4 word first lets go of it, on every board. On
-       the RSPduo the route is where it was, so it reaches the tuner that was read. Whether
-       it reached tuner 0 is not known, which is all the tracking could say */
+       other tuner deaf (tuner.c). A register 4 word first lets go of it, on every board.
+       The RSPduo's tuners also share the latch: every word to one makes the other take its
+       last word again, and a word left from before (a band search, say) would go on being
+       taken. So the route goes to each tuner in turn, all else on the expander released, and
+       each gets the register 4 word, which does nothing however often it is taken */
     if (!dev->external_tuner)
     {
-        mirisdr_tuner_write(dev, MIRISDR_TUNER_IDLE, 0, 1);
+        int t, r = 0;
+
+        if (dev->hw_flavour == MIRISDR_HW_RSPDUO)
+            for (t = 0; t < 2; t++)
+            {
+                if (mirisdr_sdrplay_send(dev, 0, mirisdr_duo_route(0xFFFF, 1, t)) < 0) r = -1;
+                if (mirisdr_tuner_write(dev, MIRISDR_TUNER_IDLE, 0, 1) < 0) r = -1;
+            }
+        else if (mirisdr_tuner_write(dev, MIRISDR_TUNER_IDLE, 0, 1) < 0) r = -1;
+
+        /* both tuners' last word is known then, as the contexts copy it */
         dev->tuner_valid = 0;
-        dev->tuner_last = 0;
+        dev->tuner_last = r ? 0 : MIRISDR_TUNER_IDLE;
     }
 
     /* initialise the tuner */

@@ -162,6 +162,7 @@ A filter the IF does not have is taken to the nearest it has, or refused with `s
   - `gain`: the gain of each stage and the total.
   - `frontend`: the front end in force: the bias-T, notches, antenna, pads, flags, direct sampling and the raw words.
   - `band`: the tuner band, such as `MIRISDR_BAND_VHF`.
+  - `standby`: the tuner rests, because nothing hears it. That is the case under direct sampling, and for an RSPduo tuner the stream does not take. A tuner left running can let a strong signal through into what is heard. Its tune is kept, and goes out again, freshly calibrated, as soon as it is heard again. `mirisdr_get_tuner_status()` has nothing to read from it and returns -1.
 
 `mirisdr_tune_check()` takes the same arguments and fills the same result, without tuning. Use it to find out what would work.
 
@@ -221,6 +222,7 @@ The RSPdx-R2 can take the antenna past the tuner, through its 2 MHz low pass, st
 Other tunes use the tuner as usual. The tune result's `frontend.direct_sampling` says which is in force, so a program can sweep across 2 MHz without doing anything itself. `mirisdr_set_direct_sampling(dev, 1)` sets it on the tune in force, as in librtlsdr, and also takes `MIRISDR_DS_AUTO`. 2 (librtlsdr's Q converter) is refused, as the RSPdx-R2 has it on I only.
 
   - **The stream.** Direct sampling is like a single tuner output on I whose IF is the frequency. A stream that follows the tune, or a baseband one, switches to I by itself. With baseband the frequency comes out at 0 Hz, the right way round. The converters run at 4.8 Msps whatever the frequency, so a retune only moves the NCO and the stream does not restart. When a baseband stream's band fits under 500 kHz, the 500 kHz low pass is used instead, with the converters at 1.3 Msps. Rates go from about 9.4 ksps (2.5 ksps with the 500 kHz low pass) up. Without baseband the I samples are the band itself, from 0 Hz to half the rate.
+  - **The tuner.** It is not in the path, so it rests in standby (the tune result's `standby`). Left running, a strong signal on it showed in the direct sampling path. A tune above 2 MHz wakes it and calibrates it again, which takes a few ms.
   - **The gain.** The tuner is not in the path. The only gain is an amplifier of about 37 dB (`MIRISDR_DS_LNA_DB`), on by default. With `MIRISDR_GAIN_STAGES` it is `gain.lna`. With `MIRISDR_GAIN_TOTAL` it is on from 19 dB. `mirisdr_set_lna_gain()` and `mirisdr_set_tuner_gain()` switch it the same way. The tune result then reports it alone. Leave it on unless the signals are very strong: it raises the noise floor only 4 to 5 dB.
   - **What stays.** The tune's IF, bandwidth and `iq` are kept for tunes above 2 MHz. The tune result shows `lo` 0, `iq` `MIRISDR_IQ_ONLY_I`, and the low pass's edge as `bandwidth`. Scans refuse direct sampling.
   - **Response.** Flat from about 30 kHz to 1.5 MHz, 15 dB down at 2.5 MHz. Below 30 kHz it rolls off, 8 dB down at 10 kHz.
@@ -470,7 +472,7 @@ The two tuners may use different IFs. The converters then run at the rate the hi
 
 Things to know:
 
-  - Each tuner has its own filters, amplifier, pads and notches. A tuner not streamed gets no filter path, which keeps its amplifier from passing its port to the other (up to 20 dB better isolation at 300 to 433 MHz). With both streamed, the ports are 44 to 63 dB apart up to 250 MHz and at 600 MHz, but only 23 to 30 dB at 300 to 433 MHz and 14 to 24 dB at 1.5 to 1.8 GHz. The bias-T powers the port marked tuner 2, so only tuner 1 takes it. The board can join the two 50 ohm ports, so both tuners hear one antenna: `MIRISDR_FRONTEND_PORT_TIE` in `frontend.flags`. They are apart by default. Tuner 0 also takes the Hi-Z input below 30 MHz (`antenna`, see Tuning).
+  - Each tuner has its own filters, amplifier, pads and notches. A tuner not streamed gets no filter path, which keeps its amplifier from passing its port to the other (up to 20 dB better isolation at 300 to 433 MHz). The tuner itself rests in standby (the tune result's `standby`). It keeps its tune, which goes out again when the stream takes it. With both streamed, the ports are 44 to 63 dB apart up to 250 MHz and at 600 MHz, but only 23 to 30 dB at 300 to 433 MHz and 14 to 24 dB at 1.5 to 1.8 GHz. The bias-T powers the port marked tuner 2, so only tuner 1 takes it. The board can join the two 50 ohm ports, so both tuners hear one antenna: `MIRISDR_FRONTEND_PORT_TIE` in `frontend.flags`. They are apart by default. Tuner 0 also takes the Hi-Z input below 30 MHz (`antenna`, see Tuning).
   - Scans run on tuner 0 alone.
   - `mirisdr_get_tuner_status()` and `mirisdr_tune_learn()` take the tuner.
 

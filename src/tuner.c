@@ -132,8 +132,9 @@ static int mirisdr_tuner_status_of (mirisdr_dev_t *p, mirisdr_tuner_status_t *st
     /* the null device, or a scan being compiled */
     if (!p->dh) goto failed;
 
-    /* clock with the register 0 word the tuner already has, so nothing before the first tune */
-    if (!(p->tuner_valid & 1)) goto failed;
+    /* clock with the register 0 word the tuner already has, so nothing before the first tune,
+       and nothing from a tuner in standby (all clear), which has no state to read */
+    if (!(p->tuner_valid & 1) || !p->tuner_reg[0]) goto failed;
 
     if (mirisdr_duo_route_to(p, p->tuner_cur) < 0) goto failed;
     if (mirisdr_tuner_readback(p, b) < 0) goto failed;

@@ -942,14 +942,15 @@ static int mirisdr_stream_apply (mirisdr_dev_t *p, const mirisdr_stream_config_t
 	if (!p->tune.bandwidth && (p->if_freq == MIRISDR_IF_ZERO) &&
 	    (mirisdr_bw_auto(MIRISDR_IF_ZERO, p->rate) != (int) p->bandwidth)) moved = 1;
 
-	/* the tunes again, each tuner streamed: the converter switch and the LO follow */
+	/* the tunes again, each tuner streamed: the converter switch and the LO follow. A tuner
+	   the stream no longer takes goes to rest, one it takes again wakes */
 	if (moved)
 	{
 		int r = 0;
 
 		for (t = 0; t < mirisdr_tuners_of(p); t++)
 		{
-			if (!(pl.tuners & (1 << t))) continue;
+			if (!((pl.tuners | old) & (1 << t))) continue;
 			mirisdr_tuner_select(p, t);
 			if (mirisdr_set_soft(p) < 0) r = -1;
 		}

@@ -1565,7 +1565,8 @@ std::vector<std::string> SoapyMiriSDR::reportLines(void) const
         /* where it listens, and where that lands in the stream */
         if (tr.frontend.direct_sampling)
             s = strf("tuner %d: %.6f MHz by direct sampling: the antenna through the %s low pass to "
-                     "converter I, no LO", t, tc.frequency / 1e6, widthName(tr.bandwidth).c_str());
+                     "converter I, %s", t, tc.frequency / 1e6, widthName(tr.bandwidth).c_str(),
+                     tr.standby ? "the tuner in standby" : "the tuner bypassed");
         else
             s = strf("tuner %d: %.6f MHz, LO %.6f MHz, %s, %s, filter %s, band %s", t, tc.frequency / 1e6,
                      tr.lo / 1e6, tc.if_freq ? strf("low IF %.0f kHz", tc.if_freq / 1e3).c_str() : "zero IF",

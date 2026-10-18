@@ -323,7 +323,7 @@ Build it with `g++ example.cpp -lSoapySDR`. At 256000 samples a second the modul
 
 The RSPduo reports two channels, one for each tuner. Channel 0 is the tuner on the 50 ohm input marked tuner 1, channel 1 the one marked tuner 2. Frequency, gain, bandwidth and the other per channel calls act on their own tuner. The device settings (`if_freq`, the notches and the rest) act on channel 0, except `biastee`, which powers channel 1's port, and `port_tie` and `ref_out`, which are the board's. Each channel has its own pads, the `ATT` gain (`setGain(SOAPY_SDR_RX, 1, "ATT", -13)`), and its own notches, the channel settings `fm_notch`, `mw_notch` and `dab_notch`.
 
-A channel not streamed gets no filter path, so an antenna on its port leaks less into the other. With both streamed, the ports are 44 to 63 dB apart up to 250 MHz and at 600 MHz, but only 23 to 30 dB at 300 to 433 MHz and 14 to 24 dB at 1.5 to 1.8 GHz.
+A channel not streamed gets no filter path, so an antenna on its port leaks less into the other, and its tuner rests in standby until it is streamed. With both streamed, the ports are 44 to 63 dB apart up to 250 MHz and at 600 MHz, but only 23 to 30 dB at 300 to 433 MHz and 14 to 24 dB at 1.5 to 1.8 GHz.
 
 `setupStream()` takes the channels to stream:
 

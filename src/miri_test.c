@@ -1362,6 +1362,118 @@ static tres_t t_usb_reset (void)
     return within(sps, 2000000, 0.03) ? T_PASS : T_FAIL;
 }
 
+/* The RSPdx-R2's tuner rests under direct sampling, as nothing hears it, and comes back
+   calibrated: nothing to read from it in standby, after the retune the VCO band it had before,
+   the stream running through both */
+static tres_t t_ds_standby (void)
+{
+    mirisdr_stream_config_t sc;
+    mirisdr_stream_result_t sr;
+    mirisdr_tune_config_t tc;
+    mirisdr_tune_result_t tr;
+    mirisdr_tuner_status_t a, b, z;
+    double sps;
+    int bad = 0;
+
+    if (mirisdr_get_hw_flavour(dev) != MIRISDR_HW_RSPDXR2) { say("needs an RSPdx-R2"); return T_SKIP; }
+
+    pump_stop();
+    mirisdr_get_stream(dev, &sc, NULL);
+    sc.baseband = 1; sc.rate = 1000000; sc.format = NULL; sc.format_single = NULL;
+    if (mirisdr_set_stream(dev, &sc, NULL) < 0) { say("baseband at 1 Msps refused"); return T_FAIL; }
+    mirisdr_get_tune(dev, 0, &tc, NULL);
+    tc.frequency = 100000000;
+    tc.frontend.direct_sampling = MIRISDR_DS_OFF;
+    if (mirisdr_tune(dev, 0, &tc, &tr) < 0 || tr.standby) { say("100 MHz: standby %d", tr.standby); return T_FAIL; }
+    usleep(20000);
+    if (mirisdr_get_tuner_status(dev, 0, &a) < 0) { say("no readback at 100 MHz"); return T_SKIP; }
+    if (pump_start() < 0) { say("the stream would not start"); return T_FAIL; }
+
+    tc.frequency = 1000000;
+    tc.frontend.direct_sampling = MIRISDR_DS_ON;
+    if (mirisdr_tune(dev, 0, &tc, &tr) < 0 || !tr.frontend.direct_sampling || !tr.standby)
+    { say("1 MHz: direct sampling %d, standby %d", tr.frontend.direct_sampling, tr.standby); bad++; }
+    usleep(20000);
+    if (mirisdr_get_tuner_status(dev, 0, &z) == 0) { say("a status read from the tuner in standby"); bad++; }
+    mirisdr_get_stream(dev, NULL, &sr);
+    sps = stream_rate_settled(0.3, NULL);
+    if (!within(sps, sr.adc_rate, 0.05) && !within(sps, sr.rate, 0.05))
+    { say("direct sampling: %.0f sps, the stream at %u from %u", sps, sr.rate, sr.adc_rate); bad++; }
+
+    tc.frequency = 100000000;
+    tc.frontend.direct_sampling = MIRISDR_DS_OFF;
+    if (mirisdr_tune(dev, 0, &tc, &tr) < 0 || tr.standby) { say("back at 100 MHz: standby %d", tr.standby); bad++; }
+    usleep(20000);
+    if (mirisdr_get_tuner_status(dev, 0, &b) < 0 || (b.flags & MIRISDR_TUNER_SYNTH_OFF) || (b.coarse != a.coarse) ||
+        (abs((int) b.fine - (int) a.fine) > 1))
+    { say("woken at 100 MHz: VCO %d/%u, before %d/%u", b.coarse, b.fine, a.coarse, a.fine); bad++; }
+    mirisdr_get_stream(dev, NULL, &sr);
+    sps = stream_rate_settled(0.3, NULL);
+    if (!within(sps, sr.adc_rate, 0.05) && !within(sps, sr.rate, 0.05))
+    { say("after waking: %.0f sps, the stream at %u from %u", sps, sr.rate, sr.adc_rate); bad++; }
+
+    pump_stop();
+    sc.baseband = 0; sc.rate = 2000000;
+    mirisdr_set_stream(dev, &sc, NULL);
+
+    if (!bad) say("in standby at 1 MHz, the VCO back at %d/%u at 100 MHz (%d/%u before), streaming through both",
+                  b.coarse, b.fine, a.coarse, a.fine);
+    return bad ? T_FAIL : T_PASS;
+}
+
+/* The RSPduo's tuner 1 woken from standby lands on the VCO band tuner 0 has at the same tune
+   (tuner 0 is streamed throughout, so it never rests). Tuner 1 is left running at 433 MHz when
+   the device closes, the next open's first tune of it (the stream on tuner 0 alone) rests it,
+   then the stream of both wakes it at 10 MHz. With the band search started as the synthesizer
+   powered up it stayed on a band far off, deaf */
+static int duo_streams (int tuners)
+{
+    mirisdr_stream_config_t sc;
+
+    mirisdr_get_stream(dev, &sc, NULL);
+    sc.baseband = 1; sc.rate = 225000; sc.format = NULL; sc.format_single = NULL; sc.tuners = tuners;
+    return mirisdr_set_stream(dev, &sc, NULL);
+}
+
+static int duo_tune (int t, uint32_t hz)
+{
+    mirisdr_tune_config_t tc;
+
+    mirisdr_get_tune(dev, t, &tc, NULL);
+    tc.frequency = hz; tc.if_freq = 450000; tc.iq = MIRISDR_IQ_BOTH; tc.bandwidth = 0; tc.low_if_auto = 0;
+    tc.gain.mode = MIRISDR_GAIN_KEEP;
+    return mirisdr_tune(dev, t, &tc, NULL);
+}
+
+static tres_t t_duo_wake (void)
+{
+    mirisdr_stream_config_t sc;
+    mirisdr_tuner_status_t ref, got;
+    int bad = 0;
+
+    if (mirisdr_get_hw_flavour(dev) != MIRISDR_HW_RSPDUO) { say("needs an RSPduo"); return T_SKIP; }
+
+    /* running at 433 MHz as the device closes */
+    pump_stop();
+    if (duo_tune(0, 10000000) < 0 || duo_tune(1, 433000000) < 0 || duo_streams(3) < 0) { say("both streamed refused"); return T_FAIL; }
+    if (device_reopen() < 0) { say("no device after the reopen"); return T_FAIL; }
+
+    if (duo_tune(0, 10000000) < 0 || duo_tune(1, 10000000) < 0) { say("10 MHz after the reopen refused"); bad++; }
+    if (duo_streams(3) < 0) { say("both after the reopen refused"); bad++; }
+    usleep(20000);
+    if (mirisdr_get_tuner_status(dev, 0, &ref) < 0 || mirisdr_get_tuner_status(dev, 1, &got) < 0)
+    { say("no readback of the tuners"); bad++; }
+    else if ((got.coarse != ref.coarse) || (abs((int) got.fine - (int) ref.fine) > 1))
+    { say("tuner 1 woken at 10 MHz on VCO %d/%u, tuner 0 there on %d/%u", got.coarse, got.fine, ref.coarse, ref.fine); bad++; }
+
+    mirisdr_get_stream(dev, &sc, NULL);
+    sc.tuners = 0; sc.baseband = 0; sc.rate = 2000000;
+    mirisdr_set_stream(dev, &sc, NULL);
+
+    if (!bad) say("woken from 433 MHz on VCO %d/%u at 10 MHz, tuner 0 there on %d/%u", got.coarse, got.fine, ref.coarse, ref.fine);
+    return bad ? T_FAIL : T_PASS;
+}
+
 /* Opened by file descriptor, as on Android: every reboot hands MIRISDR_REOPEN back, and
    the next open must get further, not start over (a board booting firmware from its EEPROM
    looped). From the ROM: at most a reboot past the EEPROM, the load and the one into RAM */
@@ -3450,6 +3562,64 @@ static void plan_stream (mirisdr_dev_t *n, const char *what, mirisdr_stream_conf
 /* Two tuners, without streaming: each keeps its tune, the single setters act on the
  * stream's first, the RSPduo's switch and routing words follow the tuners streamed and
  * tuned, and what two tuners cannot do is refused */
+/* A tuner nothing hears rests in standby: the RSPdx-R2's under direct sampling, and the
+   RSPduo's that the stream does not take. The tune result says so, a check too, and the tune
+   or stream that hears it again wakes it */
+static tres_t t_plan_standby (void)
+{
+    mirisdr_dev_t *n;
+    mirisdr_tune_config_t c;
+    mirisdr_tune_result_t r, r0, r1;
+    mirisdr_stream_config_t s;
+    int bad = 0;
+
+    if (mirisdr_open_null(&n, "252_S16") < 0) { say("no null device"); return T_FAIL; }
+
+    /* a plain board's one tuner is always heard */
+    if (mirisdr_get_tune(n, 0, &c, &r) < 0 || r.standby) { bad++; say("a plain board's tuner in standby"); }
+
+    /* RSPdx-R2: direct sampling at 1 MHz rests it, 100 MHz wakes it */
+    mirisdr_set_hw_flavour(n, MIRISDR_HW_RSPDXR2);
+    mirisdr_get_tune(n, 0, &c, NULL);
+    c.frequency = 1000000;
+    c.frontend.direct_sampling = MIRISDR_DS_ON;
+    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || !r.standby) { bad++; say("a check of direct sampling: standby %d", r.standby); }
+    if (mirisdr_tune(n, 0, &c, &r) < 0 || !r.frontend.direct_sampling || !r.standby)
+    { bad++; say("direct sampling at 1 MHz: in force %d, standby %d", r.frontend.direct_sampling, r.standby); }
+    if (mirisdr_get_tune(n, 0, NULL, &r) < 0 || !r.standby) { bad++; say("direct sampling read back without standby"); }
+    c.frequency = 100000000;
+    c.frontend.direct_sampling = MIRISDR_DS_OFF;
+    if (mirisdr_tune(n, 0, &c, &r) < 0 || r.frontend.direct_sampling || r.standby)
+    { bad++; say("100 MHz after direct sampling: in force %d, standby %d", r.frontend.direct_sampling, r.standby); }
+
+    /* RSPduo: tuner 1 rests while the stream takes tuner 0 alone, wakes with both, rests
+       again when the stream drops it, and tuner 0 rests while tuner 1 streams alone */
+    mirisdr_set_hw_flavour(n, MIRISDR_HW_RSPDUO);
+    mirisdr_get_tune(n, 0, &c, NULL);
+    c.if_freq = 450000;
+    if (mirisdr_tune(n, 0, &c, &r0) < 0 || r0.standby) { bad++; say("the RSPduo's tuner 0 streamed: standby %d", r0.standby); }
+    c.frequency = 433000000;
+    if (mirisdr_tune(n, 1, &c, &r1) < 0 || !r1.standby) { bad++; say("the RSPduo's tuner 1 not streamed: standby %d", r1.standby); }
+
+    mirisdr_get_stream(n, &s, NULL);
+    s.baseband = 1;
+    s.rate = 225000;
+    s.tuners = 3;
+    if (mirisdr_set_stream(n, &s, NULL) < 0 || mirisdr_get_tune(n, 0, NULL, &r0) < 0 || mirisdr_get_tune(n, 1, NULL, &r1) < 0 ||
+        r0.standby || r1.standby) { bad++; say("both tuners streamed: standby %d and %d", r0.standby, r1.standby); }
+    s.tuners = 0;
+    if (mirisdr_set_stream(n, &s, NULL) < 0 || mirisdr_get_tune(n, 0, NULL, &r0) < 0 || mirisdr_get_tune(n, 1, NULL, &r1) < 0 ||
+        r0.standby || !r1.standby) { bad++; say("tuner 1 dropped: standby %d and %d", r0.standby, r1.standby); }
+    s.tuners = 2;
+    if (mirisdr_set_stream(n, &s, NULL) < 0 || mirisdr_get_tune(n, 0, NULL, &r0) < 0 || mirisdr_get_tune(n, 1, NULL, &r1) < 0 ||
+        !r0.standby || r1.standby) { bad++; say("tuner 1 alone: standby %d and %d", r0.standby, r1.standby); }
+
+    mirisdr_close(n);
+
+    say(bad ? "%d wrong" : "direct sampling and a tuner not streamed rest, and wake when heard again", bad);
+    return bad ? T_FAIL : T_PASS;
+}
+
 static tres_t t_plan_tuners (void)
 {
     mirisdr_dev_t *n;
@@ -6589,6 +6759,7 @@ static const struct {
     { "plan",     "stream config rules",        t_plan_stream         },
     { "plan",     "converter clock and bits",   t_plan_adc            },
     { "plan",     "two tuners",                 t_plan_tuners         },
+    { "plan",     "tuners nothing hears rest",  t_plan_standby        },
     { "plan",     "board change",               t_plan_flavour_change },
     { "plan",     "stream following the tune",  t_plan_follow         },
     { "plan",     "frontend with the tune",     t_plan_frontend       },
@@ -6671,6 +6842,8 @@ static const struct {
 
     { "tuner",    "tuning across bands",        t_tuning              },
     { "tuner",    "tuner status readback",      t_tuner_status        },
+    { "tuner",    "tuner rests in direct sampling", t_ds_standby      },
+    { "tuner",    "RSPduo tuner 1 wakes calibrated", t_duo_wake       },
     { "tuner",    "tuner overrides",            t_tuner_override      },
     { "tuner",    "unknown override",           t_tuner_unknown       },
     { "tuner",    "stream events",              t_stream_events       },

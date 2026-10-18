@@ -513,6 +513,23 @@ static uint32_t mirisdr_frontend_flags (int flavour)
     return (flavour == MIRISDR_HW_RSPDUO) ? (MIRISDR_FRONTEND_PORT_TIE | MIRISDR_FRONTEND_REF_OUT) : 0;
 }
 
+/* how long the synthesizer gets to start when the tuner wakes, before its band search */
+#define MIRISDR_WAKE_US         1000
+
+/* Nothing hears the selected tuner under direct sampling (ds), or when the stream does not
+   take it. Left running, a strong signal on it still shows in what is heard (seen on the
+   RSPdx-R2's direct sampling path), so it rests in standby */
+static int mirisdr_tuner_rests (mirisdr_dev_t *p, int ds)
+{
+    return !p->external_tuner && (ds || !(mirisdr_stream_tuners(p) & (1 << p->tuner_cur)));
+}
+
+/* the selected tuner holds its standby word */
+static int mirisdr_tuner_asleep (mirisdr_dev_t *p)
+{
+    return (p->tuner_valid & 1) && !p->tuner_reg[0];
+}
+
 /* The tuner words, after the front end: on the RSPduo the first expander decides which
    tuner takes them. raw: the parts of fe a tune replaced */
 static int mirisdr_tune_send (mirisdr_dev_t *p, const mirisdr_tune_words_t *w, const mirisdr_frontend_raw_t *fe,
@@ -534,9 +551,34 @@ static int mirisdr_tune_send (mirisdr_dev_t *p, const mirisdr_tune_words_t *w, c
 
     /* register 9 is the MSi001's serial port: a board with another tuner on it
        has this port wired somewhere else, or nowhere */
+    /* at rest: register 0 all clear, the MSi001's standby. Its other words leave the cache,
+       and its LNA code with them, so the tune that wakes it sends them all and register 2
+       calibrates it again */
+    if (mirisdr_tuner_rests(p, p->ds))
+    {
+        if (mirisdr_tuner_write(p, 0, 0, 0) < 0) r = -1;
+        p->tuner_valid &= 1;
+        p->lna_cal_mhz = 0;
+        p->tuner_regd = w->regd;
+        return r;
+    }
+
     if (!p->external_tuner)
     {
         int synth = 0, s[7], i;
+
+        /* waking from standby: register 0 first, so the synthesizer runs before register 2
+           starts the band search. Started with it, the search left the RSPduo's tuner 1 on a
+           wrong VCO band when it last ran in another band, deaf (band 26 for 10 at 10 MHz) */
+        if (mirisdr_tuner_asleep(p))
+        {
+            /* and nothing taken as held from before, the gain written while it slept included */
+            p->tuner_valid = 0;
+            if (mirisdr_tuner_write(p, 0, w->reg0, 1) < 0) r = -1;
+            if (p->fw_ours && p->fw_list_at) r |= mirisdr_write_reg(p, MIRISDR_LIST_WAIT_US, MIRISDR_WAKE_US);
+            else { r |= mirisdr_batch_flush(p); usleep(MIRISDR_WAKE_US); }
+            synth = 1;
+        }
 
         /* only what changed; register 2 starts the calibration, so it follows any of 0, 3 and 5 */
         s[0] = mirisdr_tuner_write(p, 14, p->tuner_ovr14, 0);
@@ -561,7 +603,8 @@ static void mirisdr_filter_learn (mirisdr_dev_t *p, const hw_switch_freq_plan_t 
 {
     mirisdr_tuner_status_t st;
 
-    if (p->filter_cal >= 0 || p->external_tuner || !row->if1_low || !(p->tuner_valid & 1)) return;
+    if (p->filter_cal >= 0 || p->external_tuner || !row->if1_low || !(p->tuner_valid & 1) ||
+        mirisdr_tuner_asleep(p)) return;
     if ((p->tuner_reg[0] & (7UL << 17)) != mirisdr_xtalsel(p) << 17) return;
 
     if (mirisdr_get_tuner_status(p, 0, &st) == 0) p->filter_cal = st.filter;
@@ -1168,7 +1211,8 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
     p->ds_lna = pl.ds_lna;
     p->ds_edge = pl.ds_edge;
 
-    r = mirisdr_lna_calibrate(p, pl.w.row, c->frequency, pl.ifm, pl.bw, pl.iq, &pl.fe, pl.fe_raw);
+    r = mirisdr_tuner_rests(p, pl.ds) ? 0 : mirisdr_lna_calibrate(p, pl.w.row, c->frequency, pl.ifm, pl.bw, pl.iq,
+                                                                   &pl.fe, pl.fe_raw);
     if (mirisdr_tune_send(p, &pl.w, &pl.fe, pl.fe_raw) < 0) r = -1;
     p->fe = pl.fe;
 
@@ -1223,6 +1267,7 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
         res->frontend.flags = p->fe_flags;
         res->frontend.raw = p->fe;
         mirisdr_tune_result_ds(p->ds, p->ds_lna, p->ds_edge, c->frequency, mirisdr_bb_path_of(p), res);
+        res->standby = mirisdr_tuner_rests(p, p->ds);
     }
 
     /* as the stream's thread and the other tuner's calls find it */
@@ -1343,6 +1388,7 @@ static int mirisdr_tune_check_of (mirisdr_dev_t *p, const mirisdr_tune_config_t 
         res->frontend.flags = cfg->frontend.flags;
         res->frontend.raw = pl.fe;
         mirisdr_tune_result_ds(pl.ds, pl.ds_lna, pl.ds_edge, cfg->frequency, bb, res);
+        res->standby = mirisdr_tuner_rests(p, pl.ds);
     }
 
     return 0;
@@ -1368,6 +1414,7 @@ int mirisdr_get_tune (mirisdr_dev_t *p, int tuner, mirisdr_tune_config_t *cfg, m
         res->frontend.flags = p->fe_flags;
         res->frontend.raw = p->fe;
         mirisdr_tune_result_ds(p->ds, p->ds_lna, p->ds_edge, p->tune.frequency, mirisdr_bb_path_of(p), res);
+        res->standby = mirisdr_tuner_rests(p, p->ds);
     }
     mirisdr_tuner_select(p, mirisdr_tuner_primary(p));
 

@@ -552,6 +552,10 @@ typedef struct mirisdr_tune_result
 	mirisdr_gain_config_t gain; /* in force: each stage and the total */
 	mirisdr_frontend_config_t frontend; /* in force */
 	mirisdr_band_t band;
+	int      standby;       /* the tuner rests in standby, as nothing hears it: under direct
+	                           sampling, or a tuner the stream does not take (the RSPduo's). Its
+	                           tune is kept, and goes out again, freshly calibrated, when it is
+	                           heard again */
 	uint32_t reserved[MIRISDR_RESERVED];
 } mirisdr_tune_result_t;
 
@@ -887,7 +891,8 @@ MIRISDR_API uint32_t mirisdr_get_ir (mirisdr_dev_t *p);                 /* extra
  * mirisdr_tune(), 1 too on the RSPduo). It is a measurement, so it stays apart from the
  * tune config: the codes held there read back as held. Afaik there is no
  * way to know if the PLL is locked, the HIGH and LOW limit flags only indicate
- * you are tuning near the edge of your chip, not that you try to tune beyond it. */
+ * you are tuning near the edge of your chip, not that you try to tune beyond it.
+ * A tuner in standby (the tune result's standby) has nothing to read: -1 */
 #define MIRISDR_TUNER_SYNTH_OFF      0x01   /* no VCO range selected */
 #define MIRISDR_TUNER_AT_LOW_LIMIT   0x02   /* coarse 0, fine 31 */
 #define MIRISDR_TUNER_AT_HIGH_LIMIT  0x04   /* coarse 2, fine 0 */
