@@ -39,6 +39,7 @@ The device string can hold these keys:
   - `if_freq`, `converters`, `baseband` and `direct_sampling`: the settings of the same name, described below. They are here for programs that only let you type a device string. An example is `driver=mirisdr,if_freq=450000`.
   - `bandwidth`: the tuner filter in Hz, for programs such as GQRX that have no field for it. See Bandwidth below.
   - `gain_ranges`: `max`, the default, or `band`. See Gain below.
+  - `report`: `true` logs what the receiver runs, each time it changes. See Seeing what the receiver runs below.
 
 When opened, the receiver is at 100 MHz with a total gain of 40 dB and a rate of 2.048 Msps.
 
@@ -164,6 +165,7 @@ Set the gain as one total, from 0 to 102 dB on most bands, plus the board's ampl
 
 The stages can also be set one by one:
 
+  - `ATT`: RSP1B, RSPdx-R2 and RSPduo. The pads before the tuner, against strong signals, as a negative gain: 0, -6, -13 or -19 dB on the RSP1B and RSPduo, and 0 to -36 dB in steps of 3 on the RSPdx-R2. Another value takes the nearest pad. In L band they attenuate less, and `ATT` reads back what they give there. The RSPduo's Hi-Z has none. `ATT` is not part of the total: the total is the gain of the receiver's own chain, and setting it leaves the pads as they are. So with pads in, the stages add up to more than the total.
   - `AMP`: RSP1B, RSPdx-R2 and RSPduo. 0 or the full gain of the amplifier before the tuner in the band tuned, up to about 25 dB: from 30 MHz on the RSP1B and RSPdx-R2, from 55 MHz on the RSPduo (not on its Hi-Z). A total turns it on first, and bypasses it only below its own gain.
   - `LNA`: 0 or its full gain, which is 24 dB on most bands, 7 dB in band IV/V and about 4 dB in L band. The AM inputs have none.
   - `MIX`: 0 or 19 dB.
@@ -200,7 +202,6 @@ Programs show these as device settings. With SoapySDR's API they are `writeSetti
 | `fm_notch` | `true`, `false` | `false` | RSP1B, RSPdx-R2 and RSPduo only. Notch for FM broadcast (85 to 100 MHz). This is channel 0's. Each channel also has the notches as channel settings. |
 | `mw_notch` | `true`, `false` | `false` | RSP1B, RSPdx-R2 and RSPduo only. Notch for medium wave (0.4 to 1.6 MHz). |
 | `dab_notch` | `true`, `false` | `false` | RSP1B, RSPdx-R2 and RSPduo only. Notch for DAB (165 to 230 MHz). |
-| `attenuator` | RSPduo and RSP1B `0`, `6`, `13`, `19`, and RSPdx-R2 `0` to `36` in steps of 3 | `0` | RSP1B, RSPdx-R2 and RSPduo. Pads in dB before channel 0's tuner, against strong signals. They are apart from the gain: the total does not count them. Another value takes the nearest step. On the RSPduo each channel has its own as a channel setting, see Two channels. |
 | `ref_out` | `true`, `false` | `false` | RSPduo only. The board's 24 MHz clock out of its reference connector, for another receiver. |
 | `port_tie` | `true`, `false` | `false` | RSPduo only. Ties the two 50 ohm ports together, so both channels hear both, as from one antenna. It works at HF, 50 to 200 MHz and 600 to 900 MHz, and much less at 300 to 433 MHz and in L band. |
 | `direct_sampling` | `OFF`, `ON`, `AUTO` | `AUTO` | RSPdx-R2 only. Sample the antenna directly instead of through the tuner: `ON` whenever the frequency is 2 MHz or below, `AUTO` only where the whole band (the frequency plus half the rate) fits under 2 MHz. Otherwise the tuner is used as usual. `true` and `false` work as `ON` and `OFF`. The gain is then only the LNA, about 37 dB, on from a total of 19 dB. |
@@ -222,6 +223,37 @@ With `baseband` on, the library takes the DC offset off in software: by default 
 <h4>How much CPU</h4>
 
 Measured on a Raspberry Pi Compute Module 0 (one core at 1 GHz), the 450 kHz IF needs little processing. A rate that is not in the table above adds the resampler: 250 ksps at 450 kHz still runs at 10 times real time, 1 Msps at 1620 kHz at 2.9 times and 3 Msps at 2 times. The 2048 kHz IF also runs the NCO, at about 1.9 times real time, so use 1620 kHz there on such a computer. Zero IF needs no processing.
+
+
+<h4>Seeing what the receiver runs</h4>
+
+The rules above decide a lot on their own. A rate below 1.3 Msps takes a low IF, the RSPdx-R2 switches to direct sampling below 2 MHz, and a rate a low IF cannot reach is taken to the nearest one it can. To see where they took the receiver, add `report=true` to the device string, for example `driver=mirisdr,report=true`. The module then logs what runs when the device opens, and again after every call that changed it. Only the lines that changed are logged, so a new gain logs one line and the same value set again logs nothing. The values come from the library, so they are what the hardware runs and not what was asked.
+
+For example, an RSPdx-R2 set to 1 Msps at 100 MHz, and then tuned to 1 MHz:
+
+    [INFO] mirisdr: stream: 1000000 S/s, complex float from a low IF on both converters
+    [INFO] mirisdr: converters: 6480000 S/s at a 12.960 MHz clock, decimation bypass off, format 336_S16 with 12 bits, transfer ISOC, 19748571 B/s over USB
+    [INFO] mirisdr: baseband: decimation 6.48 with the resampler, no NCO: the converters at 4 x IF, shifted by a quarter of their rate
+    [INFO] mirisdr: tuner 0: 100.000000 MHz, LO 101.620000 MHz, low IF 1620 kHz, both outputs, filter 1.536 MHz, band VHF, in the stream at 0 Hz, DC removal on
+
+    [INFO] mirisdr: stream: 1000000 S/s, complex float from converter I alone
+    [INFO] mirisdr: converters: 4800000 S/s at a 9.600 MHz clock, decimation bypass off, format 504_REAL_S16 with 14 bits, transfer ISOC, 9752380 B/s over USB
+    [INFO] mirisdr: baseband: decimation 4.8 with the resampler, NCO in use
+    [INFO] mirisdr: tuner 0: 1.000000 MHz by direct sampling: the antenna through the 2 MHz low pass to converter I, no LO, in the stream at 0 Hz, DC removal on
+    [INFO] mirisdr: tuner 0 gain: 37 dB, the direct sampling amplifier on
+
+The rate below 1.3 Msps took the 1620 kHz IF. Below 2 MHz the receiver switched to direct sampling, which always needs the NCO.
+
+The lines are:
+
+  - `stream`: the rate the program gets and what kind of samples they are.
+  - `converters`: the rate and clock of the converters, the decimation bypass, and the USB format and transfer.
+  - `baseband`: with `baseband` on, how the samples are brought to 0 Hz. It gives the decimation and whether the resampler and the NCO run. At a low IF without the NCO it says why none is needed.
+  - `tuner 0` (and `tuner 1` with two channels): the frequency, the LO, the IF, the outputs and the filter, or direct sampling, and where the frequency lands in the stream.
+  - `tuner 0 gain`: the total and each stage.
+  - `tuner 0 front end`: the antenna, the pads, the notches, the bias-T and the RSPduo's switches, on boards that have them.
+
+These are SoapySDR log messages at the info level. `SoapySDRUtil` and most programs print them in the terminal they run in.
 
 
 <h3>Stream options</h3>
@@ -289,7 +321,7 @@ Build it with `g++ example.cpp -lSoapySDR`. At 256000 samples a second the modul
 
 <h3>Two channels</h3>
 
-The RSPduo reports two channels, one for each tuner. Channel 0 is the tuner on the 50 ohm input marked tuner 1, channel 1 the one marked tuner 2. Frequency, gain, bandwidth and the other per channel calls act on their own tuner. The device settings (`if_freq`, the notches and the rest) act on channel 0, except `biastee`, which powers channel 1's port, and `port_tie` and `ref_out`, which are the board's. Each channel has the channel settings `attenuator`, its own pad (`writeSetting(SOAPY_SDR_RX, 1, "attenuator", "13")`), and `fm_notch`, `mw_notch` and `dab_notch`, its own notches.
+The RSPduo reports two channels, one for each tuner. Channel 0 is the tuner on the 50 ohm input marked tuner 1, channel 1 the one marked tuner 2. Frequency, gain, bandwidth and the other per channel calls act on their own tuner. The device settings (`if_freq`, the notches and the rest) act on channel 0, except `biastee`, which powers channel 1's port, and `port_tie` and `ref_out`, which are the board's. Each channel has its own pads, the `ATT` gain (`setGain(SOAPY_SDR_RX, 1, "ATT", -13)`), and its own notches, the channel settings `fm_notch`, `mw_notch` and `dab_notch`.
 
 A channel not streamed gets no filter path, so an antenna on its port leaks less into the other. With both streamed, the ports are 44 to 63 dB apart up to 250 MHz and at 600 MHz, but only 23 to 30 dB at 300 to 433 MHz and 14 to 24 dB at 1.5 to 1.8 GHz.
 

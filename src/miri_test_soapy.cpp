@@ -105,10 +105,21 @@ static int probe(Dev *d, soapy_say_t say, soapy_say_t note)
     const bool duo = hw == "RSPduo", dxr2 = hw == "RSPdxR2", rsp1b = hw == "RSP1B";
     const double amp = (duo || rsp1b) ? 25 : dxr2 ? 24 : 0, ampMax = (duo || dxr2 || rsp1b) ? 25 : 0;
 
+    /* the pads first, as ATT, where the board has them: a negative gain, apart from the total.
+       No attenuator setting besides */
+    const bool pads = duo || dxr2 || rsp1b;
     g = d->listGains(SOAPY_SDR_RX, 0);
-    if (g.size() != (amp ? 5u : 4u) || !has(g, "LNA") || !has(g, "MIX") || !has(g, "MIXBUF") || !has(g, "BB") ||
-        (amp && !has(g, "AMP")))
+    if (g.size() != (amp ? 5u : 4u) + (pads ? 1u : 0u) || !has(g, "LNA") || !has(g, "MIX") || !has(g, "MIXBUF") ||
+        !has(g, "BB") || (amp && !has(g, "AMP")) || (pads && g[0] != "ATT") || (!pads && has(g, "ATT")))
     { say("gain stages wrong"); bad++; }
+    if (pads && (d->getGainRange(SOAPY_SDR_RX, 0, "ATT").minimum() != (dxr2 ? -36 : -19) ||
+                 d->getGainRange(SOAPY_SDR_RX, 0, "ATT").maximum() != 0 ||
+                 d->getGainRange(SOAPY_SDR_RX, 0, "ATT").step() != (dxr2 ? 3 : 1)))
+    { say("ATT range %.0f to %.0f by %.0f", d->getGainRange(SOAPY_SDR_RX, 0, "ATT").minimum(),
+          d->getGainRange(SOAPY_SDR_RX, 0, "ATT").maximum(), d->getGainRange(SOAPY_SDR_RX, 0, "ATT").step()); bad++; }
+    if (chanOptions(d, 0, "attenuator") >= 0) { say("an attenuator channel setting is still there"); bad++; }
+    for (const auto &a : d->getSettingInfo())
+        if (a.key == "attenuator") { say("an attenuator device setting is still there"); bad++; }
 
     /* the most of any band, the same at VHF and HF: GQRX reads them once. The RSPduo's
        mixbuffer steps by 6 (its Hi-Z is on AM1), the RSPdx-R2's LNA reaches 37 (its direct
@@ -158,14 +169,13 @@ static int probe(Dev *d, soapy_say_t say, soapy_say_t note)
         { say("AMP on gave %.0f dB", d->getGain(SOAPY_SDR_RX, 0)); bad++; }
     }
 
-    /* RSP1B: its pads one at a time, 0, 6, 13 or 19 dB, the nearest taken, apart from the gain */
+    /* RSP1B: its pads one at a time, 0, 6, 13 or 19 dB, the nearest taken, apart from the total */
     if (rsp1b)
     {
-        d->writeSetting("attenuator", "12");
-        if (d->readSetting("attenuator") != "13" || d->getGain(SOAPY_SDR_RX, 0) != 53 + amp ||
-            chanOptions(d, 0, "attenuator") != 4)
-        { say("pads: %s", d->readSetting("attenuator").c_str()); bad++; }
-        d->writeSetting("attenuator", "0");
+        d->setGain(SOAPY_SDR_RX, 0, "ATT", -12);
+        if (d->getGain(SOAPY_SDR_RX, 0, "ATT") != -13 || d->getGain(SOAPY_SDR_RX, 0) != 53 + amp)
+        { say("ATT -12 gave %.0f", d->getGain(SOAPY_SDR_RX, 0, "ATT")); bad++; }
+        d->setGain(SOAPY_SDR_RX, 0, "ATT", 0);
     }
 
     /* the notches: each channel its own, the device's channel 0's */
@@ -186,29 +196,27 @@ static int probe(Dev *d, soapy_say_t say, soapy_say_t note)
         if (d->readSetting("fm_notch") != "false") { say("fm notch left on"); bad++; }
     }
 
-    /* RSPdx-R2: its pads in 3 dB steps, the nearest taken, apart from the gain */
+    /* RSPdx-R2: its pads in 3 dB steps, the nearest taken, apart from the total */
     if (dxr2)
     {
-        d->writeSetting("attenuator", "20");
-        if (d->readSetting("attenuator") != "21" || d->readSetting(SOAPY_SDR_RX, 0, "attenuator") != "21" ||
-            d->getGain(SOAPY_SDR_RX, 0) != 53 + amp || chanOptions(d, 0, "attenuator") != 13)
-        { say("pads: %s", d->readSetting("attenuator").c_str()); bad++; }
-        d->writeSetting("attenuator", "0");
+        d->setGain(SOAPY_SDR_RX, 0, "ATT", -20);
+        if (d->getGain(SOAPY_SDR_RX, 0, "ATT") != -21 || d->getGain(SOAPY_SDR_RX, 0) != 53 + amp)
+        { say("ATT -20 gave %.0f", d->getGain(SOAPY_SDR_RX, 0, "ATT")); bad++; }
+        d->setGain(SOAPY_SDR_RX, 0, "ATT", 0);
     }
 
-    /* RSPduo: the pads apart from the gain, each channel its own, the nearest taken, the
-       device's on channel 0, and the port tie */
+    /* RSPduo: the pads apart from the total, each channel its own, the nearest taken, and
+       the port tie */
     if (duo)
     {
-        d->writeSetting(SOAPY_SDR_RX, 1, "attenuator", "12");
-        d->writeSetting("attenuator", "6");
-        if (d->readSetting(SOAPY_SDR_RX, 1, "attenuator") != "13" || d->readSetting(SOAPY_SDR_RX, 0, "attenuator") != "6" ||
-            d->readSetting("attenuator") != "6" || d->getGain(SOAPY_SDR_RX, 0) != 53 + amp ||
-            chanOptions(d, 0, "attenuator") != 4 || chanOptions(d, 1, "attenuator") != 4)
-        { say("pads: channel 0 %s, channel 1 %s", d->readSetting(SOAPY_SDR_RX, 0, "attenuator").c_str(),
-              d->readSetting(SOAPY_SDR_RX, 1, "attenuator").c_str()); bad++; }
-        d->writeSetting(SOAPY_SDR_RX, 1, "attenuator", "0");
-        d->writeSetting("attenuator", "0");
+        d->setGain(SOAPY_SDR_RX, 1, "ATT", -12);
+        d->setGain(SOAPY_SDR_RX, 0, "ATT", -6);
+        if (d->getGain(SOAPY_SDR_RX, 1, "ATT") != -13 || d->getGain(SOAPY_SDR_RX, 0, "ATT") != -6 ||
+            d->getGain(SOAPY_SDR_RX, 0) != 53 + amp || d->getGainRange(SOAPY_SDR_RX, 1, "ATT").minimum() != -19)
+        { say("ATT: channel 0 %.0f, channel 1 %.0f", d->getGain(SOAPY_SDR_RX, 0, "ATT"),
+              d->getGain(SOAPY_SDR_RX, 1, "ATT")); bad++; }
+        d->setGain(SOAPY_SDR_RX, 1, "ATT", 0);
+        d->setGain(SOAPY_SDR_RX, 0, "ATT", 0);
 
         d->writeSetting("port_tie", "true");
         if (d->readSetting("port_tie") != "true") { say("port tie: %s", d->readSetting("port_tie").c_str()); bad++; }
@@ -683,6 +691,109 @@ static int regress(Dev *d, const char *module, const char *serial, soapy_say_t s
     return bad ? SOAPY_T_FAIL : SOAPY_T_PASS;
 }
 
+/* report=true: the module's lines on what the receiver runs, kept here */
+static std::vector<std::string> logged;
+
+static void keepLog(const SoapySDRLogLevel, const char *m)
+{
+    for (const char *k : { "mirisdr: stream:", "mirisdr: converters:", "mirisdr: baseband:", "mirisdr: tuner " })
+        if (!strncmp(m, k, strlen(k))) { logged.push_back(m + strlen("mirisdr: ")); return; }
+}
+
+/* a line logged that starts with prefix and has part in it */
+static bool logLine(const char *prefix, const char *part = "")
+{
+    for (const std::string &l : logged)
+        if (!l.compare(0, strlen(prefix), prefix) && l.find(part) != std::string::npos) return true;
+    return false;
+}
+
+/* each line once at open, then only the ones a call changed: a rate below the converters'
+   least takes a low IF, said on the stream and the tuner's lines, the same rate again logs
+   nothing, a retune the tuner's line and not the stream's, a gain its own line alone.
+   Without report=true nothing */
+static int report(const char *module, const char *serial, soapy_say_t say, soapy_say_t note)
+{
+    SoapySDR::Kwargs extra;
+    Dev *d;
+    int bad = 0;
+    char want[64];
+
+    extra["report"] = "true";
+    logged.clear();
+    SoapySDR::registerLogHandler(keepLog);
+    if (!(d = openDev(module, serial, nullptr, say, extra))) return SOAPY_T_FAIL;
+
+    try
+    {
+        for (const std::string &l : logged) note("open: %s", l.c_str());
+        if (!logLine("stream: 2048000 S/s, complex float at zero IF") || !logLine("converters: ") ||
+            !logLine("baseband: decimation") || !logLine("tuner 0: 100.000000 MHz", "zero IF") || !logLine("tuner 0 gain: "))
+        { say("at open %zu lines, not each part", logged.size()); bad++; }
+
+        logged.clear();
+        d->setSampleRate(SOAPY_SDR_RX, 0, 1e6);
+        for (const std::string &l : logged) note("1 Msps: %s", l.c_str());
+        snprintf(want, sizeof want, "stream: %.0f S/s, complex float from a low IF", d->getSampleRate(SOAPY_SDR_RX, 0));
+        if (!logLine(want) || !logLine("tuner 0: ", "low IF") || !logLine("baseband: decimation"))
+        { say("1 Msps: no low IF in the %zu lines", logged.size()); bad++; }
+
+        logged.clear();
+        d->setSampleRate(SOAPY_SDR_RX, 0, 1e6);
+        if (!logged.empty()) { say("the same rate again logged %s", logged[0].c_str()); bad++; }
+
+        logged.clear();
+        d->setFrequency(SOAPY_SDR_RX, 0, 101e6);
+        for (const std::string &l : logged) note("101 MHz: %s", l.c_str());
+        if (!logLine("tuner 0: 101.000000 MHz") || logLine("stream:"))
+        { say("a retune logged %zu lines, not the tuner's alone", logged.size()); bad++; }
+
+        logged.clear();
+        d->setGain(SOAPY_SDR_RX, 0, 30);
+        for (const std::string &l : logged) note("30 dB: %s", l.c_str());
+        if (logged.size() != 1 || !logLine("tuner 0 gain: 30 dB"))
+        { say("a gain logged %zu lines, not its own alone", logged.size()); bad++; }
+
+        /* the pads, a gain apart from the total: the front end's line alone */
+        if (d->getGainRange(SOAPY_SDR_RX, 0, "ATT").minimum() < 0)
+        {
+            logged.clear();
+            d->setGain(SOAPY_SDR_RX, 0, "ATT", -6);
+            for (const std::string &l : logged) note("ATT -6: %s", l.c_str());
+            if (logged.size() != 1 || !logLine("tuner 0 front end: ", "pads 6 dB"))
+            { say("ATT logged %zu lines, not the front end's alone", logged.size()); bad++; }
+            d->setGain(SOAPY_SDR_RX, 0, "ATT", 0);
+        }
+
+        logged.clear();
+        d->setSampleRate(SOAPY_SDR_RX, 0, 2e6);
+        if (!logLine("stream: 2000000 S/s, complex float at zero IF") || !logLine("tuner 0: ", "zero IF"))
+        { say("2 Msps: not back at zero IF in the %zu lines", logged.size()); bad++; }
+
+        /* the RSPdx-R2 under 2 MHz: direct sampling, which always runs the NCO */
+        if (d->getHardwareKey() == "RSPdxR2")
+        {
+            d->setSampleRate(SOAPY_SDR_RX, 0, 1e6);
+            logged.clear();
+            d->setFrequency(SOAPY_SDR_RX, 0, 1e6);
+            for (const std::string &l : logged) note("1 MHz: %s", l.c_str());
+            if (!logLine("tuner 0: 1.000000 MHz by direct sampling") || !logLine("baseband: ", "NCO in use"))
+            { say("1 MHz on the RSPdx-R2: no direct sampling in the %zu lines", logged.size()); bad++; }
+        }
+    }
+    catch (const std::exception &e) { say("%s", e.what()); bad++; }
+    Dev::unmake(d);
+
+    logged.clear();
+    if (!(d = openDev(module, serial, nullptr, say))) return SOAPY_T_FAIL;
+    d->setSampleRate(SOAPY_SDR_RX, 0, 1e6);
+    Dev::unmake(d);
+    if (!logged.empty()) { say("without report=true: %s", logged[0].c_str()); bad++; }
+
+    if (!bad) say("each part at open, then what a rate, a retune and a gain changed, and nothing without it");
+    return bad ? SOAPY_T_FAIL : SOAPY_T_PASS;
+}
+
 extern "C" int soapy_test(const char *which, const char *module, const char *serial, int verbose,
                           soapy_say_t say, soapy_say_t note)
 {
@@ -739,6 +850,13 @@ extern "C" int soapy_test(const char *which, const char *module, const char *ser
         find["serial"] = "no such serial";
         if (!own.empty() && !Dev::enumerate(find).empty())
         { say("usb_port %s found for another serial", port.c_str()); return SOAPY_T_FAIL; }
+    }
+
+    if (!strcmp(which, "report"))
+    {
+        r = report(module, serial, say, note);
+        SoapySDR::registerLogHandler(nullptr);
+        return r;
     }
 
     if (!(d = openDev(module, serial, strcmp(which, "bandranges") ? nullptr : "band", say))) return SOAPY_T_FAIL;

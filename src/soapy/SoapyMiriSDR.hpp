@@ -163,6 +163,22 @@ private:
     uint32_t argBw;             /* the device string's bandwidth, what 0 falls back to */
     bool bandGainRanges;    /* gain ranges of the band tuned, not the most of any band */
 
+    /* report=true: what the receiver runs, logged when a call has changed it */
+    bool reportOn;
+    int reportDepth;                    /* calls under way that may change it */
+    std::vector<std::string> reported;  /* the lines logged last */
+    void report(void);
+    std::vector<std::string> reportLines(void) const;
+
+    /* at the start of a call that may change the receiver: the outermost logs what changed
+       once it ends, so a call made of several steps logs only where it ends up */
+    struct ReportScope
+    {
+        SoapyMiriSDR &d;
+        explicit ReportScope(SoapyMiriSDR &dev): d(dev) { d.devMutex.lock(); d.reportDepth++; }
+        ~ReportScope() { if (!--d.reportDepth && d.reportOn) d.report(); d.devMutex.unlock(); }
+    };
+
     /* ranges found at open */
     double freqMin, freqMax, rateMin, rateMax;
 
@@ -203,7 +219,8 @@ private:
     uint32_t pickLowIf(uint32_t rate) const;
     void applyTune(const mirisdr_tune_config_t &cfg);
     StageRanges stageRanges(void) const;
-    SoapySDR::ArgInfo attenuatorInfo(void) const;
+    void setPads(int db);
+    SoapySDR::Range attRange(void) const;
     void notchInfo(SoapySDR::ArgInfoList &list, bool device) const;
     std::vector<uint32_t> bandwidthsFor(uint32_t ifHz) const;
     uint32_t pickBandwidth(uint32_t ifHz) const;

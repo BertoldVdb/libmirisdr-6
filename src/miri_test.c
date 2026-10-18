@@ -6572,6 +6572,7 @@ static tres_t t_soapy_retune (void) { return soapy_run("retune"); }
 static tres_t t_soapy_band (void)   { return soapy_run("bandranges"); }
 static tres_t t_soapy_channels (void) { return soapy_run("channels"); }
 static tres_t t_soapy_regress (void) { return soapy_run("regress"); }
+static tres_t t_soapy_report (void) { return soapy_run("report"); }
 #endif
 
 static const struct {
@@ -6700,6 +6701,7 @@ static const struct {
     { "soapy",    "gain ranges of the band",    t_soapy_band          },
     { "soapy",    "two channels",               t_soapy_channels      },
     { "soapy",    "review fixes",               t_soapy_regress       },
+    { "soapy",    "report of what runs",        t_soapy_report        },
 #endif
 };
 

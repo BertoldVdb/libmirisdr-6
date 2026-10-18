@@ -74,6 +74,7 @@ SoapySDR::ArgInfoList SoapyMiriSDR::getStreamArgsInfo(const int direction, const
 SoapySDR::Stream *SoapyMiriSDR::setupStream(const int direction, const std::string &format,
                                             const std::vector<size_t> &channels, const SoapySDR::Kwargs &args)
 {
+    ReportScope report_(*this);
     size_t slots = SOAPY_MIRISDR_SLOTS;
 
     if (direction != SOAPY_SDR_RX) throw std::runtime_error("mirisdr: receive only");

@@ -12,8 +12,9 @@ extern "C" {
 
 typedef void (*soapy_say_t) (const char *fmt, ...);
 
-/* which: probe, stream, cycles or retune. The module is loaded from its path and
- * opens the receiver itself, so the caller must have closed it */
+/* which: probe, stream, cycles, retune, bandranges, channels, regress or report. The
+ * module is loaded from its path and opens the receiver itself, so the caller must have
+ * closed it */
 int soapy_test (const char *which, const char *module, const char *serial, int verbose,
                 soapy_say_t say, soapy_say_t note);
 
