@@ -86,21 +86,30 @@ static int mirisdr_ee_probe (mirisdr_dev_t *p, int strap)
 
 static void mirisdr_ee_end (mirisdr_dev_t *p);
 
+/* -1: refused, nothing touched (or a failure, already ended), else the size, and the
+   caller ends it */
 static int mirisdr_ee_begin (mirisdr_dev_t *p)
 {
+    uint32_t w0, w1;
     int strap = 0;
 
     if (!p || !p->dh) return -1;
 
+    w0 = MIRISDR_HW_EXPANDER(p->hw_flavour) ? 0x00AA80 : 0x002280;
+    w1 = MIRISDR_HW_EXPANDER(p->hw_flavour) ? 0x00EA80 : 0x006280;
+
     /* the tuner is programmed over this same port */
     if (mirisdr_async_get(p) != MIRISDR_ASYNC_INACTIVE) return -1;
+
+    /* the port drives pins the application holds as inputs */
+    if (p->gpio_hold & (((w0 | w1) >> 12) & 0xF)) return -1;
 
     /* GPIO for EEPROM access as the ROM has it: the strap (the GPIO_2 pad) read with
        the pin an input, then GPIO_2 low, as the RSPduo's EEPROM and expander only
        drive MISO then */
-    if (mirisdr_write_reg(p, 0x08, MIRISDR_HW_EXPANDER(p->hw_flavour) ? 0x00AA80 : 0x002280) < 0) return -1;
+    if (mirisdr_write_reg(p, 0x08, w0) < 0) goto failed;
     if ((p->ee_size < 0) && ((strap = mirisdr_get_gpio_inputs(p)) < 0)) goto failed;
-    if (mirisdr_write_reg(p, 0x08, MIRISDR_HW_EXPANDER(p->hw_flavour) ? 0x00EA80 : 0x006280) < 0) goto failed;
+    if (mirisdr_write_reg(p, 0x08, w1) < 0) goto failed;
 
     /* register 8 is the EEPROM's now: give it back if this fails */
     if ((p->ee_size < 0) && (mirisdr_ee_probe(p, strap) < 0)) goto failed;
@@ -125,7 +134,8 @@ static int mirisdr_ee_ignore (mirisdr_dev_t *p)
     uint8_t first;
     int r;
 
-    if ((r = mirisdr_ee_begin(p)) <= 0) goto out;
+    if ((r = mirisdr_ee_begin(p)) < 0) return -1;
+    if (!r) goto out;
     if ((r = mirisdr_ee_get(p, 0, &first)) < 0) goto out;
 
     r = (first == MIRISDR_EE_BOOT_IMAGE) ? 1 : 0;
@@ -142,11 +152,11 @@ out:
 
 int mirisdr_read_eeprom (mirisdr_dev_t *p, uint16_t addr, uint8_t *buf, int len)
 {
-    int i, r = -1;
+    int i, size, r = -1;
 
     if (!p || !buf || (len < 0)) return -1;
-    if (mirisdr_ee_begin(p) <= 0) goto out;
-    if ((int) addr + len > p->ee_size) goto out;
+    if ((size = mirisdr_ee_begin(p)) < 0) return -1;
+    if (!size || ((int) addr + len > size)) goto out;
 
     for (i = 0; i < len; i++)
         if (mirisdr_ee_get(p, (uint16_t) (addr + i), buf + i) < 0) goto out;
@@ -161,11 +171,11 @@ out:
 
 int mirisdr_write_eeprom (mirisdr_dev_t *p, uint16_t addr, const uint8_t *buf, int len)
 {
-    int i, r = -1;
+    int i, size, r = -1;
 
     if (!p || !buf || (len < 0)) return -1;
-    if (mirisdr_ee_begin(p) <= 0) goto out;
-    if ((int) addr + len > p->ee_size) goto out;
+    if ((size = mirisdr_ee_begin(p)) < 0) return -1;
+    if (!size || ((int) addr + len > size)) goto out;
 
     for (i = 0; i < len; i++)
     {

@@ -37,7 +37,7 @@ static int mirisdr_adc_stop (mirisdr_dev_t *p) {
     if (!p) goto failed;
 
     /* put the USB interface and the ADC to sleep */
-    mirisdr_write_reg(p, 0x03, 0x010000);
+    if (mirisdr_write_reg(p, 0x03, 0x010000) < 0) goto failed;
 
     return 0;
 

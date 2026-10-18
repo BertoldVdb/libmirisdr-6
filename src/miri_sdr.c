@@ -32,13 +32,14 @@
 
 #include "mirisdr.h"
 
-#define DEFAULT_SAMPLE_RATE		500000
+#define DEFAULT_SAMPLE_RATE		2048000
 #define DEFAULT_ASYNC_BUF_NUMBER	32
 #define DEFAULT_BUF_LENGTH		(16 * 16384)
 #define MINIMAL_BUF_LENGTH		512
 #define MAXIMAL_BUF_LENGTH		(256 * 16384)
 
 static int do_exit = 0;
+static int write_failed = 0;
 static mirisdr_dev_t *dev = NULL;
 
 void usage(void)
@@ -63,7 +64,7 @@ void usage(void)
 		"\t    504r:   S16\n"
 
 #if !defined (_WIN32) || defined(__MINGW32__)
-		"\t[-e USB transfer mode (default: ISOC)]\n"
+		"\t[-e USB transfer mode (default: ISOC, BULK with -S)]\n"
 #else
 		"\t[-e USB transfer mode (default: BULK)]\n"
 #endif
@@ -95,10 +96,14 @@ void usage(void)
 		"\t    on:     always bypass, 2.6 - 30 Msps\n"
 		"\t    off:    never bypass, 1.3 - 15 Msps\n"
 		"\t[-d device_index (default: 0)]\n"
-	    "\t[-T device_type device variant: 0 default, 1 SDRplay, 2 RSP1B, 3 RSPdx-R2, 4 RSPduo (default: by VID:PID)]\n"
-        "\t    0:       Default\n"
-        "\t    1:       SDRPlay\n"
-		"\t[-g gain in 10 dB units, 0-10.2: 4.5 is 45 dB (default: 0 for auto)]\n"
+		"\t[-T board (default: from the USB IDs)]\n"
+		"\t    0:       a plain MSi2500/MSi001 board\n"
+		"\t    1:       SDRplay RSP1\n"
+		"\t    2:       SDRplay RSP1B\n"
+		"\t    3:       SDRplay RSPdx-R2\n"
+		"\t    4:       SDRplay RSPduo\n"
+		"\t[-g total gain in 10 dB units: 4.5 is 45 dB, taken to the nearest the band has\n"
+		"\t    (default: keep the gain set, there is no automatic gain)]\n"
         "\t[-G individual gains separated by comma (mixer, lna, mixbuffer, baseband)]\n"
         "\t    mixer: 0, 1\n"
         "\t    LNA: 0, 1\n"
@@ -107,7 +112,7 @@ void usage(void)
 		"\t[-b output_block_size (default: 16 * 16384, with -B as they come)]\n"
 		"\t[-q swap I/Q (default: off)]\n"
 		"\t    in the real modes this chooses which converter is digitised\n"
-		"\t[-S force sync output (default: async), not with -B]\n"
+		"\t[-S force sync output (default: async), not with -B; needs BULK]\n"
 		"\tfilename (a '-' dumps samples to stdout)\n\n");
 #endif
 	exit(1);
@@ -150,6 +155,7 @@ static void mirisdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 	if (ctx) {
 		if (fwrite(buf, 1, len, (FILE*)ctx) != len) {
 			fprintf(stderr, "Short write, samples lost, exiting!\n");
+			write_failed = 1;
 			mirisdr_cancel_async(dev);
 		}
 	}
@@ -181,6 +187,7 @@ int main(int argc, char **argv)
 	int sync_mode = 0;
 	int baseband = 0;
 	int block_given = 0;
+	int transfer_given = 0;
 	int swap_iq = 0;
 	FILE *file;
 	uint8_t *buffer;
@@ -227,12 +234,15 @@ int main(int argc, char **argv)
 			break;
         case 'T':
             intval = atoi(optarg);
-            if ((intval >=0) && (intval <= MIRISDR_HW_RSPDUO))
+            if ((intval < 0) || (intval > MIRISDR_HW_RSPDUO))
             {
-                hw_flavour = (mirisdr_hw_flavour_t) intval;
+                fprintf(stderr, "-T takes 0 to %d.\n", MIRISDR_HW_RSPDUO);
+                exit(2);
             }
+            hw_flavour = (mirisdr_hw_flavour_t) intval;
             break;
 		case 'e':
+			transfer_given = 1;
 			if ((strcmp("ISOC", optarg) == 0) ||
 			    (strcmp("1", optarg) == 0)) {
 				transfer_name = "ISOC";}
@@ -246,7 +256,7 @@ int main(int argc, char **argv)
 			frequency = (uint32_t)atof(optarg);
 			break;
 		case 'g':
-			gain = (int)(atof(optarg) * 10); /* tenths of a dB */
+			gain = (int)(atof(optarg) * 10 + 0.5); /* dB */
 			break;
         case 'G':
             // mixer lna mb bb
@@ -292,6 +302,10 @@ int main(int argc, char **argv)
 				format = 7;}
 			if (strcmp("autor", optarg) == 0) {
 				format = 8;}
+			if ((strcmp("auto", optarg) != 0) && !format) {
+				fprintf(stderr, "-m %s is not a format.\n", optarg);
+				exit(2);
+			}
 			break;
 		case 'q':
 			swap_iq = 1;
@@ -321,7 +335,7 @@ int main(int argc, char **argv)
 		usage();
 	dev_index = atoi(argv[1]);
 	samp_rate = atoi(argv[2])*1000;
-	gain=(int)(atof(argv[3]) * 10); /* tenths of a dB */
+	gain=(int)(atof(argv[3]) * 10 + 0.5); /* dB */
 	frequency = atoi(argv[4]);
 	filename = argv[5];
 #endif
@@ -341,7 +355,18 @@ int main(int argc, char **argv)
 		exit(1);
 	}
 
-	buffer = malloc(out_block_size * sizeof(uint8_t));
+	/* the synchronous reads are bulk only */
+	if (sync_mode && !transfer_given)
+		transfer_name = "BULK";
+	if (sync_mode && strcmp(transfer_name, "BULK")) {
+		fprintf(stderr, "-S needs the BULK transfer.\n");
+		exit(1);
+	}
+
+	if (!(buffer = malloc(out_block_size * sizeof(uint8_t)))) {
+		fprintf(stderr, "Out of memory.\n");
+		exit(1);
+	}
 
 	device_count = mirisdr_get_device_count();
 	if (!device_count) {
@@ -471,6 +496,7 @@ int main(int argc, char **argv)
 		file = fopen(filename, "wb");
 		if (!file) {
 			fprintf(stderr, "Failed to open %s\n", filename);
+			r = -1;
 			goto out;
 		}
 	}
@@ -491,11 +517,13 @@ int main(int argc, char **argv)
 
 			if (fwrite(buffer, 1, n_read, file) != (size_t)n_read) {
 				fprintf(stderr, "Short write, samples lost, exiting!\n");
+				r = -1;
 				break;
 			}
 
 			if ((uint32_t)n_read < out_block_size) {
 				fprintf(stderr, "Short read, samples lost, exiting!\n");
+				r = -1;
 				break;
 			}
 		}
@@ -506,16 +534,22 @@ int main(int argc, char **argv)
 				      (baseband && !block_given) ? 0 : out_block_size);
 	}
 
-	if (do_exit)
+	if (do_exit && (r >= 0))
 		fprintf(stderr, "\nUser cancel, exiting...\n");
+	else if (r >= 0)
+		fprintf(stderr, "\nThe stream ended, exiting...\n");
 	else
 		fprintf(stderr, "\nLibrary error %d, exiting...\n", r);
+
+	/* a cancel in the callback after a short write ends the stream without an error */
+	if (write_failed)
+		r = -1;
 
 	if (file != stdout)
 		fclose(file);
 
+out:
 	mirisdr_close(dev);
 	free (buffer);
-out:
-	return r >= 0 ? r : -r;
+	return (r < 0) ? 1 : 0;
 }

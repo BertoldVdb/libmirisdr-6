@@ -77,7 +77,8 @@ int mirisdr_feed_bulk (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx, 
     p->conv_filled = 0;
     p->fills_n = 0;
 
-    bytes = mirisdr_parse_bulk(p, data, (int) n, samples);
+    /* as a transfer of the length the library would ask for next */
+    bytes = mirisdr_parse_bulk(p, data, (int) n, mirisdr_bulk_next_len(p), samples);
     if (bytes > 0 || p->fills_n) mirisdr_feed_converted(p, samples, (uint32_t) bytes);
 
     return 0;

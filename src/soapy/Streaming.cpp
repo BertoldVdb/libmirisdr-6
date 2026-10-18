@@ -97,9 +97,18 @@ SoapySDR::Stream *SoapyMiriSDR::setupStream(const int direction, const std::stri
         }
         if (streamTuners() != tuners)
         {
+            const mirisdr_stream_config_t was = streamCfg;
+            mirisdr_stream_config_t lib;
+
+            /* what the library took, not what was asked: a refused one is put back */
             streamCfg.tuners = tuners == 1 ? 0 : tuners;
-            configure(wantRate);
-            if (streamTuners() != tuners) throw std::runtime_error("mirisdr: these channels together refused");
+            if (!configure(wantRate) || (mirisdr_get_stream(dev, &lib, NULL) < 0) ||
+                ((lib.tuners ? lib.tuners : 1) != tuners))
+            {
+                streamCfg = was;
+                configure(wantRate);
+                throw std::runtime_error("mirisdr: these channels together refused");
+            }
         }
     }
 
@@ -196,9 +205,13 @@ size_t SoapyMiriSDR::getStreamMTU(SoapySDR::Stream *stream) const
     return 24 * 504;
 }
 
+/* nothing may be thrown through the library's C frames: out of memory ends the stream */
 static void rxCallbackC(unsigned char *buf, uint32_t len, void *ctx)
 {
-    ((SoapyMiriSDR *) ctx)->rxCallback(buf, len);
+    SoapyMiriSDR *d = (SoapyMiriSDR *) ctx;
+
+    try { d->rxCallback(buf, len); }
+    catch (...) { d->rxFailed(); }
 }
 
 int SoapyMiriSDR::activateStream(SoapySDR::Stream *stream, const int flags, const long long timeNs,
@@ -218,18 +231,31 @@ int SoapyMiriSDR::activateStream(SoapySDR::Stream *stream, const int flags, cons
     }
     if (ring.empty()) return SOAPY_SDR_STREAM_ERROR;    /* closed, or never set up */
 
-    /* the library counts from 0 again */
+    /* the library counts from 0 again: the time carries on from where the last stream
+       ended, setHardwareTime() with it */
+    timeOffsetNs = getHardwareTime("");
     timeBaseNs = 0;
     timeBaseIndex = 0;
     timeBaseRate = 0;
+    lastIndex = 0;
+    lastRate = 0;
     stopping = false;
     rxDone = false;
+    rxEnded = false;
     rxResult = 0;
 
     mirisdr_reset_buffer(dev);
     rxThread = std::thread([this]() {
         /* a stop before the library runs: the callback catches one after */
-        if (!stopping) rxResult = mirisdr_read_async(dev, rxCallbackC, this, asyncBuffers, 0);
+        /* an error the callback recorded stays */
+        if (!stopping)
+        {
+            int r = mirisdr_read_async(dev, rxCallbackC, this, asyncBuffers, 0);
+            if (r < 0) rxResult = r;
+        }
+        /* under the ring's lock, so a reader between its check and its wait hears it */
+        std::lock_guard<std::mutex> rl(ringMutex);
+        rxEnded = !stopping;
         rxDone = true;
         ringCond.notify_all();
     });
@@ -284,6 +310,24 @@ void SoapyMiriSDR::rxCallback(unsigned char *buf, uint32_t len)
             Slot &s = ring[ringTail];
             if (len / bytes < s.n) s.n = len / bytes;
             s.data2.assign(buf, buf + s.n * bytes);
+
+            /* the shorter of the two, and the gaps of either within it: one lost in tuner
+               1's half alone is lost for the pair too */
+            for (i = 0; i < info.gaps_len && i < MIRISDR_GAPS_MAX; i++)
+            {
+                if (info.gaps[i].filled >= info.gaps[i].samples) continue;
+                auto at = std::find_if(s.gaps.begin(), s.gaps.end(),
+                                       [&](const Gap &g) { return g.offset == info.gaps[i].offset; });
+                if (at != s.gaps.end()) { at->lost = true; continue; }
+                Gap g;
+                g.offset = info.gaps[i].offset;
+                g.missing = info.gaps[i].samples - info.gaps[i].filled;
+                g.lost = true;
+                s.gaps.push_back(g);
+            }
+            s.gaps.erase(std::remove_if(s.gaps.begin(), s.gaps.end(), [&](const Gap &g) { return g.offset > s.n; }),
+                         s.gaps.end());
+            std::sort(s.gaps.begin(), s.gaps.end(), [](const Gap &a, const Gap &b) { return a.offset < b.offset; });
             pairOpen = false;
             ringTail = (ringTail + 1) % ring.size();
             ringCount++;
@@ -331,6 +375,13 @@ void SoapyMiriSDR::rxCallback(unsigned char *buf, uint32_t len)
     ringCond.notify_one();
 }
 
+/* the callback could not go on (out of memory): the stream ends with an error */
+void SoapyMiriSDR::rxFailed(void)
+{
+    rxResult = -1;
+    mirisdr_cancel_async(dev);
+}
+
 int SoapyMiriSDR::readStream(SoapySDR::Stream *stream, void * const *buffs, const size_t numElems,
                              int &flags, long long &timeNs, const long timeoutUs)
 {
@@ -348,9 +399,10 @@ int SoapyMiriSDR::readStream(SoapySDR::Stream *stream, void * const *buffs, cons
         {
             /* stopped, the whole timeout: a reader looping on it does not spin */
             ringCond.wait_for(rl, std::chrono::microseconds(timeoutUs),
-                              [this] { return ringCount != 0 || (rxDone && rxResult < 0); });
+                              [this] { return ringCount != 0 || rxEnded || (rxDone && rxResult < 0); });
             if (ring.empty()) return SOAPY_SDR_STREAM_ERROR;
-            if (!ringCount) return rxDone && rxResult < 0 ? SOAPY_SDR_STREAM_ERROR : SOAPY_SDR_TIMEOUT;
+            /* a stream that ended without a deactivate gives no more: an error, not a wait */
+            if (!ringCount) return rxEnded || (rxDone && rxResult < 0) ? SOAPY_SDR_STREAM_ERROR : SOAPY_SDR_TIMEOUT;
         }
     }
 
@@ -377,10 +429,10 @@ int SoapyMiriSDR::readStream(SoapySDR::Stream *stream, void * const *buffs, cons
         }
     }
 
-    /* up to the next gap that is lost */
+    /* up to the next gap that is lost, within the slot */
     end = s.n;
     for (k = gapPos; k < s.gaps.size(); k++)
-        if (s.gaps[k].lost) { end = s.gaps[k].offset; break; }
+        if (s.gaps[k].lost) { end = std::min<size_t>(s.gaps[k].offset, s.n); break; }
     n = std::min(numElems, end - slotPos);
 
     index = s.index + slotPos;

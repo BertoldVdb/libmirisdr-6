@@ -115,6 +115,12 @@ static int mirisdr_addr_next (mirisdr_dev_t *p, const uint8_t *hdr, uint32_t ste
     p->stats.samples+= step;
     p->addr = addr + step;
 
+    mirisdr_atomic_add(&p->count_seq, 1);
+    p->count_index = p->stats.samples + p->stats.lost;
+    p->count_addr = p->addr;
+    p->count_gaps = p->stats.gaps;
+    mirisdr_atomic_add(&p->count_seq, 1);
+
     mirisdr_ir_latch(p, hdr[6], addr);
 
     return 0;

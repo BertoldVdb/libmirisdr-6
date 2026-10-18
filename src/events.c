@@ -59,7 +59,12 @@ static void mirisdr_events_latch (mirisdr_dev_t *p, const uint8_t *hdr, uint64_t
     x = w ^ p->ev_last;
     p->ev_last = w;
 
-    if (p->scan_on) mirisdr_scan_latch(p, w, x, sample, index, step);
+    /* under the lock mirisdr_scan_stop() takes, so a stopped scan is not read after */
+    if (p->scan_on) {
+        mirisdr_ev_lock(p);
+        mirisdr_scan_latch(p, w, x, sample, index, step);
+        mirisdr_ev_unlock(p);
+    }
     if (!p->ev_cb) {
         p->ev_missed = 0;
         return;
@@ -85,15 +90,20 @@ static void mirisdr_events_latch (mirisdr_dev_t *p, const uint8_t *hdr, uint64_t
     e.saturate = !!(w & MIRISDR_HDR_SATURATE);
     e.raw      = w;
 
-    p->ev_cb(&e, p->ev_ctx);
+    /* the pair as one, and once the setter returns the old one no longer runs */
+    mirisdr_ev_lock(p);
+    if (p->ev_cb) p->ev_cb(&e, p->ev_ctx);
+    mirisdr_ev_unlock(p);
 }
 
 int mirisdr_set_stream_events (mirisdr_dev_t *p, mirisdr_stream_event_cb_t cb, void *ctx) {
     if (!p) goto failed;
 
+    mirisdr_ev_lock(p);
     p->ev_cb = cb;
     p->ev_ctx = ctx;
     p->ev_valid = 0;
+    mirisdr_ev_unlock(p);
 
     return 0;
 

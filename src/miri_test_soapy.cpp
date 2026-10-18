@@ -60,6 +60,14 @@ static bool has(const std::vector<std::string> &v, const char *s)
     return std::find(v.begin(), v.end(), s) != v.end();
 }
 
+/* a channel setting's options, -1 when the channel has not got it */
+static int chanOptions(Dev *d, size_t ch, const std::string &key)
+{
+    for (const auto &a : d->getSettingInfo(SOAPY_SDR_RX, ch))
+        if (a.key == key) return (int) a.options.size();
+    return -1;
+}
+
 /* names, formats, ranges and the gain stages a band has */
 static int probe(Dev *d, soapy_say_t say, soapy_say_t note)
 {
@@ -155,9 +163,27 @@ static int probe(Dev *d, soapy_say_t say, soapy_say_t note)
     {
         d->writeSetting("attenuator", "12");
         if (d->readSetting("attenuator") != "13" || d->getGain(SOAPY_SDR_RX, 0) != 53 + amp ||
-            d->getSettingInfo(SOAPY_SDR_RX, 0).size() != 1 || d->getSettingInfo(SOAPY_SDR_RX, 0)[0].options.size() != 4)
+            chanOptions(d, 0, "attenuator") != 4)
         { say("pads: %s", d->readSetting("attenuator").c_str()); bad++; }
         d->writeSetting("attenuator", "0");
+    }
+
+    /* the notches: each channel its own, the device's channel 0's */
+    if (rsp1b || dxr2 || duo)
+    {
+        const size_t last = duo ? 1 : 0;
+
+        d->writeSetting("fm_notch", "true");
+        if (chanOptions(d, 0, "fm_notch") < 0 || d->readSetting(SOAPY_SDR_RX, 0, "fm_notch") != "true" ||
+            d->readSetting("fm_notch") != "true" || (duo && d->readSetting(SOAPY_SDR_RX, 1, "fm_notch") != "false"))
+        { say("fm notch: device %s, channel 0 %s", d->readSetting("fm_notch").c_str(),
+              d->readSetting(SOAPY_SDR_RX, 0, "fm_notch").c_str()); bad++; }
+        d->writeSetting(SOAPY_SDR_RX, last, "dab_notch", "true");
+        if (d->readSetting(SOAPY_SDR_RX, last, "dab_notch") != "true")
+        { say("dab notch on channel %zu: %s", last, d->readSetting(SOAPY_SDR_RX, last, "dab_notch").c_str()); bad++; }
+        d->writeSetting(SOAPY_SDR_RX, last, "dab_notch", "false");
+        d->writeSetting("fm_notch", "false");
+        if (d->readSetting("fm_notch") != "false") { say("fm notch left on"); bad++; }
     }
 
     /* RSPdx-R2: its pads in 3 dB steps, the nearest taken, apart from the gain */
@@ -165,8 +191,7 @@ static int probe(Dev *d, soapy_say_t say, soapy_say_t note)
     {
         d->writeSetting("attenuator", "20");
         if (d->readSetting("attenuator") != "21" || d->readSetting(SOAPY_SDR_RX, 0, "attenuator") != "21" ||
-            d->getGain(SOAPY_SDR_RX, 0) != 53 + amp || d->getSettingInfo(SOAPY_SDR_RX, 0).size() != 1 ||
-            d->getSettingInfo(SOAPY_SDR_RX, 0)[0].options.size() != 13)
+            d->getGain(SOAPY_SDR_RX, 0) != 53 + amp || chanOptions(d, 0, "attenuator") != 13)
         { say("pads: %s", d->readSetting("attenuator").c_str()); bad++; }
         d->writeSetting("attenuator", "0");
     }
@@ -179,7 +204,7 @@ static int probe(Dev *d, soapy_say_t say, soapy_say_t note)
         d->writeSetting("attenuator", "6");
         if (d->readSetting(SOAPY_SDR_RX, 1, "attenuator") != "13" || d->readSetting(SOAPY_SDR_RX, 0, "attenuator") != "6" ||
             d->readSetting("attenuator") != "6" || d->getGain(SOAPY_SDR_RX, 0) != 53 + amp ||
-            d->getSettingInfo(SOAPY_SDR_RX, 1).size() != 1)
+            chanOptions(d, 0, "attenuator") != 4 || chanOptions(d, 1, "attenuator") != 4)
         { say("pads: channel 0 %s, channel 1 %s", d->readSetting(SOAPY_SDR_RX, 0, "attenuator").c_str(),
               d->readSetting(SOAPY_SDR_RX, 1, "attenuator").c_str()); bad++; }
         d->writeSetting(SOAPY_SDR_RX, 1, "attenuator", "0");
@@ -205,10 +230,19 @@ static int probe(Dev *d, soapy_say_t say, soapy_say_t note)
     if (bw.size() != 3 || bw[0] != 200e3 || bw[2] != 600e3) { say("low IF filters wrong"); bad++; }
     d->writeSetting("if_freq", "auto");
 
-    /* refused: logged, and the rate stays */
+    /* past what an isochronous transfer carries, refused: logged, and the rate stays */
+    std::string transfer = d->readSetting("transfer");
+    d->writeSetting("transfer", "ISOC");
     d->setSampleRate(SOAPY_SDR_RX, 0, 2e6);
     d->setSampleRate(SOAPY_SDR_RX, 0, 100e6);
     if (d->getSampleRate(SOAPY_SDR_RX, 0) != 2e6) { say("a refused rate changed it"); bad++; }
+    /* in bulk the receiver's most instead, 504 samples a packet past its 56 MB/s */
+    d->writeSetting("transfer", "BULK");
+    d->setSampleRate(SOAPY_SDR_RX, 0, 100e6);
+    if (std::fabs(d->getSampleRate(SOAPY_SDR_RX, 0) - 27562500) > 16)
+    { say("100 Msps in bulk: %.0f", d->getSampleRate(SOAPY_SDR_RX, 0)); bad++; }
+    d->setSampleRate(SOAPY_SDR_RX, 0, 2e6);
+    d->writeSetting("transfer", transfer);
 
     /* a low rate takes a low IF, the frequency still the centre */
     d->setFrequency(SOAPY_SDR_RX, 0, 433.5e6);
@@ -621,6 +655,18 @@ static int regress(Dev *d, const char *module, const char *serial, soapy_say_t s
         if (n != SOAPY_SDR_TIMEOUT || now() - t0 < 0.08) { say("read when stopped: %d after %.0f ms", n, (now() - t0) * 1e3); bad++; }
     }
 
+    /* started again: the time carries on from where it stopped, it does not go back to 0 */
+    {
+        int fl = 0, n = 0, k = 0;
+        long long t = 0, before = d->getHardwareTime();
+
+        d->activateStream(s);
+        while ((n = d->readStream(s, &b, buf.size() / 2, fl, t, 200000)) <= 0 && k++ < 20);
+        if (n <= 0 || t < before || d->getHardwareTime() < before)
+        { say("started again: %d, the time %.3f s after %.3f s", n, t / 1e9, before / 1e9); bad++; }
+        d->deactivateStream(s);
+    }
+
     /* after closing, reads and starts are refused */
     d->closeStream(s);
     {
@@ -632,8 +678,8 @@ static int regress(Dev *d, const char *module, const char *serial, soapy_say_t s
     }
 
     if (err) { say("%lld read errors", err); bad++; }
-    if (!bad) say("IF strings, a refused bypass, MIXBUF at VHF, time over a rate change, transfers while "
-                  "streaming, reads when stopped and closed");
+    if (!bad) say("IF strings, a refused bypass, MIXBUF at VHF, time over a rate change and a restart, "
+                  "transfers while streaming, reads when stopped and closed");
     return bad ? SOAPY_T_FAIL : SOAPY_T_PASS;
 }
 

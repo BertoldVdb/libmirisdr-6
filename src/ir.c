@@ -80,11 +80,14 @@ int mirisdr_set_ir (mirisdr_dev_t *p, uint32_t tick_ns, mirisdr_ir_cb_t cb, void
     /* GPIO_3 is the SDRplay expander's chip select: released, it would float */
     if (MIRISDR_HW_EXPANDER(p->hw_flavour)) return -1;
 
-    /* off first, so the stream thread stops before the callback goes */
+    /* under the events' lock, which the stream thread holds while it times a packet: the
+       callback and its context go together, and the old one has stopped once this is set */
+    mirisdr_ev_lock(p);
     p->ir_tick_ns = 0;
     p->ir_cb = cb;
     p->ir_ctx = ctx;
     p->ir_have = 0;
+    mirisdr_ev_unlock(p);
 
     if (!tick_ns)
     {
@@ -99,8 +102,10 @@ int mirisdr_set_ir (mirisdr_dev_t *p, uint32_t tick_ns, mirisdr_ir_cb_t cb, void
     if (n > 0x10000) n = 0x10000;
     n--;
 
+    mirisdr_ev_lock(p);
     p->ir_tick_ns = (uint32_t) (((uint64_t) (n + 1) * 1000000000ULL
                                  + MIRISDR_IR_CLOCK / 2) / MIRISDR_IR_CLOCK);
+    mirisdr_ev_unlock(p);
 
     /* the band plan drives every pin as an output and the sampler reads the
        pad, so the input has to be released before any of this means anything */
@@ -121,12 +126,11 @@ static void mirisdr_ir_resync (mirisdr_dev_t *p)
     p->ir_have = 0;
 }
 
-/* One packet header, from the transfer callback. */
-static void mirisdr_ir_latch (mirisdr_dev_t *p, uint8_t b6, uint32_t addr)
+/* One packet header, from the transfer callback, under the events' lock */
+static void mirisdr_ir_latch_held (mirisdr_dev_t *p, uint8_t b6, uint32_t addr)
 {
     uint8_t ticks = b6 & 0x7F;
     uint8_t level = (b6 & 0x80) ? 0 : 1;        /* the byte sets the bit for a low pin */
-    /* once: mirisdr_set_ir() may change them from another thread meanwhile */
     uint32_t tick_ns = p->ir_tick_ns;
     mirisdr_ir_cb_t cb = p->ir_cb;
     void *ctx = p->ir_ctx;
@@ -183,7 +187,9 @@ static void mirisdr_ir_latch (mirisdr_dev_t *p, uint8_t b6, uint32_t addr)
         else if (level != p->ir_level)
         {
             /* the run ended on a count that repeated the byte already there, so
-               there is no tail and the stream is the only clock */
+               there is no tail and the stream is the only clock. The next run
+               began a counter cycle before this packet, so this one ended then */
+            ns = elapsed > full ? elapsed - full : 0;
             e.ended = 1;
         }
     }
@@ -202,4 +208,13 @@ static void mirisdr_ir_latch (mirisdr_dev_t *p, uint8_t b6, uint32_t addr)
             ? addr - (uint32_t) (full * p->rate / 1000000000ULL)
             : addr;
     }
+}
+
+static void mirisdr_ir_latch (mirisdr_dev_t *p, uint8_t b6, uint32_t addr)
+{
+    if (!p->ir_tick_ns) return;
+
+    mirisdr_ev_lock(p);
+    mirisdr_ir_latch_held(p, b6, addr);
+    mirisdr_ev_unlock(p);
 }

@@ -19,7 +19,7 @@
    out exactly len bytes, keeping the rest for the next call. */
 int mirisdr_read_sync (mirisdr_dev_t *p, void *buf, int len, int *n_read) {
     uint8_t *out = buf;
-    int got = 0, n, r, k, phase;
+    int got = 0, n, r, k, phase, want;
 
     if (!p || !p->dh || !buf || len < 0) goto failed;
     if (p->bb) {
@@ -44,6 +44,8 @@ int mirisdr_read_sync (mirisdr_dev_t *p, void *buf, int len, int *n_read) {
         }
 
         memset(&p->stats, 0, sizeof(p->stats));
+        p->count_index = p->count_gaps = 0;
+        p->count_addr = 0;
         p->sync_run = 0;
         p->addr_valid = 0;
         p->bulk_carry_n = 0;
@@ -58,18 +60,19 @@ int mirisdr_read_sync (mirisdr_dev_t *p, void *buf, int len, int *n_read) {
 
     while (got < len) {
         if (p->sync_pos == p->sync_len) {
-            r = libusb_bulk_transfer(p->dh, 0x81, p->sync_in, p->sync_xlen, &n, DEFAULT_BULK_TIMEOUT);
+            want = p->sync_xlen;
+            r = libusb_bulk_transfer(p->dh, 0x81, p->sync_in, want, &n, DEFAULT_BULK_TIMEOUT);
             if (r < 0) {
                 if (got) break;
                 /* the device stops, and the next read starts it from the beginning */
                 mirisdr_streaming_stop(p);
-                return r;
+                return -1;
             }
             p->sync_xlen = DEFAULT_BULK_BUFFER;
 
             p->stats_head = 1;
             if (p->fw_ours) {
-                p->sync_len = mirisdr_parse_bulk(p, p->sync_in, n, p->sync_out);
+                p->sync_len = mirisdr_parse_bulk(p, p->sync_in, n, want, p->sync_out);
                 p->sync_xlen = mirisdr_bulk_next_len(p);
             } else
                 p->sync_len = mirisdr_convert_bulk(p, p->sync_in, p->sync_out, n);

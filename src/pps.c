@@ -78,13 +78,30 @@ int mirisdr_set_pps_source (mirisdr_dev_t *p, int sof, int divider)
     return 0;
 }
 
+/* The stream's count of one block header, whole: the stream thread updates it meanwhile */
+static void mirisdr_pps_count (mirisdr_dev_t *p, uint64_t *index, uint32_t *addr, uint64_t *gaps)
+{
+    int s, tries;
+
+    for (tries = 0; tries < 1000; tries++)
+    {
+        s = mirisdr_atomic_add(&p->count_seq, 0);
+        if (s & 1) continue;
+        *index = p->count_index;
+        *addr = p->count_addr;
+        *gaps = p->count_gaps;
+        if (mirisdr_atomic_add(&p->count_seq, 0) == s) return;
+    }
+}
+
 /* The anchor is taken by the next streaming interrupt, so it is read here while
    the sample counter it carries is still within a wrap of the stream: from then
    on everything is 64 bit and counted from it. */
 static int mirisdr_pps_anchor (mirisdr_dev_t *p)
 {
     uint8_t b[PPS_TIME_LEN];
-    uint32_t c[4];
+    uint32_t c[4], addr = 0;
+    uint64_t index = 0, gaps = 0;
     int i, newest = 0, tries;
 
     for (tries = 0; tries < 100; tries++)
@@ -105,10 +122,10 @@ static int mirisdr_pps_anchor (mirisdr_dev_t *p)
     for (i = 1; i < 4; i++)
         if ((int32_t) (c[i] - c[newest]) > 0) newest = i;
 
-    p->pps_base = (int64_t) (p->stats.samples + p->stats.lost)
-                + (int32_t) (c[newest] - MIRISDR_PPS_ANCHOR_BACK * p->addr_step - p->addr);
+    mirisdr_pps_count(p, &index, &addr, &gaps);
+    p->pps_base = (int64_t) index + (int32_t) (c[newest] - MIRISDR_PPS_ANCHOR_BACK * p->addr_step - addr);
 
-    p->pps_lost0 = p->stats.lost;
+    p->pps_gaps0 = gaps;
     p->pps_anchor_valid = 1;
     p->pps_seen = 0;
     p->pps_k_min = 0;
@@ -242,7 +259,8 @@ int mirisdr_get_pps (mirisdr_dev_t *p, mirisdr_pps_t *out)
     expect = p->rate ? (double) group * 1e9 / p->rate / MIRISDR_PPS_TURN_NS : 0;
     fullc  = expect - MIRISDR_PPS_STREAM_TURNS;
 
-    /* Validate against 30MHz clock */
+    /* the edge's interval against the one a packet group takes at the rate, in turns of
+       the firmware's loop */
     if (expect > 0
         && t.full > expect * MIRISDR_PPS_SCALE_LO
         && t.full < expect * MIRISDR_PPS_SCALE_HI)
@@ -285,9 +303,13 @@ int mirisdr_get_pps (mirisdr_dev_t *p, mirisdr_pps_t *out)
     out->guard   = t.guard;
     out->frame   = t.frame;
 
-    if (p->stats.lost != p->pps_lost0)
+    /* any gap, one gap fill covered too: the device's count went on without the stream */
     {
-        if (mirisdr_pps_reanchor(p) < 0) return -1;
+        uint64_t index = 0, gaps = p->pps_gaps0;
+        uint32_t addr = 0;
+
+        mirisdr_pps_count(p, &index, &addr, &gaps);
+        if ((gaps != p->pps_gaps0) && (mirisdr_pps_reanchor(p) < 0)) return -1;
     }
 
     if (p->pps_stale && (out->edges != p->pps_edge0)) p->pps_stale = 0;

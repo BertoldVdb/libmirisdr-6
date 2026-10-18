@@ -38,7 +38,7 @@ The SoapySDR module is built too when the SoapySDR development files are install
 
 <h3>For developers</h3>
 
-  - **One request for the tune and one for the stream.** A combination the receiver cannot do is refused, and the result says what is in force. The structs have room to grow, so programs keep working with newer versions.
+  - **One request for the tune and one for the stream.** A combination the receiver cannot do is refused. A value it has no exact step for is taken to the nearest, or refused on request (`strict`). The result says what is in force. The structs have room to grow, so programs keep working with newer versions.
   - **Complex float output** at any IF, with the frequency you set at 0 Hz.
   - **Time stamps** from a GNSS receiver's PPS output, so samples can be tied to real time, for example for TDOA. Without a PPS source the USB start of frame can be used. To use the SOF sync, you need a utility such as [sofcapture](https://github.com/BertoldVdb/sofcapture).
   - **Lost samples** are found reliably, from markers the firmware puts in the stream. Each buffer says where its gaps are, and gaps can be filled with zeros so the timing stays right.

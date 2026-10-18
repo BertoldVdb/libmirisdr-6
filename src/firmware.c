@@ -90,6 +90,7 @@ typedef struct
 {
     char    port[96];
     int     valid;
+    int     others;     /* no port, and another receiver about: it cannot be found again */
 } mirisdr_fw_path_t;
 
 static void mirisdr_fw_path_of (mirisdr_dev_t *p, mirisdr_fw_path_t *path)
@@ -97,12 +98,14 @@ static void mirisdr_fw_path_of (mirisdr_dev_t *p, mirisdr_fw_path_t *path)
     libusb_device *d;
 
     path->valid = 0;
+    path->others = 0;
 
     if (!p || !p->dh) return;
     if (!(d = libusb_get_device(p->dh))) return;
 
     mirisdr_port_name(d, path->port);
     path->valid = strchr(path->port, ':') != NULL;
+    path->others = !path->valid && (mirisdr_get_device_count() > 1);
 }
 
 static int mirisdr_fw_find (const mirisdr_fw_path_t *path, uint32_t fallback, int *denied)
@@ -384,7 +387,7 @@ static int mirisdr_fw_ids_wanted (mirisdr_dev_t *p, const mirisdr_open_config_t 
 #define MIRISDR_EE_IDS          0xB4    /* byte 0: the ROM takes ids from bytes 1-6 */
 #define MIRISDR_EE_SERIAL_AT    7       /* SDRplay keep the serial right behind them */
 
-/* An RSP1B or RSPdx-R2 on its own ids running the ROM declares no serial, but its EEPROM
+/* An RSP1B, RSPdx-R2 or RSPduo on its own ids running the ROM declares no serial, but its EEPROM
    holds one behind the ids. Not when byte 0 says microcode follows instead. */
 static int mirisdr_fw_ee_serial (mirisdr_dev_t *p, char *out, int len)
 {
@@ -427,8 +430,23 @@ static int mirisdr_fw_serial_wanted (mirisdr_dev_t *p, const mirisdr_open_config
         return 1;
     }
 
-    if ((cfg->firmware_ids == MIRISDR_FW_IDS_DEVICE)
-        && ((mirisdr_get_serial(p, out, len) > 0) || mirisdr_fw_ee_serial(p, out, len))) return 1;
+    if (cfg->firmware_ids == MIRISDR_FW_IDS_DEVICE)
+    {
+        char full[256];
+
+        /* one longer than the image holds would come back cut, under another name */
+        if (mirisdr_get_serial(p, full, sizeof full) > 0)
+        {
+            if ((int) strlen(full) < len)
+            {
+                strcpy(out, full);
+                return 1;
+            }
+            fprintf(stderr, "libmirisdr: serial %s is longer than the firmware holds (%d), "
+                            "keeping the image's\n", full, len - 1);
+        }
+        else if (mirisdr_fw_ee_serial(p, out, len)) return 1;
+    }
 
     return (mirisdr_fw_get_serial(image, size, out, len) < 0) ? 0 : 1;
 }
@@ -481,6 +499,35 @@ static int mirisdr_fw_open (mirisdr_dev_t **dev, const mirisdr_open_config_t *cf
     return r;
 }
 
+/* Opened by fd, each reboot ends the call, so how far the EEPROM steps got is kept for the
+   next open of the same device (its serial), for a little while: else a board that boots
+   firmware from its EEPROM would be rebooted to the ROM, and into the EEPROM, for ever.
+   1: the plain reboot was done, 2: the one past the EEPROM too */
+#define MIRISDR_FD_NOTE_S       30
+
+static struct {
+    char serial[MIRISDR_FW_SERIAL_MAX + 1];
+    time_t at;
+    int stage;
+} mirisdr_fd_note;
+
+static int mirisdr_fd_stage (mirisdr_dev_t *dev)
+{
+    char ser[MIRISDR_FW_SERIAL_MAX + 1] = "";
+
+    if (!mirisdr_fd_note.stage || (time(NULL) - mirisdr_fd_note.at > MIRISDR_FD_NOTE_S)) return 0;
+    mirisdr_get_serial(dev, ser, sizeof ser);
+    return strcmp(ser, mirisdr_fd_note.serial) ? 0 : mirisdr_fd_note.stage;
+}
+
+static void mirisdr_fd_mark (mirisdr_dev_t *dev, int stage)
+{
+    mirisdr_fd_note.serial[0] = '\0';
+    if (stage) mirisdr_get_serial(dev, mirisdr_fd_note.serial, sizeof mirisdr_fd_note.serial);
+    mirisdr_fd_note.at = time(NULL);
+    mirisdr_fd_note.stage = stage;
+}
+
 static int mirisdr_fw_recycle (mirisdr_dev_t **dev, const mirisdr_open_config_t *cfg,
                                mirisdr_fw_path_t *path, uint32_t *at, uint32_t index)
 {
@@ -490,6 +537,15 @@ static int mirisdr_fw_recycle (mirisdr_dev_t **dev, const mirisdr_open_config_t 
     *dev = NULL;
 
     if (cfg->fd >= 0) return MIRISDR_REOPEN;
+
+    /* found again by its index alone: with another receiver about that could be the other
+       one, which would then get this one's firmware */
+    if (path->others)
+    {
+        fprintf(stderr, "libmirisdr: the receiver's USB port is unknown and there is another: "
+                        "not finding it again by index, open it again\n");
+        return -1;
+    }
 
     if ((again = mirisdr_fw_wait(path, index)) < 0) return -1;
     *at = (uint32_t) again;
@@ -507,7 +563,7 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
     uint16_t vid = 0, pid = 0;
     char serial[MIRISDR_FW_SERIAL_MAX + 1] = "";
     int have_ids = 0, have_serial = 0;
-    int from_rom;
+    int from_rom, fd_stage;
     int r = -1;
 
     if (!out || !cfg) return -1;
@@ -528,6 +584,7 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
 
     index = at = cfg->index;
     path.valid = 0;
+    path.others = 0;
 
     image = cfg->firmware;
     size = cfg->firmware_size;
@@ -599,9 +656,35 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
         goto out;
     }
 
+    /* by fd: the steps an earlier open of this device took, see mirisdr_fd_note */
+    fd_stage = (cfg->fd >= 0) ? mirisdr_fd_stage(dev) : 0;
+    if ((from_rom == 1) && (cfg->fd >= 0)) mirisdr_fd_mark(dev, 0);
+
+    if ((from_rom == 0) && (fd_stage == 2))
+    {
+        fprintf(stderr, "not loading: the device boots firmware from its SPI flash\n");
+        mirisdr_fd_mark(dev, 0);
+
+        *out = dev;
+        dev = NULL;
+        r = 0;
+
+        goto out;
+    }
+
+    if ((from_rom == 0) && (fd_stage == 1))
+    {
+        /* the plain reboot came back to firmware: past the EEPROM this time */
+        mirisdr_fd_mark(dev, 2);
+        if (mirisdr_reboot(dev, MIRISDR_BOOT_IGNORE_EEPROM) != MIRISDR_REOPEN) goto out;
+        r = mirisdr_fw_recycle(&dev, cfg, &path, &at, index);
+        goto out;
+    }
+
     if (from_rom == 0)
     {
         /* Try a plain reboot first */
+        if (cfg->fd >= 0) mirisdr_fd_mark(dev, 1);
         if (mirisdr_reboot(dev, MIRISDR_BOOT_ROM) != MIRISDR_REOPEN) goto out;
 
         if ((r = mirisdr_fw_recycle(&dev, cfg, &path, &at, index))) goto out;
@@ -632,9 +715,10 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
             }
         }
 
-        /* Booting to the ROM landed on firmware even with the strap held wrong,
-           so the handover is not the EEPROM's doing.  RAM cannot be written
-           under it, but what booted is usable, so hand that back. */
+        /* Booting to the ROM landed on firmware even past the EEPROM (the strap held
+           wrong, or nothing to hold: no boot image there), so the handover is not the
+           EEPROM's doing. RAM cannot be written under it, but what booted is usable,
+           so hand that back. */
         if (from_rom != 1)
         {
             fprintf(stderr, "not loading: the device boots firmware from its SPI flash\n");

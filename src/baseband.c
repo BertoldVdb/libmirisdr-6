@@ -78,15 +78,17 @@ typedef struct mirisdr_bb
 {
     int     path, stages, sign;
     int     tuner;          /* the one its samples are from, as the buffers say */
-    int     low;            /* direct sampling: the real samples as I with Q 0, the NCO
+    int     low;            /* one output off a quarter of the rate (direct sampling, or a
+                               tuner's low IF, see low_if): the real samples as I with Q 0, the NCO
                                taking the frequency to 0 Hz at the full rate, and a
                                half-band stage in the converter's place to filter its
                                mirror. The converter, centred on a quarter of the rate,
                                would pass only a little either side of it at the narrow
                                kernels, where the frequency is anywhere from 0 Hz */
     int     nhb;            /* half-band stages run: stages, one more when low */
-    int     low_if;         /* low for a tuner's low IF (two tuners, the IF off a quarter of
-                               the rate): its band at -IF, so the NCO goes the other way */
+    int     low_if;         /* low for a tuner's low IF (one output with the IF off a quarter
+                               of the rate, or two tuners, either one so): its band at -IF, so
+                               the NCO goes the other way */
     uint32_t rate;          /* the converters' */
     int     nco_move;       /* a tune's new IF + 1 for the NCO, taken at the next buffer, 0 for none */
     double  decim;          /* converter samples per output sample */
@@ -115,6 +117,7 @@ typedef struct mirisdr_bb
     uint64_t sample;        /* pairs handed out */
     uint64_t produced;      /* pairs out of the filters */
     double  lost;           /* output samples missing, from the converters' unfilled gaps */
+    double  lost_pend;      /* those behind the buffer being filled, counted once it is out */
     uint64_t lost_in;       /* the converters' unfilled samples seen */
     struct { uint64_t at, samples, filled; } gq[MIRISDR_BB_GAPQ];
     int     gq_n;
@@ -584,7 +587,8 @@ static void mirisdr_bb_restart_one (mirisdr_bb_t *b)
     b->rot = 0;
     b->nco_ph = 0;
     b->have_carry = 0;
-    b->lost += b->out_n;        /* the buffer being filled is dropped */
+    b->lost += b->out_n + b->lost_pend;    /* the buffer being filled is dropped */
+    b->lost_pend = 0;
     b->out_n = 0;
     b->gq_n = 0;
     b->produced = b->sample;
@@ -612,7 +616,6 @@ static void mirisdr_bb_start (mirisdr_dev_t *p)
     mirisdr_bb_start_one(p->bb2);
 }
 
-/* For the stream the plan chose (p->bb_*), from stream_regs; the counts carry on */
 /* The band sits at IF - rate / 4 after the shift, the right way round, on both paths
    (mirrored with swap_iq and both outputs, as the shift is). The converter of one
    output runs at half the rate. At 4 x IF the step is 0 and the NCO is skipped */
@@ -686,7 +689,7 @@ static mirisdr_bb_t *mirisdr_bb_create (mirisdr_dev_t *p, int path, uint32_t if_
 
     if (old) {
         b->sample = b->produced = old->sample;
-        b->lost = old->lost + old->out_n;   /* its buffer being filled is dropped */
+        b->lost = old->lost + old->out_n + old->lost_pend;   /* its buffer being filled is dropped */
         b->lost_in = old->lost_in;
     }
 
@@ -697,6 +700,7 @@ failed:
     return NULL;
 }
 
+/* For the stream the plan chose (p->bb_*), from stream_regs; the counts carry on */
 static int mirisdr_bb_setup (mirisdr_dev_t *p)
 {
     mirisdr_bb_t *b = NULL, *b2 = NULL;
@@ -707,11 +711,18 @@ static int mirisdr_bb_setup (mirisdr_dev_t *p)
         return 0;
     }
 
-    /* two tuners: tuner 0 on I, tuner 1 on Q, each as one output */
+    /* two tuners: tuner 0 on I, tuner 1 on Q, each as one output. A tuner's IF off 4 x IF
+       on one output, with one tuner or two, takes the low path: the converter keeps
+       aliases out of a band at its centre only (direct sampling takes it anyway) */
+    /* Two tuners both one way: the converter path and the low one give a sample apart after
+       an odd count, and their buffers would drift */
+    const int off = (uint64_t) 4 * p->bb_if != p->rate, off2 = dual && ((uint64_t) 4 * p->bb_if2 != p->rate);
+
     if (!(b = mirisdr_bb_create(p, dual ? MIRISDR_BASEBAND_REAL : p->bb_path, p->bb_if,
                                 dual ? 0 : mirisdr_tuner_primary(p),
-                                dual && ((uint64_t) 4 * p->bb_if != p->rate), p->bb))) goto failed;
-    if (dual && !(b2 = mirisdr_bb_create(p, MIRISDR_BASEBAND_REAL, p->bb_if2, 1, (uint64_t) 4 * p->bb_if2 != p->rate,
+                                dual ? (off || off2) : ((p->bb_path == MIRISDR_BASEBAND_REAL) && !p->bb_ds && off),
+                                p->bb))) goto failed;
+    if (dual && !(b2 = mirisdr_bb_create(p, MIRISDR_BASEBAND_REAL, p->bb_if2, 1, off || off2,
                                          p->bb2 ? p->bb2 : p->bb))) goto failed;
 
     mirisdr_bb_free(p);
@@ -900,9 +911,11 @@ static int mirisdr_bb_process (mirisdr_dev_t *p, mirisdr_bb_t *b, const unsigned
 
     if ((s = mirisdr_atomic_xchg(&b->nco_move, 0))) mirisdr_bb_nco_for(b, (uint32_t) (s - 1));
 
-    /* its tuner's tune's choice, read once a buffer */
-    b->dc_on = (p->tctx[b->tuner].tune.dc_removal == MIRISDR_DC_ON) ||
-               ((p->tctx[b->tuner].tune.dc_removal == MIRISDR_DC_AUTO) && (b->path != MIRISDR_BASEBAND_ZERO_IF));
+    /* its tuner's tune's choice, read once a buffer. Gap fill's zeros are no signal: they
+       leave the estimate, and stay 0 (the signal's mean once its DC is off), not a step of -DC */
+    b->dc_on = ((p->tctx[b->tuner].tune.dc_removal == MIRISDR_DC_ON) ||
+                ((p->tctx[b->tuner].tune.dc_removal == MIRISDR_DC_AUTO) && (b->path != MIRISDR_BASEBAND_ZERO_IF))) &&
+               !p->bb_filling;
 
     if (b->path == MIRISDR_BASEBAND_COMPLEX) {
         n = s8 ? mirisdr_bb_shift_int8_t(b, (const int8_t *) buf, (int) vals / 2, full, w)
@@ -1059,6 +1072,8 @@ static void mirisdr_bb_call (mirisdr_dev_t *p, mirisdr_bb_t *b, float *iq, uint3
     b->gq_n -= k;
 
     b->sample = end;
+    b->lost += b->lost_pend;
+    b->lost_pend = 0;
     p->cb((unsigned char *) iq, n * 2 * sizeof(float), p->cb_ctx);
 }
 
@@ -1071,8 +1086,14 @@ static void mirisdr_bb_feed_one (mirisdr_dev_t *p, mirisdr_bb_t *b, unsigned cha
     uint32_t k, n, at, chunk;
     float *w;
 
-    /* the unfilled gaps before this buffer, as output samples */
-    if (lost_in > b->lost_in) b->lost += (double) (lost_in - b->lost_in) / b->decim;
+    /* the unfilled gaps before this buffer, as output samples. Behind a buffer being filled
+       they come after its start, so its index leaves them out */
+    if (lost_in > b->lost_in) {
+        double d = (double) (lost_in - b->lost_in) / b->decim;
+
+        if (b->out_n) b->lost_pend += d;
+        else b->lost += d;
+    }
     b->lost_in = lost_in;
 
     /* its gaps, where they come out */

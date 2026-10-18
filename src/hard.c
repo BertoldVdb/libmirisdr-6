@@ -87,7 +87,8 @@ static int mirisdr_stream_adc (mirisdr_dev_t *p)
 /* the stream config                                                  */
 /* ------------------------------------------------------------------ */
 
-#define MIRISDR_STREAM_ADJUST   1       /* the single setters: clamp and warn rather than refuse */
+#define MIRISDR_STREAM_ADJUST   1       /* the single setters: clamp and warn rather than refuse, and
+                                           no combination checks */
 #define MIRISDR_STREAM_FORCE    2       /* write it all even if nothing changed */
 
 static const struct { const char *name; int format; } mirisdr_formats[] = {
@@ -231,9 +232,7 @@ typedef struct mirisdr_stream_plan
 static int mirisdr_set_soft (mirisdr_dev_t *p);
 static int mirisdr_bw_auto (int ifm, uint32_t rate);
 
-/* Baseband with a low IF: the ADC at 4 x IF, the output that rate (both outputs)
-   or half of it (one), halved stages times. Rates must come out whole. Returns the
-   stages for rate, the nearest when adjusting, or -1 */
+/* the widest filter a low IF has, Hz */
 static uint32_t mirisdr_if_widest_hz (uint32_t if_hz);
 
 /* The least converter rate a low IF baseband stream takes: the IF's widest filter
@@ -335,12 +334,16 @@ static int mirisdr_bb_stages_for (uint32_t if_hz, uint32_t ds_edge, int real, ui
 static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t *c, int flags, int iq,
                                 uint32_t if_hz, uint32_t ds_edge, mirisdr_stream_plan_t *pl)
 {
-	int adjust = flags & MIRISDR_STREAM_ADJUST, sauto, sformat, follow;
+	int adjust = flags & MIRISDR_STREAM_ADJUST, sauto, sformat, follow, snap;
 	uint32_t rate_min, rate_max, spp;
 	uint64_t most;
 	unsigned i;
 
 	pl->cfg = *c;
+	pl->cfg.strict = c->strict ? 1 : 0;
+
+	/* a rate out of reach: the nearest there is, unless strict */
+	snap = adjust || !pl->cfg.strict;
 
 	if (MIRISDR_RESERVED_SET(*c))
 	{
@@ -400,6 +403,13 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 		if ((iqs[0] != MIRISDR_IQ_BOTH) || (iqs[1] != MIRISDR_IQ_BOTH))
 		{
 			mirisdr_refuse(p, "two tuners need both outputs of each tuner\n");
+			return -1;
+		}
+
+		/* the swap would trade the converters, so the tuners: each chain the other's */
+		if (pl->swap)
+		{
+			mirisdr_refuse(p, "two tuners do not swap I and Q\n");
 			return -1;
 		}
 
@@ -491,7 +501,7 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 
 		if ((out < least) || (out > most))
 		{
-			if (!adjust || (least > most))
+			if (!snap || (least > most))
 			{
 				mirisdr_refuse(p, "rate %u is not a baseband rate for both tuners (%u and %u Hz IF): %u to %u sps\n",
 				               c->rate, pl->bb_if, pl->bb_if2, least, most);
@@ -533,7 +543,7 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 		uint32_t hi = (pl->decimation_bypass == MIRISDR_DECIMATION_BYPASS_OFF) ? MIRISDR_SAMPLE_RATE_MAX
 		                                                                       : 2 * MIRISDR_SAMPLE_RATE_MAX;
 
-		if ((k = mirisdr_bb_stages_for(if_hz, ds_edge, real, &out, lo, hi, adjust, &conv)) < 0)
+		if ((k = mirisdr_bb_stages_for(if_hz, ds_edge, real, &out, lo, hi, snap, &conv)) < 0)
 		{
 			uint32_t least, most;
 
@@ -564,7 +574,7 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 	{
 		/* a low IF baseband stream's converters run at 4 x IF, which the filters are
 		   planned for: no other rate will do */
-		if (!adjust || (pl->bb_path >= MIRISDR_BASEBAND_COMPLEX))
+		if (!snap || (pl->bb_path >= MIRISDR_BASEBAND_COMPLEX))
 		{
 			mirisdr_refuse(p, "rate %u is outside %u to %u sps\n", pl->rate, rate_min, rate_max);
 			return -1;
@@ -623,12 +633,16 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 
 	if ((uint64_t) pl->rate > most)
 	{
-		mirisdr_refuse(p, "rate %u needs %lu B/s of blocks, more than the engine's %lu", pl->rate,
-		        (long unsigned) ((uint64_t) pl->rate * 1024 / spp), (long unsigned) MIRISDR_ENGINE_BLOCK_RATE);
-		if (adjust && (pl->bb_path < MIRISDR_BASEBAND_COMPLEX)) mirisdr_refuse(p, ", using %lu", (long unsigned) most);
-		mirisdr_refuse(p, "\n");
+		/* snapped quietly, the result says, and the single setters warn */
+		if (!snap || adjust || (pl->bb_path >= MIRISDR_BASEBAND_COMPLEX))
+		{
+			mirisdr_refuse(p, "rate %u needs %lu B/s of blocks, more than the engine's %lu", pl->rate,
+			        (long unsigned) ((uint64_t) pl->rate * 1024 / spp), (long unsigned) MIRISDR_ENGINE_BLOCK_RATE);
+			if (snap && (pl->bb_path < MIRISDR_BASEBAND_COMPLEX)) mirisdr_refuse(p, ", using %lu", (long unsigned) most);
+			mirisdr_refuse(p, "\n");
+		}
 
-		if (!adjust || (pl->bb_path >= MIRISDR_BASEBAND_COMPLEX)) return -1;
+		if (!snap || (pl->bb_path >= MIRISDR_BASEBAND_COMPLEX)) return -1;
 
 		pl->rate = (uint32_t) most;
 
@@ -815,6 +829,8 @@ static void mirisdr_stream_regs (mirisdr_dev_t *p, const mirisdr_stream_plan_t *
 /* stopped and started around it if it runs; returns whether it ran */
 static int mirisdr_stream_pause (mirisdr_dev_t *p)
 {
+	int s;
+
 	/* a stream still starting sets up its transfers from what this changes */
 	while (mirisdr_async_get(p) == MIRISDR_ASYNC_STARTING)
 #if defined (_WIN32) && !defined(__MINGW32__)
@@ -826,7 +842,28 @@ static int mirisdr_stream_pause (mirisdr_dev_t *p)
 	/* the synchronous reads: stopped, the next one starts it again */
 	if (p->sync_ready) return (mirisdr_streaming_stop(p) < 0) ? -1 : 0;
 
-	if (mirisdr_async_get(p) != MIRISDR_ASYNC_RUNNING) return 0;
+	/* a stream ending: its transfers still come in, and feed the filters this replaces.
+	   Back here first, under the lock the run drains and frees them under. Once in, a
+	   canceled stream submits none */
+	s = mirisdr_async_get(p);
+	if ((s == MIRISDR_ASYNC_CANCELING) || (s == MIRISDR_ASYNC_FAILED))
+	{
+		int r = 0;
+
+		/* as a pause does: the firmware stopped first, so the registers do not change
+		   under a running stream (the run's own stop may not have gone out yet) */
+		mirisdr_xfer_lock(p);
+		if (p->xfer && !p->xfer_abandoned)
+		{
+			mirisdr_streaming_stop(p);
+			r = mirisdr_async_drain(p, 5);
+		}
+		mirisdr_xfer_unlock(p);
+
+		return ((r < 0) || (mirisdr_adc_stop(p) < 0)) ? -1 : 0;
+	}
+
+	if (s != MIRISDR_ASYNC_RUNNING) return 0;
 
 	return ((mirisdr_stop_async(p) < 0) || (mirisdr_adc_stop(p) < 0)) ? -1 : 1;
 }
@@ -839,7 +876,7 @@ static int mirisdr_stream_send (mirisdr_dev_t *p, const mirisdr_stream_plan_t *p
 
 	mirisdr_stream_regs(p, pl);
 
-	return (streaming && (mirisdr_start_async(p) < 0)) ? -1 : 0;
+	return (streaming && (mirisdr_stream_resume(p) < 0)) ? -1 : 0;
 }
 
 /* What a stream c takes from the tune in force: under direct sampling the I converter,
@@ -882,8 +919,9 @@ static int mirisdr_stream_apply (mirisdr_dev_t *p, const mirisdr_stream_config_t
 	moved = ((pl.cfg.baseband != p->stream.baseband) && (p->if_freq != MIRISDR_IF_ZERO)) ||
 	        (ds_edge != p->ds_edge) || (pl.tuners != old);
 
-	/* nothing the hardware or the filters hold changes: no restart */
-	if (!(flags & MIRISDR_STREAM_FORCE) && (pl.rate == p->rate) && (pl.format == (int) p->format) &&
+	/* nothing the hardware or the filters hold changes: no restart. Other tuners do, as the
+	   buffers under way are labelled with the tuner they are from */
+	if (!(flags & MIRISDR_STREAM_FORCE) && (pl.tuners == old) && (pl.rate == p->rate) && (pl.format == (int) p->format) &&
 	    (pl.decim == p->decim_on) && (pl.swap == p->swap_iq) && (pl.alt == p->alt_setting) &&
 	    (pl.bb_path == p->bb_path) && (pl.bb_stages == p->bb_stages) && (pl.bb_rate == p->bb_rate) &&
 	    (pl.bb_if == p->bb_if) && (pl.bb_if2 == p->bb_if2) && (pl.bb_ds == p->bb_ds))
@@ -894,7 +932,11 @@ static int mirisdr_stream_apply (mirisdr_dev_t *p, const mirisdr_stream_config_t
 		p->gap_fill = pl.cfg.gap_fill || (pl.bb_path != MIRISDR_BASEBAND_OFF);
 		p->stream = pl.cfg;
 	}
-	else if (mirisdr_stream_send(p, &pl) < 0) return -1;
+	else if (mirisdr_stream_send(p, &pl) < 0)
+	{
+		mirisdr_tuner_select(p, mirisdr_tuner_primary(p));
+		return -1;
+	}
 
 	/* at zero IF a filter the tune left to the library follows the rate */
 	if (!p->tune.bandwidth && (p->if_freq == MIRISDR_IF_ZERO) &&

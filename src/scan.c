@@ -43,6 +43,7 @@ int mirisdr_tune_learn (mirisdr_dev_t *p, int tuner, mirisdr_tune_config_t *cfg)
     mirisdr_tune_config_t c;
     mirisdr_tuner_status_t a, b;
     mirisdr_tuner_override_t *ov;
+    const mirisdr_tuner_ctx_t *t;
     int i;
 
     if (!p || !cfg || !p->dh || p->external_tuner || (tuner < 0) || (tuner >= mirisdr_tuners_of(p))) return -1;
@@ -62,6 +63,9 @@ int mirisdr_tune_learn (mirisdr_dev_t *p, int tuner, mirisdr_tune_config_t *cfg)
 
     if ((i == MIRISDR_LEARN_READS) || (b.coarse < 0)) return -1;
 
+    /* this tuner's state, which the tune left in its context: the device's fields are the
+       primary tuner's again */
+    t = &p->tctx[tuner];
     ov = &cfg->override;
     memset(ov, 0, sizeof *ov);
     ov->hold_vco = 1;     ov->coarse = (uint8_t) b.coarse; ov->fine = b.fine;
@@ -72,8 +76,8 @@ int mirisdr_tune_learn (mirisdr_dev_t *p, int tuner, mirisdr_tune_config_t *cfg)
     /* the status reads the code calibrated, not the one in use: the widest bandwidth
        holds 0 and the gap rows hold the one from the real crystal */
     ov->hold_filter = 1;
-    if (p->bandwidth == MIRISDR_BW_MAX) ov->filter = 0;
-    else if (p->tuner_gap && (p->filter_cal >= 0)) ov->filter = (uint8_t) p->filter_cal;
+    if (t->bandwidth == MIRISDR_BW_MAX) ov->filter = 0;
+    else if (t->tuner_gap && (t->filter_cal >= 0)) ov->filter = (uint8_t) t->filter_cal;
     else ov->filter = b.filter;
 
     return 0;
@@ -315,12 +319,14 @@ static uint32_t mirisdr_scan_lead (mirisdr_dev_t *p)
 }
 
 /* Chunk g of the run into its bank, led by a wait when it starts the list */
-static int mirisdr_scan_load (mirisdr_dev_t *p, uint32_t g, int queue)
+static int mirisdr_scan_load (mirisdr_dev_t *p, uint64_t g, int queue)
 {
     const mirisdr_scan_t *s = p->scan;
     mirisdr_list_entry_t buf[MIRISDR_LIST_MAX];
-    const mirisdr_list_entry_t *e;
-    int n = mirisdr_scan_chunk(s, g % s->chunks, &e), at = 0;
+    const mirisdr_list_entry_t *e = NULL;
+    int n = mirisdr_scan_chunk(s, (uint32_t) (g % s->chunks), &e), at = 0;
+
+    if (n < 0) return -1;
 
     if (!queue)
     {
@@ -352,12 +358,12 @@ int mirisdr_scan_start (mirisdr_dev_t *p, const mirisdr_scan_t *s, uint32_t pass
 
     if (mirisdr_write_reg(p, MIRISDR_MARK_REG, 0) < 0) return -1;
 
-    p->scan_total = passes * s->chunks;
+    p->scan_total = (uint64_t) passes * s->chunks;
     p->scan_loaded = 0;
     p->scan_restarts = 0;
     p->scan_restarts_seen = 0;
     p->scan_burst = mirisdr_burst(p);
-    p->scan_g = UINT32_MAX;
+    p->scan_g = UINT64_MAX;
     p->scan_in = 0;
     p->scan_flags = 0;
     p->scan_cb = cb;
@@ -414,7 +420,7 @@ int mirisdr_get_scan_status (mirisdr_dev_t *p, mirisdr_scan_status_t *st)
 
     st->running = (mirisdr_get_list_status(p, &ls) == 0) && ls.running;
     st->loaded = p->scan_loaded;
-    st->pass = p->scan_loaded ? (p->scan_loaded - 1) / p->scan->chunks : 0;
+    st->pass = p->scan_loaded ? (uint32_t) ((p->scan_loaded - 1) / p->scan->chunks) : 0;
     st->restarts = p->scan_restarts;
 
     return 0;
@@ -426,9 +432,13 @@ int mirisdr_scan_stop (mirisdr_dev_t *p)
 
     if (!p || !p->scan) return -1;
 
+    /* under the events' lock, which the stream side holds while it reads the scan: once
+       this returns it is through with it, and the caller may free it */
+    mirisdr_ev_lock(p);
     p->scan_on = 0;
-    r = mirisdr_load_list(p, 0, 0, NULL, 0);
     p->scan = NULL;
+    mirisdr_ev_unlock(p);
+    r = mirisdr_load_list(p, 0, 0, NULL, 0);
 
     /* the marker as it was before the scan cleared it */
     if (mirisdr_write_reg(p, MIRISDR_MARK_REG, 0) < 0) r = -1;
@@ -457,14 +467,14 @@ static void mirisdr_scan_latch (mirisdr_dev_t *p, uint16_t w, uint16_t x, uint64
     if (p->ev_missed) p->scan_flags |= MIRISDR_SCAN_MISSED;
 
     /* clearing the marker before the first chunk is not a chunk */
-    if ((x & MIRISDR_HDR_MARK) && (p->scan_g == UINT32_MAX) && !(w & MIRISDR_HDR_MARK)) x &= (uint16_t) ~MIRISDR_HDR_MARK;
+    if ((x & MIRISDR_HDR_MARK) && (p->scan_g == UINT64_MAX) && !(w & MIRISDR_HDR_MARK)) x &= (uint16_t) ~MIRISDR_HDR_MARK;
 
     if (x & MIRISDR_HDR_MARK)
     {
-        c = p->scan_g == UINT32_MAX ? 0 : p->scan_g % s->chunks;
+        c = p->scan_g == UINT64_MAX ? 0 : (uint32_t) (p->scan_g % s->chunks);
 
         /* tune events went missing in the chunk before */
-        if ((p->scan_g != UINT32_MAX) && (p->scan_in != s->chunk_hop[c + 1] - s->chunk_hop[c]))
+        if ((p->scan_g != UINT64_MAX) && (p->scan_in != s->chunk_hop[c + 1] - s->chunk_hop[c]))
             p->scan_flags |= MIRISDR_SCAN_LOST;
 
         p->scan_g++;
@@ -477,9 +487,9 @@ static void mirisdr_scan_latch (mirisdr_dev_t *p, uint16_t w, uint16_t x, uint64
         }
     }
 
-    if (!(x & MIRISDR_HDR_TUNE) || (p->scan_g == UINT32_MAX)) return;
+    if (!(x & MIRISDR_HDR_TUNE) || (p->scan_g == UINT64_MAX)) return;
 
-    c = p->scan_g % s->chunks;
+    c = (uint32_t) (p->scan_g % s->chunks);
     if (p->scan_in >= s->chunk_hop[c + 1] - s->chunk_hop[c])
     {
         p->scan_flags |= MIRISDR_SCAN_LOST;
@@ -488,7 +498,7 @@ static void mirisdr_scan_latch (mirisdr_dev_t *p, uint16_t w, uint16_t x, uint64
 
     memset(&r, 0, sizeof r);
     r.hop = s->chunk_hop[c] + p->scan_in++;
-    r.pass = p->scan_g / s->chunks;
+    r.pass = (uint32_t) (p->scan_g / s->chunks);
     r.sample = sample >= step ? sample - step : 0;
     r.index = index >= step ? index - step : 0;
     r.length = s->dwell * p->scan_burst * step;

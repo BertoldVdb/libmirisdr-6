@@ -107,7 +107,9 @@ MIRISDR_API int mirisdr_read_sync (mirisdr_dev_t *p, void *buf, int len, int *n_
  * GPIO and the other I/O); the library has no lock around them. The callback runs on
  * the thread inside mirisdr_read_async() and may only cancel and read the stream
  * (buffer info, stats, mirisdr_get_stream()). mirisdr_cancel_async() may come from any
- * thread, also during a setting that restarts the stream. See doc/c-api.md, Threads. */
+ * thread, also during a setting that restarts the stream. During such a setting the
+ * callback can run on the control thread, for the transfers that come back while it waits.
+ * See doc/c-api.md, Threads. */
 typedef void(*mirisdr_read_async_cb_t) (unsigned char *buf, uint32_t len, void *ctx);
 MIRISDR_API int mirisdr_read_async (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx, uint32_t num, uint32_t len);
 /* A cancel is kept from the moment mirisdr_read_async() is entered, also before its
@@ -232,8 +234,9 @@ MIRISDR_API int mirisdr_set_gap_fill (mirisdr_dev_t *p, int on); /* extra */
 /*
  * The stream set up in one call. Start from mirisdr_get_stream() (or
  * mirisdr_stream_config_default()), change what is needed and apply. The strings take
- * the values of the single setters above, NULL for their default. An invalid or
- * conflicting combination is refused as a whole, rather than adjusted. While streaming
+ * the values of the single setters above, NULL for their default. A rate out of reach
+ * is taken to the nearest there is, unless strict. An invalid or conflicting combination
+ * is refused as a whole, rather than adjusted. While streaming
  * the stream restarts with a short gap, as with the single setters. The buffer being
  * filled is dropped, so no buffer mixes two formats, and mirisdr_get_buffer_info()
  * says whether each one is real or complex. mirisdr_stream_check() says what a config
@@ -264,7 +267,8 @@ MIRISDR_API int mirisdr_set_gap_fill (mirisdr_dev_t *p, int on); /* extra */
  * samples, their gaps placed to within the filters delay. The stream stats, events,
  * PPS and scan reports still count the converters' samples, decimation (in the stream
  * result) of them to an output sample. Gap fill is always on, so the filters see time
- * pass. swap_iq still mirrors the spectrum with both outputs, as without baseband.
+ * pass. swap_iq still mirrors the spectrum with both outputs, as without baseband. With one
+ * output it picks the converter, and two tuners refuse it.
  * mirisdr_read_sync() does not support baseband output, and needs the BULK transfer.
  *
  * Bulk transfers max bandwidth is very host dependent, so only the receiver's own limit
@@ -289,6 +293,15 @@ typedef struct mirisdr_stream_config
 	int         tuners;             /* the tuners streamed, bit n for tuner n, 0 is tuner 0 alone.
 	                                   The RSPduo also takes 2 (tuner 1 alone) and 3 (both, a low IF
 	                                   each on a converter of its own: see "two tuners" below) */
+	int         strict;             /* 0, the default: a rate out of reach (outside the converters'
+	                                   range for the decimation setting, past the engine's limit
+	                                   for the format, outside the span a baseband IF takes) is
+	                                   taken to the nearest there is, and the result says what is in
+	                                   force. 1: such a rate is refused. Either way a combination
+	                                   the receiver cannot do (a rate past an isochronous mode's
+	                                   reservation, an unknown string, two tuners without baseband)
+	                                   is refused. A tune that changes the IF of a baseband stream
+	                                   still takes the rate to the nearest the new IF has */
 	uint32_t reserved[MIRISDR_RESERVED];
 } mirisdr_stream_config_t;
 
@@ -307,7 +320,8 @@ typedef struct mirisdr_stream_result
 	double      group_delay;        /* the baseband filters' delay in converter samples: output
 	                                   sample m is centred on converter sample
 	                                   m x decimation - group_delay (the count the stream stats,
-	                                   events, PPS and scan reports use). 0 without filters */
+	                                   events, PPS and scan reports use), counted from the
+	                                   start or the last restart. 0 without filters */
 	int         gap_fill;           /* in effect: as asked, and always under baseband */
 	int         nco;                /* a low IF baseband stream runs the NCO: the converters
 	                                   are not at 4 x IF, which costs CPU (see above) */
@@ -383,7 +397,8 @@ MIRISDR_API mirisdr_band_t mirisdr_get_band (mirisdr_dev_t *p);         /* extra
  * baseband stream at a low IF it sets the frequency put at 0 Hz instead, the LO going
  * the IF above it as with any tune there.
  *
- * tuner is which tuner of the receiver, currently always 0.
+ * tuner is which tuner of the receiver: 0, or on the RSPduo 0 or 1 (see
+ * mirisdr_get_tuner_count()).
  */
 #define MIRISDR_IQ_BOTH         0
 #define MIRISDR_IQ_ONLY_I       1
@@ -393,7 +408,7 @@ MIRISDR_API mirisdr_band_t mirisdr_get_band (mirisdr_dev_t *p);         /* extra
  * first so noise figure and IIP3 stay low, again for each band: the board's amplifier
  * before the tuner's stages. Above the band's maximum is clamped. STAGES sets each
  * stage and keeps them through retunes, as the single stage setters do. A tune result
- * reports both. The RSPduo's pads are apart, frontend.attenuator: the total does not
+ * reports both. The board's pads are apart, frontend.attenuator: the total does not
  * count them. */
 #define MIRISDR_GAIN_KEEP       0       /* do not change */
 #define MIRISDR_GAIN_TOTAL      1
@@ -407,11 +422,10 @@ typedef struct mirisdr_gain_config
 	int      mixer;         /* on or off: 19 dB */
 	int      mixbuffer;     /* dB, the AM ports only: 0, 6, 12 or 18 on AM1, 0 or 24 on AM2 */
 	int      baseband;      /* dB, 0-59 */
-	int      amp_bypass;    /* the board's amplifier before the tuner bypassed, from 55 MHz:
-	                           RSPduo (not on the Hi-Z) about 25 dB to 108 MHz, 24 to 250, 22
-	                           to 420, 20 to 960, 17 in L band. RSPdx-R2 about 24 to 108, 25
-	                           to 250, 24 to 420, 21 to 960, 15 in L band. RSP1B about 25 to 250,
-	                           24 to 420, 23 to 960, 19 in L band. 0 elsewhere */
+	int      amp_bypass;    /* the board's amplifier before the tuner bypassed (RSP1B, RSPdx-R2
+	                           and RSPduo, where it is, see mirisdr_get_frontend_caps()). Its gain
+	                           in the band is in the total, up to about 25 dB. 0 where there is
+	                           none */
 	uint32_t reserved[MIRISDR_RESERVED_NESTED];
 } mirisdr_gain_config_t;
 
@@ -448,7 +462,8 @@ typedef struct mirisdr_frontend_raw
                                                    reference connector, for another board */
 
 /* The front end before the tuner, part of a tune so it goes out with it. The tune
- * result reports what is in force. A notch or an antenna on a board without one is refused */
+ * result reports what is in force. A part the board does not have (a notch, an antenna,
+ * pads, a flag, direct sampling) is refused */
 typedef struct mirisdr_frontend_config
 {
 	int      bias;          /* bias-T: power on the antenna input (port B on the RSPdx-R2, on
@@ -494,14 +509,15 @@ typedef struct mirisdr_tune_config
 	uint32_t frequency;     /* Hz to receive */
 	uint32_t bandwidth;     /* Hz: 200000, 300000 or 600000 with a 450 kHz IF, 600000 or 1536000
 	                           with 1620 and 2048 kHz, 1536000, 5000000 to 8000000 (1 MHz steps)
-	                           or 14000000 (no filter) with zero IF. 0 is the widest */
+	                           or 14000000 (no filter) with zero IF. 0: the library's, at a low IF
+	                           the widest, at zero IF the narrowest at least as wide as the rate */
 	uint32_t if_freq;       /* 0 (zero IF), 450000, 1620000 or 2048000 */
 	int      low_if_auto;   /* low IF: put the LO if_freq above frequency */
 	int      iq;            /* MIRISDR_IQ_*: low IF only, the output not requested is switched off */
 	mirisdr_gain_config_t gain;
 	mirisdr_frontend_config_t frontend;
 	mirisdr_tuner_override_t override; /* all holds off by default */
-	uint32_t synth_thresh;  /* 0: the LO set to ~1 Hz. 1-4095: the synthesizer's fraction denominator
+	uint32_t synth_thresh;  /* 0: the LO set to within 3 Hz. 1-4095: the synthesizer's fraction denominator
 	                           fixed at this and no AFC, so the LO lands on a grid of 3 MHz (VHF),
 	                           6 MHz (AM, band III), 24 MHz (band IV/V) or 48 MHz (L) divided by it
 	                           and tunes in one band differ in register 2 only. For fast hopping or
@@ -509,6 +525,15 @@ typedef struct mirisdr_tune_config
 	int      dc_removal;    /* MIRISDR_DC_*: under a baseband stream, the DC offset taken off
 	                           in software (an estimate over 50 ms a converter, from each
 	                           buffer's mean) */
+	int      strict;        /* 0, the default: a value the hardware does not have exactly is taken
+	                           to the nearest it has, and the result says what is in force: the
+	                           bandwidth to the narrowest filter as wide (the widest if none is),
+	                           the pads to the nearest step, a gain stage or total into its range
+	                           and onto its steps, synth_thresh to 4095. A pad on the RSPduo's
+	                           Hi-Z, which has none, is 0. 1: such a value is refused. Either way
+	                           a part or mode the board does not have (a notch, an antenna, a
+	                           flag, pads on a board without them, an IF, a combination it cannot
+	                           do) is refused */
 	uint32_t reserved[MIRISDR_RESERVED];
 } mirisdr_tune_config_t;
 
@@ -592,6 +617,8 @@ MIRISDR_API int mirisdr_get_mixer_gain (mirisdr_dev_t *p);              /* extra
 MIRISDR_API int mirisdr_get_mixbuffer_gain (mirisdr_dev_t *p);          /* extra */
 MIRISDR_API int mirisdr_get_lna_gain (mirisdr_dev_t *p);                /* extra */
 MIRISDR_API int mirisdr_get_baseband_gain (mirisdr_dev_t *p);           /* extra */
+/* the stream's first tuner's, as the other setters: on the RSPduo tuner 0's unless tuner 1
+   streams alone, and only tuner 1 has the bias-T */
 MIRISDR_API int mirisdr_set_bias (mirisdr_dev_t *p, int bias);          /* extra */
 MIRISDR_API int mirisdr_get_bias (mirisdr_dev_t *p);                    /* extra */
 /* The tune's frontend.attenuator, dB: RSP1B, RSPdx-R2 and RSPduo, see above */
@@ -603,9 +630,11 @@ MIRISDR_API int mirisdr_get_frontend_flags (mirisdr_dev_t *p);          /* extra
 
 /* What a tuner's front end has, for a program to offer: a field 0 (or none listed) the
  * board does not have. It does not change while the device is open. What depends on the
- * frequency comes with a tune: the amplifier's gain in the band (the result's gain), the
- * Hi-Z only below 30 MHz, smaller pads in L band, and mirisdr_tune_check() says what a tune
- * would get. -1 for a tuner the board does not have */
+ * frequency comes with a tune: the amplifier's gain in the band (in the result's total,
+ * and gain.amp_bypass whether it is in, and a tune_check with it bypassed gives its dB),
+ * the Hi-Z only with the LO below 30 MHz. The pads attenuate less in L band (the
+ * RSPdx-R2's 31 dB at most at 1.5 GHz), and the result reports their steps' dB.
+ * mirisdr_tune_check() says what a tune would get. -1 for a tuner the board does not have */
 #define MIRISDR_ATTENUATOR_MAX  16
 
 typedef struct mirisdr_frontend_caps
@@ -637,7 +666,7 @@ MIRISDR_API int mirisdr_set_notch (mirisdr_dev_t *p, int notches);      /* extra
 MIRISDR_API int mirisdr_get_notch (mirisdr_dev_t *p);                   /* extra */
 
 /* The antenna input. Other boards have only A, but for the RSPduo's Hi-Z input on tuner 0
-   (up to 30 MHz) */
+   (with the LO below 30 MHz) */
 #define MIRISDR_ANTENNA_A       0
 #define MIRISDR_ANTENNA_B       1
 #define MIRISDR_ANTENNA_C       2
@@ -679,7 +708,9 @@ MIRISDR_API int mirisdr_fw_patch (uint8_t *image, uint32_t size, const mirisdr_f
 
 /* Open a device with options, including the firmware it should be running.
  * The image comes from a buffer or from a path. The image can be patched
- * at runtime to ensure the VID/PID/Serial do not change. */
+ * at runtime to ensure the VID/PID/Serial do not change. MIRISDR_FW_IDS_DEVICE
+ * and _SET patch the image's BVDB block, so an image without one (another
+ * firmware) is refused there: load it with MIRISDR_FW_IDS_IMAGE. */
 #define MIRISDR_FW_IDS_IMAGE    0
 #define MIRISDR_FW_IDS_DEVICE   1
 #define MIRISDR_FW_IDS_SET      2
@@ -704,7 +735,10 @@ typedef struct mirisdr_open_config
 	int            external_tuner; /* the board's tuner is not an MSi001, the library
                                     * will not try to control it when set */
 	uint8_t        gpio_input_mask; /* pins to hold as inputs from before the first
-                                     * register 8 write, one bit per pin. */
+                                     * register 8 write, one bit per pin. The EEPROM
+                                     * drives GPIO 1 and 2 (3 too on the SDRplay boards):
+                                     * holding one, EEPROM access and the reboot past it
+                                     * are refused */
 	int            hw_flavour;      /* the board, a mirisdr_hw_flavour_t. Settings this wrong
                                      * could in theory cause damage (eg bias-T on).
 	                                 * MIRISDR_HW_AUTO by default */
@@ -814,7 +848,8 @@ MIRISDR_API int mirisdr_enable_pps (mirisdr_dev_t *p, int run); /* extra */
 MIRISDR_API int mirisdr_set_pps_source (mirisdr_dev_t *p, int sof, int divider); /* extra */
 MIRISDR_API int mirisdr_get_pps (mirisdr_dev_t *p, mirisdr_pps_t *out); /* extra */
 
-/* I2C master on GPIO_1 (SDA) and GPIO_2 (SCL) */
+/* I2C master on GPIO_1 (SDA) and GPIO_2 (SCL). A read or write is at most 64 bytes
+ * (the firmware's buffer). The result is 0, MIRISDR_I2C_NACK, or -1 for a USB failure */
 #define MIRISDR_I2C_NO_STOP     0x01
 #define MIRISDR_I2C_REPEAT      0x02
 #define MIRISDR_I2C_NACK        1
@@ -849,10 +884,10 @@ MIRISDR_API int mirisdr_set_ir (mirisdr_dev_t *p, uint32_t tick_ns, mirisdr_ir_c
 MIRISDR_API uint32_t mirisdr_get_ir (mirisdr_dev_t *p);                 /* extra */
 
 /* This function allows you to read the current state of a tuner (numbered as for
- * mirisdr_tune(), 0 so far). It is a measurement, so it stays apart from the
+ * mirisdr_tune(), 1 too on the RSPduo). It is a measurement, so it stays apart from the
  * tune config: the codes held there read back as held. Afaik there is no
  * way to know if the PLL is locked, the HIGH and LOW limit flags only indicate
- * you are tuning near the edge of your chip, but that you try to tune beyond it. */
+ * you are tuning near the edge of your chip, not that you try to tune beyond it. */
 #define MIRISDR_TUNER_SYNTH_OFF      0x01   /* no VCO range selected */
 #define MIRISDR_TUNER_AT_LOW_LIMIT   0x02   /* coarse 0, fine 31 */
 #define MIRISDR_TUNER_AT_HIGH_LIMIT  0x04   /* coarse 2, fine 0 */
@@ -971,7 +1006,7 @@ typedef struct mirisdr_scan_status
 {
 	int      running;
 	uint32_t pass;           /* of the chunk last loaded */
-	uint32_t loaded;         /* chunks loaded */
+	uint64_t loaded;         /* chunks loaded */
 	uint32_t restarts;       /* amount of underflows */
 	uint32_t reserved[MIRISDR_RESERVED];
 } mirisdr_scan_status_t;

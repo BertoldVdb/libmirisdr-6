@@ -15,8 +15,8 @@
 
 /*
  * SDRplay front ends: the filters, notches and bias-T sit on SPI I/O expanders on the
- * MSi2500's SPI master (0x0B-0x0D), and some models carry two. The RSP1B and RSPdx-R2 are
- * mapped, and share the expander's wiring and most of its pins.
+ * MSi2500's SPI master (0x0B-0x0D), and some models carry two. The RSP1B, RSPdx-R2 and
+ * RSPduo are mapped, and the RSP1B and RSPdx-R2 share the expander's wiring and most of its pins.
  *
  * One MCP23S18, chip select GPIO_3, MISO GPIO_0. GPIO_1 is the EEPROM's chip select.
  * The tuner takes words only with GPIO_1 and GPIO_3 high. The master pulls GPIO_1 low
@@ -27,18 +27,18 @@
  * OLAT left at 0. IODIR bits, 0 = pulled low. RSP1B measured 2026-10-07 with a signal
  * generator and an FM antenna, the notches and HF 2026-10-08 with tone sweeps:
  *
- *   B7 B6 A7   path: 010 (B6 low) the VHF and B45 inputs, 100 (B7 low) the B3 and L
- *              inputs, each blocking the other's bands by 16-45 dB; 000 passes both
- *              2-13 dB down. 110 the HF bank, 111 the 250-420 MHz bank
- *   B1 B0      filter in the bank. HF: 2 MHz low pass both released, 2-12 both low,
- *              12-30 B0 low. 250-420 bank: 250-300 both released, 300-380 both low,
- *              380-420 B0 low, 30-60 B1 low
- *   A4         broadcast notch: MW up to 44 dB at 1 MHz, FM 37-42 dB at 80-115 MHz
- *   A6         DAB notch: 13-30 dB at 165-235 MHz
- *   A5         gain with a high pass: +13-16 dB at 40 MHz and above, -35..-40 below
- *              3 MHz
- *   A1         bias-T
- *   B2-B4      step attenuator, 6, 12.5 and 18.5 dB
+ *   B7 B6 A7: path, 010 (B6 low) the VHF and B45 inputs, 100 (B7 low) the B3 and L
+ *     inputs, each blocking the other's bands by 16-45 dB. 000 passes both
+ *     2-13 dB down. 110 the HF bank, 111 the 250-420 MHz bank
+ *   B1 B0: filter in the bank. HF, 2 MHz low pass both released, 2-12 both low,
+ *     12-30 B0 low. 250-420 bank: 250-300 both released, 300-380 both low,
+ *     380-420 B0 low, 30-60 B1 low
+ *   A4: broadcast notch, MW up to 44 dB at 1 MHz, FM 37-42 dB at 80-115 MHz
+ *   A6: DAB notch, 13-30 dB at 165-235 MHz
+ *   A5: gain with a high pass, +13-16 dB at 40 MHz and above, -35..-40 below
+ *     3 MHz
+ *   A1: bias-T
+ *   B2-B4: step attenuator, 6, 12.5 and 18.5 dB measured (6, 13 and 19 as the steps)
  *   A0, A2, A3, B5 are not connected on the board.
  *
  * RSPdx-R2, measured 2026-10-15 with tone sweeps (a MAX2870 above 24 MHz, an Si5351
@@ -80,7 +80,8 @@
  *     B6 low both, both low neither. The readback reads the one addressed
  *   B1-B5: tuner 1's filter, a decoder. B4 low with B3 released enables the first
  *     bank, B1 B4 110-240 MHz and L band, B1 B4 B5 60-100 and 420-900 MHz (the
- *     tuner's band picks one), B2 18 dB down. B3 low the second: B3 B4 B5 30-60,
+ *     tuner's band picks one), B2 the amplifier's path (18 dB down with its supply off,
+ *     chip 2). B3 low the second: B3 B4 B5 30-60,
  *     B1 B3 B4 250-300, B1 B3 B5 300-380, B1 B3 380-420 MHz. B4 B5 low the HF
  *     bank: B1-B5 the 2 MHz low pass, B1 B3 B4 B5 2-12, B2 B3 B4 B5 12-30 (from 5
  *     to 45 MHz, ~10 dB weaker from 15 to 20 MHz), B3 B4 B5 30-60. B3 released a

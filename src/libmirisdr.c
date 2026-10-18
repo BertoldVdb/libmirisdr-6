@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <time.h>
 
 #if !defined (_WIN32) || defined(__MINGW32__)
 #include <unistd.h>
@@ -130,6 +131,11 @@ static int mirisdr_setup (mirisdr_dev_t **out_dev, mirisdr_dev_t *dev) {
 #endif
         goto failed;
     }
+
+    /* a register list our firmware still runs (a process that ended inside a scan) makes it
+       refuse every register write, a USB reset included: stop it first. The ROM, which has no
+       such request, refuses it, which is fine */
+    libusb_control_transfer(dev->dh, 0x42, 0x5A /* CMD_REG_LIST */, 0, 0, NULL, 0, 1000);
 
     /* the reset is needed, otherwise the device at times refuses to communicate */
     mirisdr_reset(dev);
@@ -333,6 +339,13 @@ int mirisdr_close (mirisdr_dev_t *p) {
     /* deinitialise the tuner */
     if (p->dh)
     {
+        /* no register list left running: the next open's writes would be refused */
+        if (p->fw_ours)
+        {
+            if (p->scan) mirisdr_scan_stop(p);
+            mirisdr_load_list(p, 0, 0, NULL, 0);
+        }
+
         libusb_release_interface(p->dh, 0);
 
 #ifdef DETACH_KERNEL_DRIVER
@@ -343,13 +356,30 @@ int mirisdr_close (mirisdr_dev_t *p) {
                 fprintf(stderr, "Reattaching kernel driver failed!\n");
         }
 #endif
+        /* transfers a stream gave up on: the device memory is unmapped with the handle
+           still there, the transfers freed once closing it has taken them off libusb's
+           list (the kernel keeps the pages until it is through with them) */
+        if (p->xfer_abandoned && p->xfer_buf && p->xfer_buf_devmem)
+        {
+            size_t i;
+
+            for (i = 0; i < p->xfer_buf_num; i++)
+            {
+                if (p->xfer_buf[i]) libusb_dev_mem_free(p->dh, p->xfer_buf[i], p->xfer_buf_size);
+                p->xfer_buf[i] = NULL;
+            }
+        }
+
         /* Always close the handle. Skipping libusb_close() when the async side
          * had failed leaks the device handle, so the receiver stays claimed and
          * every later open fails with a stalled endpoint (transfer status 4)
          * until it is physically replugged -- i.e. exactly the case where
          * cleaning up matters most. */
         libusb_close(p->dh);
+        p->dh = NULL;
     }
+
+    if (p->xfer_abandoned) mirisdr_async_free(p);
 
     if (p->ctx) libusb_exit(p->ctx);
 
@@ -403,9 +433,10 @@ int mirisdr_reset_buffer (mirisdr_dev_t *p) {
     if (!p) goto failed;
     if (!p->dh) goto failed;
 
-    /* not yet clear what this would be for, so only restart the async part */
-    mirisdr_stop_async(p);
-    mirisdr_start_async(p);
+    /* not yet clear what this would be for, so only restart the async part. A stream the
+       app paused stays paused */
+    if ((mirisdr_async_get(p) == MIRISDR_ASYNC_RUNNING) && (mirisdr_stop_async(p) == 0) &&
+        (mirisdr_stream_resume(p) < 0)) goto failed;
 
     return 0;
 
@@ -512,16 +543,10 @@ int mirisdr_get_hw_flavour (mirisdr_dev_t *p) {
     return p ? (int) p->hw_flavour : -1;
 }
 
-int mirisdr_set_hw_flavour (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_flavour) {
-    if (!p) goto failed;
-
-    if (hw_flavour < MIRISDR_HW_DEFAULT || hw_flavour > MIRISDR_HW_RSPDUO) goto failed;
-
-    p->hw_flavour = hw_flavour;
-    p->exp_valid = 0;
-
-    /* a notch, antenna or raw part left in the tune on a board without it would refuse every
-       later tune */
+/* What a board does not have, out of the selected tuner's stored tune: a notch, antenna,
+   pad or raw part left in it would refuse every later tune */
+static void mirisdr_flavour_clean (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_flavour)
+{
     if (!MIRISDR_HW_EXPANDER(hw_flavour))
     {
         p->notch = 0;
@@ -534,15 +559,11 @@ int mirisdr_set_hw_flavour (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_flavour) {
         p->tune.frontend.bias = 0;
     }
 
+    /* the pads differ from board to board */
+    p->attenuator = 0;
+    p->tune.frontend.attenuator = 0;
     p->tune.frontend.raw.fields &= mirisdr_frontend_parts(hw_flavour);
     p->tune.frontend.flags &= mirisdr_frontend_flags(hw_flavour);
-
-    /* one tuner: the stream takes it, the single setters act on it */
-    if (hw_flavour != MIRISDR_HW_RSPDUO)
-    {
-        p->stream.tuners = 0;
-        mirisdr_tuner_select(p, 0);
-    }
 
     if (hw_flavour != MIRISDR_HW_RSPDXR2)
     {
@@ -551,6 +572,42 @@ int mirisdr_set_hw_flavour (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_flavour) {
         p->ds = 0;
         p->ds_edge = 0;
         p->tune.frontend.direct_sampling = 0;
+    }
+}
+
+int mirisdr_set_hw_flavour (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_flavour) {
+    mirisdr_tune_config_t c;
+    int t, n, cur;
+
+    if (!p) goto failed;
+
+    if (hw_flavour < MIRISDR_HW_DEFAULT || hw_flavour > MIRISDR_HW_RSPDUO) goto failed;
+
+    /* the tuners as the old board had them, each one's stored tune cleaned, tuner 0 last */
+    n = mirisdr_tuners_of(p);
+    cur = p->tuner_cur;
+    p->hw_flavour = hw_flavour;
+    p->exp_valid = 0;
+    p->fe_flags &= mirisdr_frontend_flags(hw_flavour);
+
+    for (t = n - 1; t >= 0; t--)
+    {
+        mirisdr_tuner_select(p, t);
+        mirisdr_flavour_clean(p, hw_flavour);
+    }
+    for (t = 0; t < MIRISDR_TUNERS; t++) p->tctx[t].tune.frontend.flags = p->fe_flags;
+    p->tune.frontend.flags = p->fe_flags;
+
+    /* one tuner: the stream takes it, the single setters act on it */
+    if (hw_flavour != MIRISDR_HW_RSPDUO) p->stream.tuners = 0;
+    else if (cur) mirisdr_tuner_select(p, cur);
+
+    /* the front end as this board has it, register 8 with it: the stored tune again */
+    if (p->dh)
+    {
+        c = p->tune;
+        c.gain.mode = MIRISDR_GAIN_KEEP;
+        if (mirisdr_tune(p, p->tuner_cur, &c, NULL) < 0) goto failed;
     }
 
     return 0;

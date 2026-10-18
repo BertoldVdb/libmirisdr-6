@@ -195,7 +195,8 @@ typedef struct mirisdr_gr
 } mirisdr_gr_t;
 
 /* A total split for a band and r->amp_db: the front end first, so noise figure and IIP3
-   stay low. The board's amplifier is on while the total holds it */
+   stay low. The board's amplifier is on while the total holds it. On a path without one its
+   state is left as it was, for the next path that has one */
 static void mirisdr_split_of(mirisdr_band_t band, int gain, mirisdr_gr_t *r)
 {
     int front = mirisdr_front_gain_of(band);
@@ -203,8 +204,11 @@ static void mirisdr_split_of(mirisdr_band_t band, int gain, mirisdr_gr_t *r)
     if (gain > mirisdr_max_gain_of(band) + r->amp_db) gain = mirisdr_max_gain_of(band) + r->amp_db;
     if (gain < 0) gain = 0;
 
-    r->amp = gain < r->amp_db;
-    if (!r->amp) gain -= r->amp_db;
+    if (r->amp_db)
+    {
+        r->amp = gain < r->amp_db;
+        if (!r->amp) gain -= r->amp_db;
+    }
 
     if (gain >= front + 19)
     {
@@ -282,26 +286,36 @@ static void mirisdr_gr_set(mirisdr_dev_t *p, const mirisdr_gr_t *r)
     p->amp_db = r->amp_db;
 }
 
-/* Stages asked for as reductions; dB values the band cannot do are refused */
-static int mirisdr_gr_of_stages(mirisdr_band_t band, const mirisdr_gain_config_t *g, mirisdr_gr_t *r)
+/* Stages asked for as reductions, for a band and r->amp_db. Strict: dB values the band
+   cannot do are refused, and a bypass where there is no amplifier. Otherwise each is taken
+   to the nearest the band has (on or off, baseband 0-59, the mixbuffer's steps). On a path
+   without the amplifier its state is left as it was */
+static int mirisdr_gr_of_stages(mirisdr_band_t band, const mirisdr_gain_config_t *g, mirisdr_gr_t *r, int strict)
 {
-    if ((g->lna & ~1) || (g->mixer & ~1) || (g->amp_bypass & ~1) || (g->baseband < 0) || (g->baseband > 59))
+    int mb = g->mixbuffer, bb = g->baseband;
+
+    if (strict && ((g->lna & ~1) || (g->mixer & ~1) || (g->amp_bypass & ~1) || (bb < 0) || (bb > 59) ||
+                   (g->amp_bypass && !r->amp_db)))
         return -1;
 
+    if (bb < 0) bb = 0;
+    if (bb > 59) bb = 59;
     r->lna = !g->lna;
     r->mixer = !g->mixer;
-    r->baseband = 59 - g->baseband;
-    r->amp = g->amp_bypass;
+    r->baseband = 59 - bb;
+    if (r->amp_db) r->amp = !!g->amp_bypass;
 
     if (band == MIRISDR_BAND_AM2)
     {
-        if ((g->mixbuffer != 0) && (g->mixbuffer != 24)) return -1;
-        r->mixbuffer = g->mixbuffer ? 0 : 3;
+        if (strict && (mb != 0) && (mb != 24)) return -1;
+        r->mixbuffer = (mb >= 12) ? 0 : 3;
     }
     else if (band == MIRISDR_BAND_AM1)
     {
-        if ((g->mixbuffer < 0) || (g->mixbuffer > 18) || (g->mixbuffer % 6)) return -1;
-        r->mixbuffer = 3 - g->mixbuffer / 6;
+        if (strict && ((mb < 0) || (mb > 18) || (mb % 6))) return -1;
+        if (mb < 0) mb = 0;
+        if (mb > 18) mb = 18;
+        r->mixbuffer = 3 - (mb + 3) / 6;
     }
     else r->mixbuffer = 3;      /* no such stage */
 
@@ -348,7 +362,8 @@ static void mirisdr_gain_retune (mirisdr_dev_t *p)
  * The (second) call with *gains!=NULL fills the array and returns the count.
  *
  * The max. available gain depends on the selected band: 102, 85 in band IV/V, 82 in
- * L band and 96 on AM port 1, plus the RSPduo's amplifier from 55 MHz.
+ * L band and 96 on AM port 1, plus the board's amplifier: from 30 MHz on the RSP1B and
+ * RSPdx-R2, from 55 MHz on the RSPduo.
  */
 int mirisdr_get_tuner_gains(mirisdr_dev_t *p, int *gains)
 {

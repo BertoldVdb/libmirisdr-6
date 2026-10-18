@@ -67,5 +67,5 @@ typedef struct
     uint32_t band_select_word;
     int if1_low;        /* AM low side: first IF this many x 24 MHz (XTALSEL 7 - n), 0 = high side 120 MHz */
     uint16_t expander;  /* SDRplay: expander IODIR word, 0 bits pulled low (sdrplay.c), 0 = none */
-    int amp_db;         /* the board's amplifier on this path (RSPduo, RSPdx-R2), dB, 0 = none */
+    int amp_db;         /* the board's amplifier on this path (RSP1B, RSPdx-R2, RSPduo), dB, 0 = none */
 } hw_switch_freq_plan_t;

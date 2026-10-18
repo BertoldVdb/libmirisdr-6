@@ -39,17 +39,20 @@ static int ee_size;
 static void usage (void)
 {
     fprintf(stderr,
-        "usage: miri_eeprom [-d index] <command>\n\n"
+        "usage: miri_eeprom [-d index] <command> [options]\n\n"
         "  saferead <file> [bytes] [-u vid:pid] [-g reg8]\n"
-        "                                safest way to make an EEPROM dump\n"
-        "  info                          what is fitted and what byte 0 says\n"
+        "                                safest way to make an EEPROM dump; counts -d among\n"
+        "                                devices with VID 1df7, or -u's\n"
+        "  info                          the addressing and what byte 0 says\n"
         "  probe                         measure the real size, restoring what it touches\n"
         "  read <file> [bytes]           dump to a file\n"
         "  write <file> [address]        write a file back\n"
-        "  writeids <vid> <pid> [bcd]    boot the ROM with these ids\n"
+        "  writeids <vid> <pid> [bcd]    boot the ROM with these ids (hex, 0x optional)\n"
         "  writefw <image|default> [-v vid] [-p pid] [-s serial|random]\n"
-        "                                boot this image instead of the ROM\n"
-        "  disable                       byte 0 back to 0xFF\n");
+        "                                boot this image instead of the ROM (ids in hex)\n"
+        "  disable                       byte 0 back to 0xFF\n\n"
+        "  -d may come anywhere; numbers are decimal unless they start with 0x, except\n"
+        "  the USB ids, which are hex as lsusb prints them\n");
 
     exit(1);
 }
@@ -380,7 +383,7 @@ static int cmd_info (void)
 {
     uint8_t head[8];
 
-    printf("  %d bytes, %s address\n", ee_size, (ee_size == 512) ? "9 bit" : "16 bit");
+    printf("  %s address: up to %d bytes (probe measures the part)\n", (ee_size == 512) ? "9 bit" : "16 bit", ee_size);
 
     if (mirisdr_read_eeprom(dev, 0, head, sizeof(head))) return -1;
 
@@ -410,41 +413,65 @@ static int cmd_info (void)
 static int cmd_probe (void)
 {
     uint16_t base = 0x0020;
-    int b;
+    uint8_t head, idle = EE_IDLE;
+    int b, r = 0, size = ee_size;
+
+    /* the markers land inside a boot image: the ROM boots itself while they are there, and
+       byte 0 comes back last, whatever happened */
+    if (mirisdr_read_eeprom(dev, 0, &head, 1)) return -1;
+    if ((head != EE_IDLE) && store(0, &idle, 1)) return -1;
 
     for (b = 8; (1 << b) < ee_size; b++)
     {
         uint16_t other = (uint16_t) (base | (1 << b));
-        uint8_t was[2], mark[2] = { 0xA5, 0x5A }, got;
-        int aliased;
+        uint8_t was[2], mark[2] = { 0xA5, 0x5A }, got[2];
+        int bad;
 
         if (mirisdr_read_eeprom(dev, base, was, 1)
-            || mirisdr_read_eeprom(dev, other, was + 1, 1)) return -1;
+            || mirisdr_read_eeprom(dev, other, was + 1, 1)) { r = -1; break; }
 
-        if (mirisdr_write_eeprom(dev, base, mark, 1)
-            || mirisdr_write_eeprom(dev, other, mark + 1, 1)
-            || mirisdr_read_eeprom(dev, base, &got, 1)) return -1;
+        bad = mirisdr_write_eeprom(dev, base, mark, 1)
+              || mirisdr_write_eeprom(dev, other, mark + 1, 1)
+              || mirisdr_read_eeprom(dev, base, got, 1)
+              || mirisdr_read_eeprom(dev, other, got + 1, 1);
 
-        aliased = got != mark[0];
-
+        /* put both back first, whatever the markers did */
         if (mirisdr_write_eeprom(dev, base, was, 1)
             || mirisdr_write_eeprom(dev, other, was + 1, 1)
-            || verify(base, was, 1))
+            || verify(base, was, 1) || verify(other, was + 1, 1))
         {
             fprintf(stderr, "could not put 0x%04X and 0x%04X back\n", base, other);
-
-            return -1;
+            r = -1;
+            break;
         }
 
-        if (aliased)
-        {
-            printf("  A%d is ignored, so the part holds %d bytes\n", b, 1 << b);
+        if (bad) { r = -1; break; }
 
-            return 0;
+        /* the second marker not taken: the part does not write (protected?) */
+        if (got[1] != mark[1])
+        {
+            fprintf(stderr, "  the part does not take writes at 0x%04X: write protected?\n", other);
+            r = -1;
+            break;
+        }
+
+        if (got[0] != mark[0])
+        {
+            size = 1 << b;
+            break;
         }
     }
 
-    printf("  no address bit is ignored, so the part holds %d bytes\n", ee_size);
+    if ((head != EE_IDLE) && store(0, &head, 1))
+    {
+        fprintf(stderr, "could not put byte 0 (0x%02X) back\n", head);
+        return -1;
+    }
+
+    if (r) return r;
+
+    if (size < ee_size) printf("  A%d is ignored, so the part holds %d bytes\n", b, size);
+    else printf("  no address bit is ignored, so the part holds %d bytes\n", ee_size);
 
     return 0;
 }
@@ -538,6 +565,22 @@ static int cmd_fw (const char *path, long vid, long pid, const char *serial)
     }
     else if (!(img = slurp(path, &len))) return -1;
 
+    /* the ROM loads the image into RAM below 0x1800, and an EEPROM dump starts with a boot byte */
+    if (len > 0x1800)
+    {
+        fprintf(stderr, "%s: %ld bytes, more than the 6144 an image may have\n", path, len);
+        free(img);
+
+        return -1;
+    }
+    if ((img[0] == EE_IMAGE) || (img[0] == EE_IDS))
+    {
+        fprintf(stderr, "%s starts with 0x%02X: an EEPROM dump, not a firmware image (use write)\n", path, img[0]);
+        free(img);
+
+        return -1;
+    }
+
     if (serial && !strcmp(serial, "random") && !(serial = make_serial()))
     {
         free(img);
@@ -590,45 +633,91 @@ static int cmd_disable (void)
     return boot();
 }
 
+/* A number: the whole string, in range. Hex (0x optional) when hex is set, else decimal or 0x */
+static int number (const char *s, int hex, long lo, long hi, long *out)
+{
+    char *e;
+    long v;
+
+    if (!s || !*s) return -1;
+    v = strtol(s, &e, hex ? 16 : 0);
+    if (*e || (v < lo) || (v > hi)) return -1;
+    *out = v;
+
+    return 0;
+}
+
+static void bad_arg (const char *what, const char *s)
+{
+    fprintf(stderr, "miri_eeprom: %s '%s' is not valid\n\n", what, s ? s : "");
+    usage();
+}
+
 int main (int argc, char **argv)
 {
-    const char *serial = NULL, *cmd;
-    long vid = -1, pid = -1, bcd = 0x0200, uvid = -1, upid = -1, reg8 = -1;
+    const char *serial = NULL, *cmd = NULL, *pos[4] = { NULL, NULL, NULL, NULL };
+    long vid = -1, pid = -1, bcd = 0x0200, uvid = -1, upid = -1, reg8 = -1, v;
     uint32_t index = 0;
-    int i, r = 1;
+    int i, r = 1, npos = 0, need, most;
 
-    while ((argc > 2) && !strcmp(argv[1], "-d"))
+    /* the command, its arguments and the options, in any order */
+    for (i = 1; i < argc; i++)
     {
-        index = (uint32_t) strtoul(argv[2], NULL, 0);
-        argv+= 2;
-        argc-= 2;
-    }
+        const char *a = argv[i], *val = (i + 1 < argc) ? argv[i + 1] : NULL;
 
-    if (argc < 2) usage();
-
-    cmd = argv[1];
-
-    for (i = 2; i < argc - 1; i++)
-    {
-        if (!strcmp(argv[i], "-v")) vid = strtol(argv[++i], NULL, 0);
-        else if (!strcmp(argv[i], "-p")) pid = strtol(argv[++i], NULL, 0);
-        else if (!strcmp(argv[i], "-s")) serial = argv[++i];
-        else if (!strcmp(argv[i], "-g")) reg8 = strtol(argv[++i], NULL, 0);
-        else if (!strcmp(argv[i], "-u"))
+        if ((a[0] == '-') && a[1] && !a[2] && strchr("dvpsgu", a[1]))
         {
-            char *e;
+            if (!val) bad_arg("a value for", a);
+            i++;
+            switch (a[1])
+            {
+            case 'd': if (number(val, 0, 0, 255, &v)) bad_arg("device index", val); index = (uint32_t) v; break;
+            case 'v': if (number(val, 1, 0, 0xFFFF, &vid)) bad_arg("vendor id", val); break;
+            case 'p': if (number(val, 1, 0, 0xFFFF, &pid)) bad_arg("product id", val); break;
+            case 's': serial = val; break;
+            case 'g': if (number(val, 0, 0, 0xFFFFFF, &reg8)) bad_arg("register 8 value", val); break;
+            case 'u':
+            {
+                char ids[16], *c;
 
-            uvid = strtol(argv[++i], &e, 16);
-            if (*e == ':') upid = strtol(e + 1, NULL, 16);
+                snprintf(ids, sizeof ids, "%s", val);
+                if ((c = strchr(ids, ':'))) *c++ = 0;
+                if (number(ids, 1, 0, 0xFFFF, &uvid) || (c && number(c, 1, 0, 0xFFFF, &upid))) bad_arg("vid:pid", val);
+                break;
+            }
+            }
         }
+        else if ((a[0] == '-') && a[1] && !((a[1] >= '0') && (a[1] <= '9'))) bad_arg("option", a);
+        else if (!cmd) cmd = a;
+        else if (npos < 4) pos[npos++] = a;
+        else bad_arg("argument", a);
     }
+
+    if (!cmd) usage();
+
+    /* the command and how many arguments it takes, checked before any open */
+    if (!strcmp(cmd, "saferead") || !strcmp(cmd, "read")) { need = 1; most = 2; }
+    else if (!strcmp(cmd, "write")) { need = 1; most = 2; }
+    else if (!strcmp(cmd, "writeids")) { need = 2; most = 3; }
+    else if (!strcmp(cmd, "writefw")) { need = 1; most = 1; }
+    else if (!strcmp(cmd, "info") || !strcmp(cmd, "probe") || !strcmp(cmd, "disable")) { need = 0; most = 0; }
+    else { fprintf(stderr, "miri_eeprom: no command '%s'\n\n", cmd); usage(); }
+    if ((npos < need) || (npos > most)) usage();
+
+    if (!strcmp(cmd, "writeids"))
+    {
+        if (number(pos[0], 1, 0, 0xFFFF, &vid)) bad_arg("vendor id", pos[0]);
+        if (number(pos[1], 1, 0, 0xFFFF, &pid)) bad_arg("product id", pos[1]);
+        if ((npos > 2) && number(pos[2], 1, 0, 0xFFFF, &bcd)) bad_arg("bcdDevice", pos[2]);
+    }
+    if ((!strcmp(cmd, "read") || !strcmp(cmd, "saferead") || !strcmp(cmd, "write")) && (npos > 1) &&
+        number(pos[1], 0, 0, 0xFFFF, &v)) bad_arg(strcmp(cmd, "write") ? "byte count" : "address", pos[1]);
 
     /* before any open: the library would upload its firmware */
-    if (!strcmp(cmd, "saferead") && (argc > 2))
+    if (!strcmp(cmd, "saferead"))
     {
         printf("\n");
-        r = cmd_saferead(argv[2], ((argc > 3) && (argv[3][0] != '-')) ? (int) strtol(argv[3], NULL, 0) : 0,
-                     uvid, upid, index, reg8);
+        r = cmd_saferead(pos[0], (npos > 1) ? (int) strtol(pos[1], NULL, 0) : 0, uvid, upid, index, reg8);
         printf("\n");
 
         return r ? 1 : 0;
@@ -656,15 +745,10 @@ int main (int argc, char **argv)
     if (!strcmp(cmd, "info")) r = cmd_info();
     else if (!strcmp(cmd, "probe")) r = cmd_probe();
     else if (!strcmp(cmd, "disable")) r = cmd_disable();
-    else if (!strcmp(cmd, "read") && (argc > 2))
-        r = cmd_read(argv[2], (argc > 3) ? (int) strtol(argv[3], NULL, 0) : 0);
-    else if (!strcmp(cmd, "write") && (argc > 2))
-        r = cmd_write(argv[2], (argc > 3) ? (int) strtol(argv[3], NULL, 0) : 0);
-    else if (!strcmp(cmd, "writeids") && (argc > 3))
-        r = cmd_ids(strtol(argv[2], NULL, 0), strtol(argv[3], NULL, 0),
-                    (argc > 4) ? strtol(argv[4], NULL, 0) : bcd);
-    else if (!strcmp(cmd, "writefw") && (argc > 2)) r = cmd_fw(argv[2], vid, pid, serial);
-    else { mirisdr_close(dev); printf("\n"); usage(); }
+    else if (!strcmp(cmd, "read")) r = cmd_read(pos[0], (npos > 1) ? (int) strtol(pos[1], NULL, 0) : 0);
+    else if (!strcmp(cmd, "write")) r = cmd_write(pos[0], (npos > 1) ? (int) strtol(pos[1], NULL, 0) : 0);
+    else if (!strcmp(cmd, "writeids")) r = cmd_ids(vid, pid, bcd);
+    else r = cmd_fw(pos[0], vid, pid, serial);
 
     printf("\n");
     mirisdr_close(dev);

@@ -72,5 +72,16 @@ int mirisdr_uart_write (mirisdr_dev_t *p, uint32_t baud, const uint8_t *buf, int
         done+= n;
     }
 
+    /* the last chunk's bits too, with a request given their time: else the caller's next
+       request waits for the line, and times out at a slow rate */
+    if (before)
+    {
+        uint8_t b[4];
+        unsigned int ms = (unsigned int) ((uint64_t) before * 10 * bit_ns / 1000000) + CTRL_TIMEOUT;
+
+        if (libusb_control_transfer(p->dh, 0xC0, CMD_RREG, MIRISDR_MEM_XDATA, 0, b, sizeof b, ms) != (int) sizeof b)
+            return -1;
+    }
+
     return 0;
 }

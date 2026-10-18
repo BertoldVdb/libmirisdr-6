@@ -197,10 +197,14 @@ void usage(void)
 		"\t    raw mode outputs 2x16 bit IQ pairs, at the rate it says\n"
 		"\t[-s sample_rate (default: 24k)]\n"
 		"\t[-d device_index (default: 0)]\n"
-        "\t[-T device_type device variant: 0 default, 1 SDRplay, 2 RSP1B, 3 RSPdx-R2, 4 RSPduo (default: by VID:PID)]\n"
-        "\t    0:       Default\n"
-        "\t    1:       SDRPlay\n"
-		"\t[-g tuner_gain in 10 dB units, 0-10.2: 4.5 is 45 dB (default: the library's, 43 dB)]\n"
+		"\t[-T board (default: from the USB IDs)]\n"
+		"\t    0:       a plain MSi2500/MSi001 board\n"
+		"\t    1:       SDRplay RSP1\n"
+		"\t    2:       SDRplay RSP1B\n"
+		"\t    3:       SDRplay RSPdx-R2\n"
+		"\t    4:       SDRplay RSPduo\n"
+		"\t[-g total tuner gain in 10 dB units: 4.5 is 45 dB, taken to the nearest the band has\n"
+		"\t    (default: the library's, 43 dB)]\n"
 		"\t[-m sample format (default: auto]\n"
 		"\t    504:    S8 (fastest)\n"
 		"\t    384:    S10 +2bits \n"
@@ -232,8 +236,9 @@ void usage(void)
 		"\t[-l squelch_level (default: 0/off)]\n"
 		"\t    rms of the channel, full scale is 16384\n"
 		//"\t    for fm squelch is inverted\n"
-		"\t[-o oversampling (default: 1, 4 recommended)]\n"
-		"\t[-p ppm_error (default: 0)]\n"
+		"\t[-o oversampling, 1 to 16 (default: 1, 4 recommended)]\n"
+		"\t[-p ppm_error of the reference, corrects the tuning (default: 0, or from a serial\n"
+		"\t    ending in \" <ppm>p\")]\n"
 		"\t[-E enable_option (default: none)]\n"
 		"\t    use multiple -E to enable multiple options\n"
 		"\t    edge:   enable lower edge tuning\n"
@@ -245,7 +250,7 @@ void usage(void)
 		"\t    omitting the filename also uses stdout\n\n"
 		"Experimental options:\n"
 		"\t[-r resample_rate (default: none / same as -s)]\n"
-		"\t[-t squelch_delay (default: 10)]\n"
+		"\t[-t squelch_delay in buffers of about 20 ms (default: 10)]\n"
 		"\t    +values will mute/scan, -values will exit\n"
 		"\t[-F fir_size (default: off)]\n"
 		"\t    enables low-leakage downsample filter\n"
@@ -290,7 +295,8 @@ static void sighandler(int signum)
 
 /* more cond dumbness */
 #define safe_cond_signal(n, m) pthread_mutex_lock(m); pthread_cond_signal(n); pthread_mutex_unlock(m)
-#define safe_cond_wait(n, m) pthread_mutex_lock(m); pthread_cond_wait(n, m); pthread_mutex_unlock(m)
+/* not once the end is set: its signal may have come before the wait */
+#define safe_cond_wait(n, m) pthread_mutex_lock(m); if (!do_exit) pthread_cond_wait(n, m); pthread_mutex_unlock(m)
 
 /* {length, coef, coef, coef}  and scaled by 2^15
    for now, only length 9, optimal way to get +85% bandwidth */
@@ -501,7 +507,8 @@ int atan_lut_init(void)
 {
 	int i = 0;
 
-	atan_lut = malloc(atan_lut_size * sizeof(int));
+	if (!(atan_lut = malloc(atan_lut_size * sizeof(int)))) {
+		return -1;}
 
 	for (i = 0; i < atan_lut_size; i++) {
 		atan_lut[i] = (int) (atan((double) i / (1<<atan_lut_coef)) / 3.14159 * (1<<14));
@@ -540,13 +547,11 @@ int polar_disc_lut(int ar, int aj, int br, int bj)
 		return (cj > 0) ? 1<<13 : -(1<<13);
 	}
 
-	if (x > 0) {
-		return (cj > 0) ? atan_lut[x] : atan_lut[x] - (1<<14);
-	} else {
-		return (cj > 0) ? (1<<14) - atan_lut[-x] : -atan_lut[-x];
-	}
-
-	return 0;
+	/* by the side of cr: x rounds to 0 at small angles, which says nothing of
+	   which half it is in */
+	if (cr > 0) {
+		return (x >= 0) ? atan_lut[x] : -atan_lut[-x];}
+	return (cj > 0) ? (1<<14) - atan_lut[x_abs] : atan_lut[x_abs] - (1<<14);
 }
 
 void fm_demod(struct demod_state *fm)
@@ -681,12 +686,13 @@ int rms(int16_t *samples, int len, int step)
 /* largely lifted from rtl_power */
 {
 	int i;
-	long p, t, s;
+	int64_t p, t, s;
 	double dc, err;
 
-	p = t = 0L;
+	/* 64-bit: a buffer of full scale squares passes 2^31 */
+	p = t = 0;
 	for (i=0; i<len; i+=step) {
-		s = (long)samples[i];
+		s = (int64_t)samples[i];
 		t += s;
 		p += s * s;
 	}
@@ -779,11 +785,15 @@ static void mirisdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 	safe_cond_signal(&d->ready, &d->ready_m);
 }
 
+static volatile int read_result;
+
+/* the stream ends only on a cancel: anything else ends the program too */
 static void *dongle_thread_fn(void *arg)
 {
 	struct dongle_state *s = arg;
-	mirisdr_read_async(s->dev, mirisdr_callback, s,
+	read_result = mirisdr_read_async(s->dev, mirisdr_callback, s,
 		DEFAULT_ASYNC_BUF_NUMBER, s->buf_len);
+	do_exit = 1;
 	return 0;
 }
 
@@ -801,6 +811,9 @@ static void *demod_thread_fn(void *arg)
 		}
 		if (d->squelch_level && d->squelch_hits > d->conseq_squelch) {
 			d->squelch_hits = d->conseq_squelch + 1;  /* hair trigger */
+			if (d->terminate_on_squelch) {
+				do_exit = 1;
+				break;}
 			safe_cond_signal(&controller.hop, &controller.hop_m);
 			continue;
 		}
@@ -904,31 +917,27 @@ static void optimal_settings(void)
 	d->buf_len = (uint32_t)i * 2 * sizeof(float);
 }
 
-/* Where to tune for a station */
+/* Where to tune for a station: a reference ppm_error high puts the LO as much
+   above what it is told, so it is told less */
 static uint32_t capture_freq(uint32_t freq)
 {
 	freq += controller.edge * demod.rate_in / 2;
 	if (dongle.rotate) {
 		freq += dongle.rate / 4;}
-	return freq;
+	return (uint32_t)llround((double)freq / (1.0 + dongle.ppm_error * 1e-6));
 }
 
-static void *controller_thread_fn(void *arg)
+/* The first channel's tune and the stream, before any thread runs: the stream
+   starts on them. Hops keep the gain in force, which follows the band */
+static mirisdr_tune_config_t hop_tc;
+
+static int dongle_setup(struct controller_state *s)
 {
-	// thoughts for multiple dongles
-	// might be no good using a controller thread if retune/rate blocks
-	int i;
-	struct controller_state *s = arg;
 	static const char *formats[] = { "AUTO", "504_S8", "384_S16", "336_S16", "252_S16" };
 	mirisdr_stream_config_t sc;
 	mirisdr_stream_result_t sr;
 	mirisdr_tune_config_t tc;
 	mirisdr_tune_result_t tr;
-
-	if (s->wb_mode) {
-		for (i=0; i < s->freq_len; i++) {
-			s->freqs[i] += 16000;}
-	}
 
 	/* set up primary channel */
 	dongle.freq = capture_freq(s->freqs[0]);
@@ -951,7 +960,7 @@ static void *controller_thread_fn(void *arg)
 	}
 	if (mirisdr_tune(dongle.dev, 0, &tc, &tr) < 0) {
 		fprintf(stderr, "Failed to tune.\n");
-		exit(1);
+		return -1;
 	}
 
 	mirisdr_get_stream(dongle.dev, &sc, NULL);
@@ -964,7 +973,7 @@ static void *controller_thread_fn(void *arg)
 		sc.transfer = "BULK";}
 	if (mirisdr_set_stream(dongle.dev, &sc, &sr) < 0) {
 		fprintf(stderr, "Failed to set up the stream.\n");
-		exit(1);
+		return -1;
 	}
 	mirisdr_get_tune(dongle.dev, 0, NULL, &tr);
 	if (dongle.if_mode) {
@@ -984,8 +993,15 @@ static void *controller_thread_fn(void *arg)
 		fprintf(stderr, "Output at %d Hz.\n", demod.rate_out);}
 	fprintf(stderr, "Tuned to %u Hz, bandwidth %u Hz, tuner gain %d dB.\n", dongle.freq, tr.bandwidth, tr.gain.total);
 
-	/* hops keep the gain in force, which follows the band */
-	tc.gain.mode = MIRISDR_GAIN_KEEP;
+	hop_tc = tc;
+	hop_tc.gain.mode = MIRISDR_GAIN_KEEP;
+	return 0;
+}
+
+static void *controller_thread_fn(void *arg)
+{
+	struct controller_state *s = arg;
+	mirisdr_tune_config_t tc = hop_tc;
 
 	while (!do_exit) {
 		safe_cond_wait(&s->hop, &s->hop_m);
@@ -1007,10 +1023,16 @@ void frequency_range(struct controller_state *s, char *arg)
 	char *start, *stop, *step;
 	int i;
 	start = arg;
-	stop = strchr(start, ':') + 1;
+	if (!(stop = strchr(start, ':')) || !(step = strchr(stop + 1, ':'))) {
+		fprintf(stderr, "A range is start:stop:step, %s is not.\n", arg);
+		exit(1);}
+	stop++;
+	step++;
 	stop[-1] = '\0';
-	step = strchr(stop, ':') + 1;
 	step[-1] = '\0';
+	if ((int)atofs(step) <= 0 || (int)atofs(stop) < (int)atofs(start)) {
+		fprintf(stderr, "The range %s:%s:%s has no frequencies.\n", start, stop, step);
+		exit(1);}
 	for(i=(int)atofs(start); i<=(int)atofs(stop); i+=(int)atofs(step))
 	{
 		s->freqs[s->freq_len] = (uint32_t)i;
@@ -1025,7 +1047,7 @@ void frequency_range(struct controller_state *s, char *arg)
 void dongle_init(struct dongle_state *s)
 {
 	s->rate = DEFAULT_SAMPLE_RATE;
-	s->gain = AUTO_GAIN; // tenths of a dB
+	s->gain = AUTO_GAIN; /* dB, AUTO_GAIN: the library's */
 	s->mute = 0;
 	s->direct_sampling = 0;
 	s->demod_target = &demod;
@@ -1147,10 +1169,12 @@ int main(int argc, char **argv)
 			break;
         case 'T':
             intval = atoi(optarg);
-            if ((intval >=0) && (intval <= MIRISDR_HW_RSPDUO))
+            if ((intval < 0) || (intval > MIRISDR_HW_RSPDUO))
             {
-                hw_flavour = (mirisdr_hw_flavour_t) intval;
+                fprintf(stderr, "-T takes 0 to %d.\n", MIRISDR_HW_RSPDUO);
+                exit(1);
             }
+            hw_flavour = (mirisdr_hw_flavour_t) intval;
             break;
 		case 'e':
 			if ((strcmp("ISOC", optarg) == 0) ||
@@ -1172,7 +1196,7 @@ int main(int argc, char **argv)
 			}
 			break;
 		case 'g':
-			dongle.gain = (int)(atof(optarg) * 10);
+			dongle.gain = (int)lround(atof(optarg) * 10);
 			break;
 		case 'i':
 			dongle.if_mode = strcmp(optarg, "auto") ? atoi(optarg) : -1;
@@ -1189,19 +1213,31 @@ int main(int argc, char **argv)
 				dongle.format = 3;}
 			if (strcmp("252", optarg) == 0) {
 				dongle.format = 4;}
+			if (strcmp("auto", optarg) == 0) {
+				dongle.format = 0;}
+			else if (!dongle.format) {
+				fprintf(stderr, "-m %s is not a format.\n", optarg);
+				exit(1);}
 			break;
 		case 's':
-			demod.rate_in = (uint32_t)atofs(optarg);
-			demod.rate_out = (uint32_t)atofs(optarg);
+			demod.rate_in = (int)atofs(optarg);
+			demod.rate_out = (int)atofs(optarg);
+			if (demod.rate_in <= 0) {
+				fprintf(stderr, "-s needs a rate.\n");
+				exit(1);}
 			break;
 		case 'r':
 			output.rate = (int)atofs(optarg);
 			demod.rate_out2 = (int)atofs(optarg);
+			if (demod.rate_out2 <= 0) {
+				fprintf(stderr, "-r needs a rate.\n");
+				exit(1);}
 			break;
 		case 'o':
 			demod.post_downsample = (int)atof(optarg);
 			if (demod.post_downsample < 1 || demod.post_downsample > MAXIMUM_OVERSAMPLE) {
-				fprintf(stderr, "Oversample must be between 1 and %i\n", MAXIMUM_OVERSAMPLE);}
+				fprintf(stderr, "Oversample must be between 1 and %i\n", MAXIMUM_OVERSAMPLE);
+				exit(1);}
 			break;
 		case 't':
 			demod.conseq_squelch = (int)atof(optarg);
@@ -1239,7 +1275,9 @@ int main(int argc, char **argv)
 			if (strcmp("fast", optarg) == 0) {
 				demod.custom_atan = 1;}
 			if (strcmp("lut",  optarg) == 0) {
-				atan_lut_init();
+				if (atan_lut_init() < 0) {
+					fprintf(stderr, "Out of memory for the atan table.\n");
+					exit(1);}
 				demod.custom_atan = 2;}
 			break;
 		case 'M':
@@ -1332,7 +1370,8 @@ int main(int argc, char **argv)
 	if (!custom_ppm) {
 		verbose_ppm_eeprom(dongle.dev, &(dongle.ppm_error));
 	}
-	verbose_ppm_set(dongle.dev, dongle.ppm_error);
+	if (dongle.ppm_error) {
+		fprintf(stderr, "Tuning corrected for a reference %d ppm off.\n", dongle.ppm_error);}
 
 	if (strcmp(output.filename, "-") == 0) { /* Write samples to stdout */
 		output.file = stdout;
@@ -1349,11 +1388,15 @@ int main(int argc, char **argv)
 
 	//r = mirisdr_set_testmode(dongle.dev, 1);
 
+	if (dongle_setup(&controller) < 0) {
+		mirisdr_close(dongle.dev);
+		exit(1);
+	}
+
 	/* Reset endpoint before we start reading from it (mandatory) */
 	verbose_reset_buffer(dongle.dev);
 
 	pthread_create(&controller.thread, NULL, controller_thread_fn, (void *)(&controller));
-	usleep(100000);
 	pthread_create(&output.thread, NULL, output_thread_fn, (void *)(&output));
 	pthread_create(&demod.thread, NULL, demod_thread_fn, (void *)(&demod));
 	pthread_create(&dongle.thread, NULL, dongle_thread_fn, (void *)(&dongle));
@@ -1362,10 +1405,11 @@ int main(int argc, char **argv)
 		usleep(100000);
 	}
 
-	if (do_exit) {
-		fprintf(stderr, "\nUser cancel, exiting...\n");}
-	else {
+	r = read_result;
+	if (r < 0) {
 		fprintf(stderr, "\nLibrary error %d, exiting...\n", r);}
+	else {
+		fprintf(stderr, "\nUser cancel, exiting...\n");}
 
 	mirisdr_cancel_async(dongle.dev);
 	pthread_join(dongle.thread, NULL);
@@ -1385,7 +1429,7 @@ int main(int argc, char **argv)
 		fclose(output.file);}
 
 	mirisdr_close(dongle.dev);
-	return r >= 0 ? r : -r;
+	return (r < 0) ? 1 : 0;
 }
 
 // vim: tabstop=8:softtabstop=8:shiftwidth=8:noexpandtab

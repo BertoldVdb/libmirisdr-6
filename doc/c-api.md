@@ -137,9 +137,10 @@ The second argument is the tuner, from 0. `mirisdr_get_tuner_count()` says how m
   - `low_if_auto`: with a low IF, put the LO one IF above `frequency`, so `frequency` is what the tuner passes. Without it the LO sits at `frequency`.
   - `iq`: with a low IF, which tuner outputs run. `MIRISDR_IQ_BOTH`, or `MIRISDR_IQ_ONLY_I` or `MIRISDR_IQ_ONLY_Q` to switch one off.
   - `gain`: see the next section.
-  - `frontend`: the bias-T and the notch filters, see below.
+  - `frontend`: what sits before the tuner: the bias-T, the notches, the antenna, the pads, direct sampling, the board's flags and raw words, see below.
   - `dc_removal`: with a baseband stream, whether the library takes the DC offset off in software. `MIRISDR_DC_AUTO` (the default) does at a low IF, where the DC lies outside the band, and not at zero IF, where it is the band's centre. `MIRISDR_DC_ON` does at every IF; at zero IF a signal right at the LO goes with it. `MIRISDR_DC_OFF` never does. It tracks over 50 ms, so it follows the tuner's slow drift but not a signal.
   - `override` and `synth_thresh`: expert settings. They hold the tuner's calibration codes and fix the synthesizer's grid. Leave them at 0 unless you know you need them.
+  - `strict`: 0 (the default) takes a value the hardware does not have exactly to the nearest one it has, and the tune result says what is in force. A bandwidth goes to the narrowest filter of the IF at least as wide, or its widest. The pads go to the nearest step. A gain stage goes onto its steps and into its range (an LNA of 2 is on, a baseband of 60 is 59), and a total into the band's range. A pad on the RSPduo's Hi-Z, which has none, is 0. With 1, each of these is refused instead. Either way a part or mode the board does not have, or a combination it cannot do, is refused: a notch, antenna, flag or pads on a board without them, an IF it has not, the Hi-Z above 30 MHz, one output at zero IF, and so on.
 
 The filters each IF has:
 
@@ -149,7 +150,7 @@ The filters each IF has:
 | 450 kHz | 200000, 300000, 600000 |
 | 1620 kHz and 2048 kHz | 600000, 1536000 |
 
-A filter the IF does not have is refused. This matters when you change the IF. `mirisdr_get_tune()` gives the bandwidth back as you asked for it. A 0 stays 0 and works at every IF. A filter you chose yourself, for example 8 MHz at zero IF, may not exist at the new IF. Then set `bandwidth` to 0, or to a filter of the new IF, when you change `if_freq`. The tune result always says which filter is in force.
+A filter the IF does not have is taken to the nearest it has, or refused with `strict`. This matters when you change the IF. `mirisdr_get_tune()` gives the bandwidth back as you asked for it. A 0 stays 0 and works at every IF. A filter you chose yourself, for example 8 MHz at zero IF, may not exist at the new IF: the tune then takes the IF's nearest, or with `strict` you set `bandwidth` to 0, or to a filter of the new IF, when you change `if_freq`. The tune result always says which filter is in force.
 
 <h4>The tune result</h4>
 
@@ -159,7 +160,7 @@ A filter the IF does not have is refused. This matters when you change the IF. `
   - `iq`: the outputs that run.
   - `bandwidth`: the filter in force.
   - `gain`: the gain of each stage and the total.
-  - `frontend`: the bias-T and notches in force.
+  - `frontend`: the front end in force: the bias-T, notches, antenna, pads, flags, direct sampling and the raw words.
   - `band`: the tuner band, such as `MIRISDR_BAND_VHF`.
 
 `mirisdr_tune_check()` takes the same arguments and fills the same result, without tuning. Use it to find out what would work.
@@ -172,9 +173,9 @@ The older `mirisdr_set_center_freq()` sets the LO directly. It switches `low_if_
 
   - `bias`: the bias-T, which powers the antenna input. On the RSPdx-R2 it powers port B. On the RSPduo it powers the port marked tuner 2, so only tuner 1 takes it.
   - `notch`: notch filters, on the RSP1B, RSPdx-R2 and RSPduo only. `MIRISDR_NOTCH_FM` covers 85 to 100 MHz, `MIRISDR_NOTCH_MW` medium wave from 0.4 to 1.6 MHz, and `MIRISDR_NOTCH_DAB` 165 to 230 MHz. Combine them with `|`.
-  - `antenna`: the input, `MIRISDR_ANTENNA_A` (the default), `_B` or `_C`. Only the RSPdx-R2 has B and C. On the RSPduo, tuner 0 takes `MIRISDR_ANTENNA_HIZ` (the same as B), its Hi-Z input, below 30 MHz. It goes to the tuner's other AM input, past the filters, so its mixbuffer stage steps 0, 6, 12 and 18 dB instead of 0 and 24. A gain kept across the switch keeps its dB, the mixbuffer to the nearest step the input has. The MW notch has its own switch there.
+  - `antenna`: the input, `MIRISDR_ANTENNA_A` (the default), `_B` or `_C`. Only the RSPdx-R2 has B and C. On the RSPduo, tuner 0 takes `MIRISDR_ANTENNA_HIZ` (the same as B), its Hi-Z input, with the LO below 30 MHz (at a low IF the frequency is an IF lower). It goes to the tuner's other AM input, past the filters, so its mixbuffer stage steps 0, 6, 12 and 18 dB instead of 0 and 24. A gain kept across the switch keeps its dB, the mixbuffer to the nearest step the input has. The MW notch has its own switch there.
   - `attenuator`: pads before the tuner, in dB, 0 (none) by default. It is apart from the gain: the total does not count it, and a `MIRISDR_GAIN_TOTAL` tune leaves it as the config has it. Use it against strong signals, since it comes before the tuner's LNA. `mirisdr_set_attenuator()` changes it alone.
-    - RSPduo and RSP1B: 6, 13 or 19 dB, one pad at a time. The RSPduo's Hi-Z input does not pass through them.
+    - RSPduo and RSP1B: 6, 13 or 19 dB, one pad at a time. The RSPduo's Hi-Z input does not pass through them: a pad asked there is 0 in force, or refused with `strict`.
     - RSPdx-R2: 3 to 36 dB in 3 dB steps. Its four pads are in series, so they add: within 1 dB of the step up to 900 MHz. At 1.5 GHz the larger steps give less, 31 dB at most.
   - `flags`: the board's switches, a bit for each that is on. A flag the board does not have is refused. They belong to the board, not to a tuner: a tune of either tuner sets them for both, and both tuners' configs and results then show them, the last tune's winning. `mirisdr_set_frontend_flags()` changes them alone.
     - `MIRISDR_FRONTEND_PORT_TIE`, RSPduo only: ties the two 50 ohm ports together, so both tuners hear both, as from one antenna. It works at HF, 50 to 200 MHz and 600 to 900 MHz, where the other tuner hears a port within 5 to 10 dB of its own tuner. It works much less at 300 to 433 MHz and in L band. The port's own tuner loses 0 to 5 dB at HF and 3 to 10 dB at 50 to 600 MHz.
@@ -182,7 +183,7 @@ The older `mirisdr_set_center_freq()` sets the LO directly. It switches `low_if_
   - `direct_sampling`: RSPdx-R2 only. See Direct sampling below.
   - `raw`: the switch words themselves, in place of the band plan's. See Raw front end words below.
 
-A notch, an antenna, a pad or direct sampling on a board without it is refused. The config keeps what you asked for, and the tune result reports both as in force.
+A notch, an antenna, pads or direct sampling on a board without them is refused. A pad value between steps is taken to the nearest, or refused with `strict`. The config keeps what you asked for, and the tune result reports what is in force.
 
 `mirisdr_get_frontend_caps()` says what a tuner's front end has, so a program can offer only that: the notches, the antennas and which is a Hi-Z input, the bias-T, direct sampling, the amplifier (from which frequency, and its gain in its best band), the pad values, the flags and the raw parts. It does not change while the device is open. What depends on the frequency comes with a tune result, and `mirisdr_tune_check()` says what a given tune would get.
 
@@ -193,7 +194,7 @@ for (int k = 0; k < caps.attenuator_count; k++)
     printf("%d dB\n", caps.attenuator[k]);
 ```
 
-`mirisdr_set_bias()`, `mirisdr_set_notch()` and `mirisdr_set_antenna()` still work. They change this part of the tune in force and apply it.
+`mirisdr_set_bias()`, `mirisdr_set_notch()` and `mirisdr_set_antenna()` still work. They change this part of the tune in force and apply it. Like the other single setters they act on the stream's first tuner. On the RSPduo that is tuner 0 unless tuner 1 is streamed alone, and only tuner 1 has the bias-T, so there `mirisdr_set_bias(p, 1)` is refused by default: set `frontend.bias` in tuner 1's tune instead.
 
 The RSP1B and RSPdx-R2 choose their filters from the frequency. The RSPdx-R2 uses its 500 kHz low pass only when the tuner's whole filter band fits under 500 kHz, so with a low IF and a narrow filter. Otherwise it uses the 2 MHz low pass.
 
@@ -235,16 +236,13 @@ The gain goes with the tune, in `tc.gain`. Its `mode` decides what happens.
 
 The stages:
 
-  - `amp_bypass`: the board's amplifier before the tuner, from 55 MHz up. 0 keeps it in, 1 bypasses it. `MIRISDR_GAIN_TOTAL` turns it on first, and bypasses it only for a total below its own gain. Other boards and bands have none: they report 0.
-    - RSPduo (not on the Hi-Z): about 25 dB up to 108 MHz, 24 to 250 MHz, 22 to 420 MHz, 20 to 960 MHz and 17 in L band.
-    - RSPdx-R2: about 24 dB up to 108 MHz, 25 to 250 MHz, 24 to 420 MHz, 21 to 960 MHz and 15 in L band.
-    - RSP1B: about 25 dB up to 250 MHz, 24 to 420 MHz, 23 to 960 MHz and 19 in L band.
+  - `amp_bypass`: the board's amplifier before the tuner, on the RSP1B, RSPdx-R2 and RSPduo. 0 keeps it in, 1 bypasses it. Its gain in the band, up to about 25 dB, counts in the total, and `mirisdr_get_frontend_caps()` says from which frequency it is there (30 MHz on the RSP1B and RSPdx-R2, 55 MHz on the RSPduo, not on its Hi-Z). `MIRISDR_GAIN_TOTAL` turns it on first, and bypasses it only for a total below its own gain. Elsewhere there is none, and the result reports 0.
   - `lna`: on or off. It adds 24 dB on most bands, 7 dB in band IV/V and about 4 dB in L band. The AM inputs have none.
   - `mixer`: on or off. It adds 19 dB.
   - `mixbuffer`: only on the AM inputs. 0, 6, 12 or 18 dB on AM1, 0 or 24 dB on AM2.
   - `baseband`: 0 to 59 dB.
 
-The total therefore goes from 0 to 102 dB on most bands, plus the board's amplifier from 55 MHz on the RSP1B, RSPdx-R2 and RSPduo. `mirisdr_set_tuner_gain()` switches that amplifier too. The tune result reports the stages and the total in force. There is no automatic gain control.
+The total therefore goes from 0 to 102 dB on most bands, plus the board's amplifier where there is one. `mirisdr_set_tuner_gain()` switches that amplifier too. The tune result reports the stages and the total in force. There is no automatic gain control.
 
 
 <h3>The stream</h3>
@@ -278,6 +276,7 @@ printf("%u samples/s as %s, %u bytes/s on the USB\n", sr.rate, sr.format, sr.usb
   - `usb_capacity`: the bytes per second the automatic format may plan on. 0 is the default.
   - `baseband`: deliver complex float with the tune's frequency at 0 Hz, at any IF. This has its own section below.
   - `tuners`: the tuners to stream, bit n for tuner n. 0 means tuner 0 alone. The RSPduo also takes 2 (tuner 1 alone) and 3 (both). See Two tuners below.
+  - `strict`: 0 (the default) takes a rate out of reach to the nearest one there is, and the stream result says what is in force. That covers a rate outside the converters' range for the decimation setting, past the receiver's limit for the format, or outside the span a baseband IF takes. With 1 such a rate is refused instead. Either way a combination the receiver cannot do is refused: a rate past an isochronous mode's reservation, an unknown name, two tuners without baseband, and so on. A tune that changes the IF of a baseband stream still takes the rate to the nearest the new IF has, as below.
 
 <h4>Sample formats</h4>
 
@@ -307,9 +306,9 @@ The USB data rate is `rate x 1024 / samples per packet` bytes a second. Complex 
 | `ISOC1` | 8.192 MB/s | about 4 Msps |
 | `BULK` | what the computer manages | about 27.5 Msps |
 
-Isochronous transfers reserve their bandwidth on the USB, so their capacity is a hard limit. A rate that does not fit is refused.
+Isochronous transfers reserve their bandwidth on the USB, so their capacity is a hard limit. A rate that does not fit is refused, with or without `strict`.
 
-Bulk transfers take whatever the computer gives them. The automatic format plans on 32 MB/s in bulk, which every computer tried so far reaches. Above that it still accepts the rate and uses the 8-bit format. If the computer cannot keep up, samples go missing and show up as gaps. Only the receiver's own limit of about 56 MB/s is refused. Set `usb_capacity` if you know your computer does better or worse than 32 MB/s.
+Bulk transfers take whatever the computer gives them. The automatic format plans on 32 MB/s in bulk, which every computer tried so far reaches. Above that it still accepts the rate and uses the 8-bit format. If the computer cannot keep up, samples go missing and show up as gaps. Only the receiver's own limit of about 56 MB/s applies: a rate past it is taken down to it, or refused with `strict`. Set `usb_capacity` if you know your computer does better or worse than 32 MB/s.
 
 <h4>Decimation bypass</h4>
 
@@ -398,7 +397,7 @@ At zero IF the receiver's lowest rate is 1.3 Msps, and the LO and the DC offset 
   - With one converter (`iq` set to `MIRISDR_IQ_ONLY_I` or `_ONLY_Q` in the tune) a real to I/Q converter makes complex samples at half the rate, shifted the same way. This halves the USB data and keeps more bits at high rates, but costs more CPU.
   - When the converters run at 4 times the IF, that shift puts the band at 0 Hz. At any other converter rate an NCO, a frequency shift in software, takes it the rest of the way. The NCO is skipped at 4 times the IF.
   - Half-band filters then halve the rate as many times as needed. The last is flat to 0.4 of its output rate and 63 dB down from 0.6. The ones before it only keep aliases out of that band, so they are shorter and cheaper.
-  - Where halving does not reach the rate exactly, a resampler makes the rest, a ratio between 1 and 2. It is a windowed sinc, flat to 0.4 of the output rate and 63 dB down from 0.6, as the last half-band. It keeps exact time: output m lies exactly m × `decimation` converter samples after output 0.
+  - Where halving does not reach the rate exactly, a resampler makes the rest, a ratio between 1 and 2. It is a windowed sinc, flat to 0.4 of the output rate and 63 dB down from 0.6, as the last half-band. It keeps exact time: output m lies exactly m × `decimation` converter samples after output 0. A setting that restarts the stream starts the filters and the resampler again: the output being filled is dropped and counted as lost, and from the restart on output m lies m × `decimation` converter samples after the first one after it, give or take one converter sample of the resampler's phase.
 
 The image rejection is the tuner's own, about 37 dB, with one converter or both.
 
@@ -428,7 +427,7 @@ The rates below need neither the resampler nor the NCO, so they cost the least C
 
 With one converter, the same rates divided by 2 at least. The 2048 kHz IF has none: 4 times it is 8.192 Msps, past the receiver's best, so it runs at 6.7584 Msps with the NCO. Only an output of 8192000 (4096000 with one converter) still takes the converters to 8.192 Msps, as nothing lower delivers it. The 1620 kHz IF has the same filters at a lower rate, so prefer it. For example 250 ksps at 450 kHz runs the converters at 1.8 Msps with a decimation of 7.2, and 1 Msps at 2048 kHz runs them at 6.7584 Msps with the NCO and a decimation of 6.7584. `adc_rate` in the stream result says what they run at.
 
-The USB limits still apply to the converter rate. A rate outside the IF's span is refused, with a message that gives the span.
+The USB limits still apply to the converter rate. A rate outside the IF's span is taken to its nearest end. With `strict` it is refused, with a message that gives the span.
 
 A tune that changes the IF while the stream runs keeps the rate if the new IF has it, and otherwise moves it to the nearest end of the new IF's span. Check `mirisdr_get_stream()` afterwards.
 
@@ -448,7 +447,7 @@ A tune that changes the IF while the stream runs keeps the rate if the new IF ha
   - The LO moves one IF above `frequency` when the stream starts. Set `low_if_auto` in the tune and it is there from the start, and the tune result shows the right LO.
   - Buffer information counts output samples. Gaps are placed to within the filters' delay. Stream statistics, stream events, PPS and scan reports still count converter samples. Add `group_delay` and divide by `decimation` to compare.
   - Gap fill is always on, because the filters need the timing. A gap longer than gap fill covers still makes the time line jump.
-  - `swap_iq` still mirrors the spectrum.
+  - `swap_iq` still mirrors the spectrum with both outputs. With one output it picks the converter. Two tuners refuse it.
   - A buffer length given to `mirisdr_read_async()` is in output bytes, 8 bytes for each complex sample.
   - `mirisdr_read_sync()` refuses baseband.
   - The processing runs in the callback's thread. On a Raspberry Pi Compute Module 0 (one core at 1 GHz) the 450 kHz IF needs little. Rates off the table above add the resampler: 250 ksps at 450 kHz runs at 10 times real time, 1 Msps at 1620 kHz at 2.9 times and 3 Msps at 2 times. 1 Msps at 2048 kHz, with the NCO too, runs at about 1.9 times.
@@ -467,7 +466,7 @@ The stream config's `tuners` picks what is streamed:
 
 With both, the library runs two baseband chains, one per converter, each the one output path. Each takes its tuner's IF to 0 Hz, so both deliver complex float at the stream's rate. The callback gets each tuner's buffers labelled in `tuner`: tuner 0's buffer, then tuner 1's for the same stretch, with the same `sample` positions. The stream result reports `MIRISDR_BASEBAND_DUAL` and `tuners` 3.
 
-The two tuners may use different IFs. The converters then run at the rate the higher one needs, and each chain takes its own IF the rest of the way with the NCO. The rate has to suit both IFs: from the higher of their lowest rates up to the lower of their highest, which is the one output span of each (450 kHz IF: up to 900 ksps, 1620 kHz: up to 3.24 Msps).
+The two tuners may use different IFs. The converters then run at the rate the higher one needs, and each chain takes its own IF the rest of the way with the NCO. The rate has to suit both IFs: from the higher of their lowest rates (the table above) up to half the converters' most, as with one output. Above twice a tuner's IF its filter leaves nothing more to see (450 kHz IF: 900 ksps, 1620 kHz: 3.24 Msps). A rate outside that is taken to its nearest end, or refused with `strict`.
 
 Things to know:
 
@@ -531,7 +530,8 @@ The comments in `mirisdr.h` describe the timing in detail.
 The library follows rtl-sdr's model. A device has no lock around its calls, so the threads that use it share the work as follows:
 
   - **One control thread.** Tuning, gain, rate, format and the other settings, scans, GPIO, EEPROM, UART, I2C and register access all come from one thread at a time. Several of them are made of a sequence of USB requests, and the library keeps the registers it last wrote in a cache. Two control threads at once interleave those requests and let the cache go out of date. If your program has more than one thread that changes settings, hold a lock of your own around these calls.
-  - **The stream thread** is the one inside `mirisdr_read_async()`. It calls your callback.
+  - **The stream thread** is the one inside `mirisdr_read_async()`. It calls your callback. While a setting restarts the stream, the control thread waits for the transfers under way to come back, and the callback can then run on the control thread, inside that setting's call, for the buffers they carry. Do not hold a lock in the callback that the control thread holds around its settings, or take a recursive one.
+  - **The stream event callback** runs under a lock of the library's: once `mirisdr_set_stream_events()` returns, the old callback no longer runs, and the callback and its context always go together.
   - **From the callback**, call only `mirisdr_cancel_async()` and the calls that read the stream: `mirisdr_get_buffer_info()`, `mirisdr_get_stream_stats()` and `mirisdr_get_stream()`. A setting changed from the callback would have to stop the stream, which waits for the callback that is asking it to.
   - **`mirisdr_cancel_async()`** may come from any thread at any time, also while the control thread changes a setting that restarts the stream.
   - **`mirisdr_scan_feed()`** runs in its own thread, next to the stream and the control thread, as described under Scanning.

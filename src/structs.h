@@ -25,7 +25,9 @@ typedef struct mirisdr_device {
     int                 flavour;        /* mirisdr_hw_flavour_t picked by MIRISDR_HW_AUTO */
 } mirisdr_device_t;
 
-/* the lock on the transfers, recursive: a stop's drain runs callbacks, which may stop */
+/* the lock on the transfers, recursive: a stop holds it while it frees and allocates them
+   (start_async_held), and the run's finish while it drains. The events' lock, recursive
+   so the event callback may change the callback */
 #if defined(_WIN32)
 typedef CRITICAL_SECTION mirisdr_lock_t;
 #else
@@ -110,6 +112,7 @@ struct mirisdr_dev {
     int                 gain_reduction_amp; /* the board's amplifier before the tuner bypassed */
     int                 amp_db;             /* that amplifier's gain in the band in force, 0 none */
     int                 attenuator;         /* dB of the board's pad, 0 none (frontend) */
+    uint8_t             gpio_hold;          /* the open config's gpio_input_mask */
     uint32_t            fe_flags;           /* frontend.flags in force: the board's, not a tuner's */
     int                 lna_cal_mhz;        /* the L-band LNA was last calibrated for this, 0 none */
     int                 lna_cal_run;        /* this tune is the calibration one */
@@ -186,11 +189,13 @@ struct mirisdr_dev {
     uint32_t            bb_if;          /* Hz, the low IF the stream was planned for: the NCO's */
     uint32_t            bb_if2;         /* Hz, tuner 1's IF with two tuners (MIRISDR_BASEBAND_DUAL) */
     int                 bb_ds;          /* bb_if is a directly sampled frequency, not mirrored */
+    int                 bb_filling;     /* the samples on their way are gap fill's zeros */
     mirisdr_read_async_cb_t cb;
     void                *cb_ctx;
     size_t              xfer_buf_num;
     int                 xfer_inflight;  /* transfers submitted and not yet completed */
     int                 xfer_draining;  /* completions must not resubmit */
+    int                 xfer_abandoned; /* a run gave up on xfer while some were in flight */
     struct libusb_transfer **xfer;
     mirisdr_lock_t      xfer_lock;      /* held by whatever uses or frees xfer from more than
                                            one thread: a stop, a restart, the run's last drain */
@@ -253,7 +258,13 @@ struct mirisdr_dev {
     int                 sync_pos;
     int                 sync_xlen;      /* next read length, short once to shift the grid */
     int64_t             pps_base;       /* stream index where the packet count was zeroed */
-    uint64_t            pps_lost0;
+    uint64_t            pps_gaps0;      /* stats.gaps at the anchor */
+    /* the stream's count as of its last block header, for the control thread: count_seq odd
+       while the stream thread writes them, so a reader sees all three of one block */
+    int                 count_seq;
+    uint64_t            count_index;    /* stats.samples + stats.lost */
+    uint32_t            count_addr;     /* addr */
+    uint64_t            count_gaps;
     uint8_t             pps_edge0;
     uint8_t             pps_stale;      /* the latched edge predates the anchor */
     uint32_t            pps_irq_last;
@@ -281,8 +292,9 @@ struct mirisdr_dev {
     uint8_t             ir_partial;     /* pulse beginning was missing */
     mirisdr_ir_cb_t     ir_cb;
     void                *ir_ctx;
-    mirisdr_stream_event_cb_t ev_cb;
+    mirisdr_stream_event_cb_t ev_cb;    /* with ev_ctx under ev_lock, a pair */
     void                *ev_ctx;
+    mirisdr_lock_t      ev_lock;
     uint16_t            ev_last;        /* the previous packet's header bytes 4-5 */
     uint8_t             ev_valid;       /* ev_last holds a packet of this stream */
     uint8_t             ev_missed;      /* packets were lost since ev_last */
@@ -293,12 +305,12 @@ struct mirisdr_dev {
     uint32_t            rec_max;
     const struct mirisdr_scan *scan;    /* running */
     volatile int        scan_on;        /* the stream side follows it */
-    uint32_t            scan_total;     /* chunks to load, 0 forever */
-    uint32_t            scan_loaded;    /* chunks loaded so far */
+    uint64_t            scan_total;     /* chunks to load, 0 forever */
+    uint64_t            scan_loaded;    /* chunks loaded so far */
     volatile uint32_t   scan_restarts;  /* the list ran dry and was loaded again */
     uint32_t            scan_restarts_seen;
     uint32_t            scan_burst;     /* packets per stream interrupt */
-    uint32_t            scan_g;         /* stream side: chunks seen, counting the marks */
+    uint64_t            scan_g;         /* stream side: chunks seen, counting the marks */
     uint32_t            scan_in;        /* tune events seen in the chunk */
     uint8_t             scan_flags;     /* for the next report */
     mirisdr_scan_cb_t   scan_cb;
@@ -361,10 +373,14 @@ struct mirisdr_dev {
 #define MIRISDR_HW_EXPANDER(f)  (((f) == MIRISDR_HW_RSP1B) || ((f) == MIRISDR_HW_RSPDXR2) || ((f) == MIRISDR_HW_RSPDUO))
 
 #if defined(_WIN32)
-static void mirisdr_xfer_lock_init (mirisdr_dev_t *p)    { InitializeCriticalSection(&p->xfer_lock); }
-static void mirisdr_xfer_lock_destroy (mirisdr_dev_t *p) { DeleteCriticalSection(&p->xfer_lock); }
+static void mirisdr_xfer_lock_init (mirisdr_dev_t *p)    { InitializeCriticalSection(&p->xfer_lock);
+                                                           InitializeCriticalSection(&p->ev_lock); }
+static void mirisdr_xfer_lock_destroy (mirisdr_dev_t *p) { DeleteCriticalSection(&p->xfer_lock);
+                                                           DeleteCriticalSection(&p->ev_lock); }
 static void mirisdr_xfer_lock (mirisdr_dev_t *p)         { EnterCriticalSection(&p->xfer_lock); }
 static void mirisdr_xfer_unlock (mirisdr_dev_t *p)       { LeaveCriticalSection(&p->xfer_lock); }
+static void mirisdr_ev_lock (mirisdr_dev_t *p)           { EnterCriticalSection(&p->ev_lock); }
+static void mirisdr_ev_unlock (mirisdr_dev_t *p)         { LeaveCriticalSection(&p->ev_lock); }
 #else
 static void mirisdr_xfer_lock_init (mirisdr_dev_t *p)
 {
@@ -373,11 +389,15 @@ static void mirisdr_xfer_lock_init (mirisdr_dev_t *p)
     pthread_mutexattr_init(&a);
     pthread_mutexattr_settype(&a, PTHREAD_MUTEX_RECURSIVE);
     pthread_mutex_init(&p->xfer_lock, &a);
+    pthread_mutex_init(&p->ev_lock, &a);
     pthread_mutexattr_destroy(&a);
 }
-static void mirisdr_xfer_lock_destroy (mirisdr_dev_t *p) { pthread_mutex_destroy(&p->xfer_lock); }
+static void mirisdr_xfer_lock_destroy (mirisdr_dev_t *p) { pthread_mutex_destroy(&p->xfer_lock);
+                                                           pthread_mutex_destroy(&p->ev_lock); }
 static void mirisdr_xfer_lock (mirisdr_dev_t *p)         { pthread_mutex_lock(&p->xfer_lock); }
 static void mirisdr_xfer_unlock (mirisdr_dev_t *p)       { pthread_mutex_unlock(&p->xfer_lock); }
+static void mirisdr_ev_lock (mirisdr_dev_t *p)           { pthread_mutex_lock(&p->ev_lock); }
+static void mirisdr_ev_unlock (mirisdr_dev_t *p)         { pthread_mutex_unlock(&p->ev_lock); }
 #endif
 
 /* A change of the stream state that depends on the state it leaves is one compare
@@ -401,6 +421,12 @@ static int mirisdr_atomic_xchg (int *at, int v)
 {
     return (int) _InterlockedExchange((volatile long *) at, v);
 }
+
+/* adds d, returns the new value, d 0 reads it */
+static int mirisdr_atomic_add (int *at, int d)
+{
+    return (int) _InterlockedExchangeAdd((volatile long *) at, d) + d;
+}
 #else
 static int mirisdr_async_get (mirisdr_dev_t *p)
 {
@@ -418,5 +444,11 @@ static int mirisdr_async_move (mirisdr_dev_t *p, int from, int to)
 static int mirisdr_atomic_xchg (int *at, int v)
 {
     return __atomic_exchange_n(at, v, __ATOMIC_SEQ_CST);
+}
+
+/* adds d, returns the new value, d 0 reads it */
+static int mirisdr_atomic_add (int *at, int d)
+{
+    return __atomic_add_fetch(at, d, __ATOMIC_SEQ_CST);
 }
 #endif

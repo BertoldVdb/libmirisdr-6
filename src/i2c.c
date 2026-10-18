@@ -51,12 +51,12 @@ int mirisdr_set_i2c_rate (mirisdr_dev_t *p, uint32_t hz)
     return 0;
 }
 
-static int mirisdr_i2c_status (mirisdr_dev_t *p)
+/* ms: the bits of a write still going out, which this request waits for */
+static int mirisdr_i2c_status (mirisdr_dev_t *p, unsigned int ms)
 {
     uint8_t st;
 
-    if (libusb_control_transfer(p->dh, 0xC0, CMD_I2C_STATUS, 0, 0, &st, 1,
-                                CTRL_TIMEOUT) != 1) return -1;
+    if (libusb_control_transfer(p->dh, 0xC0, CMD_I2C_STATUS, 0, 0, &st, 1, ms) != 1) return -1;
 
     return st;
 }
@@ -78,7 +78,8 @@ static int mirisdr_i2c_xfer (mirisdr_dev_t *p, uint8_t addr, unsigned int flags,
                                 (uint16_t) (addr | (flags << 8)), p->i2c_delay,
                                 buf, (uint16_t) len, ms) != len) return -1;
 
-    return mirisdr_i2c_status(p);
+    /* a write's bits go out after its status stage, so the status waits for them */
+    return mirisdr_i2c_status(p, in ? CTRL_TIMEOUT : ms);
 }
 
 int mirisdr_i2c_write (mirisdr_dev_t *p, uint8_t addr, unsigned int flags,
@@ -102,7 +103,8 @@ int mirisdr_i2c_recover (mirisdr_dev_t *p)
     if (libusb_control_transfer(p->dh, 0x40, CMD_I2C_RECOVER, 0, p->i2c_delay,
                                 NULL, 0, CTRL_TIMEOUT) < 0) return -1;
 
-    return mirisdr_i2c_status(p);
+    /* nine clocks and a stop */
+    return mirisdr_i2c_status(p, (unsigned int) ((uint64_t) 11 * p->i2c_clock_ns / 1000000) + CTRL_TIMEOUT);
 }
 
 /* Standard write-repeated-start-read i2c transaction */
@@ -115,8 +117,9 @@ int mirisdr_i2c_transfer (mirisdr_dev_t *p, uint8_t addr,
 
         if (st || !inlen)
         {
-            /* only a write held open for the read can be left stuck */
-            if ((st > 0) && inlen) mirisdr_i2c_recover(p);
+            /* only a write held open for the read can be left stuck, also when the request
+               itself failed */
+            if (st && inlen) mirisdr_i2c_recover(p);
 
             return st;
         }

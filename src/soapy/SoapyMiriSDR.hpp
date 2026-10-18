@@ -1,5 +1,6 @@
 /*
- * SoapySDR module for libmirisdr: MSi2500/MSi001 receivers and the SDRplay RSP1B and RSPdx-R2.
+ * SoapySDR module for libmirisdr: MSi2500/MSi001 receivers and the SDRplay RSP1B, RSPdx-R2 and
+ * RSPduo.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -112,6 +113,7 @@ public:
 
     /* called from the library's stream thread */
     void rxCallback(unsigned char *buf, uint32_t len);
+    void rxFailed(void);
 
 private:
     struct Gap
@@ -166,9 +168,9 @@ private:
 
     /* stream */
     std::thread rxThread;
-    std::atomic<bool> stopping, rxDone;
+    std::atomic<bool> stopping, rxDone, rxEnded;    /* rxEnded: read_async returned unasked */
     std::atomic<int> rxResult;
-    int outFormat;          /* 0 CS16, 1 CF32, 2 CS8 */
+    int outFormat;          /* OUT_*: CS16, CF32, CS8, S16 or F32 */
     std::mutex ringMutex;
     std::condition_variable ringCond;
     std::vector<Slot> ring;
@@ -176,7 +178,7 @@ private:
     bool dropPending;
     bool pairOpen;          /* two tuners: the slot at ringTail has tuner 0's half */
     size_t slotPos, gapPos;
-    long long timeOffsetNs;
+    std::atomic<long long> timeOffsetNs;
     std::atomic<long long> lastIndex;
     std::atomic<uint32_t> lastRate;
     /* the index counts samples at the rate of each part: time up to the last rate change */
@@ -186,14 +188,15 @@ private:
     int chanOrder[2];       /* the stream's buffers: channel of each, -1 none */
 
     /* the tuner the call in progress acts on, its channel's: the device-wide settings
-       act on tuner 0 */
+       act on tuner 0, but for biastee (channel 1's port) and port_tie and ref_out (the
+       streamed tuner's tune carries them) */
     mutable int tunerSel;
     int chanOf(size_t channel) const;
     int streamTuners(void) const { return streamCfg.tuners ? streamCfg.tuners : 1; }
     bool oneOut(void) const { return converters != MIRISDR_IQ_BOTH || streamTuners() == 3; }
 
-    void applyStream(const mirisdr_stream_config_t &cfg);
-    void configure(uint32_t rate);
+    bool applyStream(const mirisdr_stream_config_t &cfg, bool strict = false);
+    bool configure(uint32_t rate);
     bool realOut(void) const;
     std::vector<uint32_t> lowIfRates(uint32_t ifHz) const;
     void lowIfRange(uint32_t ifHz, uint32_t &lo, uint32_t &hi) const;
@@ -201,6 +204,7 @@ private:
     void applyTune(const mirisdr_tune_config_t &cfg);
     StageRanges stageRanges(void) const;
     SoapySDR::ArgInfo attenuatorInfo(void) const;
+    void notchInfo(SoapySDR::ArgInfoList &list, bool device) const;
     std::vector<uint32_t> bandwidthsFor(uint32_t ifHz) const;
     uint32_t pickBandwidth(uint32_t ifHz) const;
     void probeRanges(void);

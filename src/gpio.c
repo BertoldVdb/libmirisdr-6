@@ -36,12 +36,18 @@
 /* The RSPdx-R2's direct sampling switch: high puts the antenna on the I converter */
 #define DS_GPIO 2
 
+/* The word before the pins the application holds: the plan's, with the bias and the
+   direct sampling switch driven high. A raw GPIO word from the tune decides these too */
+static uint32_t mirisdr_reg8_plan (mirisdr_dev_t *p)
+{
+    return p->reg8 | ((p->fe_raw & MIRISDR_FRONTEND_RAW_GPIO) ? 0 :
+           ((p->bias && !MIRISDR_HW_EXPANDER(p->hw_flavour)) ? (1 << (BIAS_GPIO + 8)) : 0) |
+           (p->ds ? (1 << (DS_GPIO + 8)) : 0));
+}
+
 static int update_reg_8 (mirisdr_dev_t *p)
 {
-    /* a raw GPIO word from the tune decides these too */
-    uint32_t val = p->reg8 | ((p->fe_raw & MIRISDR_FRONTEND_RAW_GPIO) ? 0 :
-                   ((p->bias && !MIRISDR_HW_EXPANDER(p->hw_flavour)) ? (1 << (BIAS_GPIO + 8)) : 0) |
-                   (p->ds ? (1 << (DS_GPIO + 8)) : 0));
+    uint32_t val = mirisdr_reg8_plan(p);
     unsigned int pin;
 
     for (pin = 0; pin < MIRISDR_GPIO_COUNT; pin++)
@@ -64,18 +70,22 @@ static void mirisdr_gpio_hold_input (mirisdr_dev_t *p, uint8_t mask)
 
     mask&= (1 << MIRISDR_GPIO_COUNT) - 1;
 
+    p->gpio_hold|= mask;
     p->gpio_mask|= mask;
     p->gpio_dir&= ~mask;
     p->gpio_val&= ~mask;
 }
 
+/* from what the pin does now, so taking it over changes nothing yet */
 static void mirisdr_gpio_claim (mirisdr_dev_t *p, unsigned int pin)
 {
+    uint32_t w = mirisdr_reg8_plan(p);
+
     if (p->gpio_mask & (1 << pin)) return;
 
     p->gpio_mask|= 1 << pin;
-    if (p->reg8 & (1 << (pin + 12))) p->gpio_dir|= 1 << pin;
-    if (p->reg8 & (1 << (pin + 8)))  p->gpio_val|= 1 << pin;
+    if (w & (1 << (pin + 12))) p->gpio_dir|= 1 << pin;
+    if (w & (1 << (pin + 8)))  p->gpio_val|= 1 << pin;
 }
 
 int mirisdr_set_gpio_direction (mirisdr_dev_t *p, unsigned int pin, int output)
@@ -98,7 +108,7 @@ int mirisdr_get_gpio_direction (mirisdr_dev_t *p, unsigned int pin)
 
     if (p->gpio_mask & (1 << pin)) return (p->gpio_dir >> pin) & 1;
 
-    return (p->reg8 >> (pin + 12)) & 1;
+    return (mirisdr_reg8_plan(p) >> (pin + 12)) & 1;
 }
 
 int mirisdr_set_gpio_outputs (mirisdr_dev_t *p, unsigned int mask, unsigned int levels)
@@ -135,7 +145,7 @@ int mirisdr_get_gpio_output (mirisdr_dev_t *p, unsigned int pin)
 
     if (p->gpio_mask & (1 << pin)) return (p->gpio_val >> pin) & 1;
 
-    return (p->reg8 >> (pin + 8)) & 1;
+    return (mirisdr_reg8_plan(p) >> (pin + 8)) & 1;
 }
 
 int mirisdr_get_gpio_inputs (mirisdr_dev_t *p)

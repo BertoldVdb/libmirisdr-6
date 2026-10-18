@@ -151,11 +151,13 @@ static void mirisdr_feed_converted (mirisdr_dev_t *p, unsigned char *samples, ui
             p->fed_bytes += p->fills[i].off - at;
             at = p->fills[i].off;
         }
+        p->bb_filling = 1;
         for (z = (uint64_t) p->fills[i].n * ub; z; z -= k) {
             k = z > sizeof zeros ? (uint32_t) sizeof zeros : (uint32_t) z;
             mirisdr_feed_async(p, zeros, k);
             p->fed_bytes += k;
         }
+        p->bb_filling = 0;
     }
     if (bytes > at) {
         mirisdr_feed_async(p, samples + at, bytes - at);
@@ -224,7 +226,9 @@ static void mirisdr_bulk_slip (mirisdr_dev_t *p)
     }
 }
 
-static int mirisdr_parse_bulk (mirisdr_dev_t *p, const uint8_t *src, int n, uint8_t *dst)
+/* want: the length the transfer asked for. One that came in whole ends on the grid, so its
+   last block is taken without its successor's stamp */
+static int mirisdr_parse_bulk (mirisdr_dev_t *p, const uint8_t *src, int n, int want, uint8_t *dst)
 {
     uint8_t *st = p->bulk_carry;
     int out = 0, pos = 0, k, c, h, l;
@@ -260,7 +264,7 @@ static int mirisdr_parse_bulk (mirisdr_dev_t *p, const uint8_t *src, int n, uint
     while (pos + 1024 <= n) {
         if (pos + 1024 + 12 > n) {
             /* the last block, its successor in the next transfer */
-            if (!p->bulk_lost && pos + 1024 == n && n == DEFAULT_BULK_BUFFER && mirisdr_bulk_stamped(src + pos)) {
+            if (!p->bulk_lost && pos + 1024 == n && n == want && mirisdr_bulk_stamped(src + pos)) {
                 out += mirisdr_convert_bulk(p, (uint8_t *) src + pos, dst + out, 1024);
                 pos += 1024;
             }
@@ -308,7 +312,8 @@ static int mirisdr_bulk_phase (mirisdr_dev_t *p, const uint8_t *b, int n)
 {
 	int k;
 
-	if (n < 3 * 1024) return -1;
+	/* the counter's last read is 4 bytes at k + 2048, k up to 1023 */
+	if (n < 3 * 1024 + 3) return -1;
 
 	/* The stamp settles it outright: two of them a block apart cannot be
 	   sample data. */
@@ -370,7 +375,7 @@ static int mirisdr_async_drain (mirisdr_dev_t *p, int rounds) {
     int r;
     struct timeval tv = {1, 0};
     p->xfer_draining = 1;
-    while (p->xfer_inflight > 0) {
+    while (mirisdr_atomic_add(&p->xfer_inflight, 0) > 0) {
         if (rounds-- <= 0) return -1;
         for (i = 0; i < p->xfer_buf_num; i++)
             if (p->xfer[i]) libusb_cancel_transfer(p->xfer[i]);
@@ -403,6 +408,13 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
     uint8_t *samples;
 
     if (!p) return;
+
+    /* back after its run gave up on it: the callback and its buffers are not this one's */
+    if (p->xfer_abandoned) {
+        mirisdr_atomic_add(&p->xfer_inflight, -1);
+        return;
+    }
+
     samples = p->samples;
 
     /* only a completed transfer is processed */
@@ -426,7 +438,7 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
                     /* buffer_simple is only for packets of the same size */
                     if ((packet->actual_length > 0) &&
                         (iso_packet_buf = libusb_get_iso_packet_buffer_simple(xfer, i))) {
-                        /* less than 3072 is fine as a multiple of 1024, anything else is an error */
+                        /* less than 3072 is fine as a multiple of 1024, a partial 1024 is dropped */
                         len = mirisdr_samples_convert_252_s16(p, iso_packet_buf, samples + bytes, packet->actual_length);
                         bytes+= len;
                     }
@@ -514,7 +526,7 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
         case LIBUSB_TRANSFER_TYPE_BULK:
             if (!(samples = samples_realloc(p, (DEFAULT_BULK_BUFFER / 1024 + 2) * MIRISDR_BLOCK_OUT_MAX))) goto failed;
             if (p->fw_ours)
-                bytes = mirisdr_parse_bulk(p, xfer->buffer, xfer->actual_length, samples);
+                bytes = mirisdr_parse_bulk(p, xfer->buffer, xfer->actual_length, xfer->length, samples);
             else
                 bytes = mirisdr_convert_bulk(p, xfer->buffer, samples, xfer->actual_length);
             break;
@@ -585,11 +597,11 @@ static void LIBUSB_CALL _libusb_callback (struct libusb_transfer *xfer) {
 
 done:
     /* back for good: only now, so a drain elsewhere waits until this is through */
-    p->xfer_inflight--;
+    mirisdr_atomic_add(&p->xfer_inflight, -1);
     return;
 
 failed:
-    p->xfer_inflight--;
+    mirisdr_atomic_add(&p->xfer_inflight, -1);
     mirisdr_async_fail(p);
 }
 
@@ -602,9 +614,9 @@ int mirisdr_cancel_async (mirisdr_dev_t *p) {
     for (;;) {
         switch (s = mirisdr_async_get(p)) {
         case MIRISDR_ASYNC_CANCELING:
-            return 0;           /* already on its way: as asked */
-        case MIRISDR_ASYNC_INACTIVE:
         case MIRISDR_ASYNC_FAILED:
+            return 0;           /* already on its way out: as asked */
+        case MIRISDR_ASYNC_INACTIVE:
             goto failed;        /* not -2, which is MIRISDR_REOPEN */
         }
 
@@ -835,11 +847,13 @@ static int mirisdr_async_finish (mirisdr_dev_t *p) {
          * for them for ever -- that hangs the caller's stream thread. Give
          * up after a few seconds and leave without freeing: the transfers
          * are still owned by libusb, and freeing an in-flight transfer
-         * corrupts memory. libusb_close()/libusb_exit() in mirisdr_close()
-         * cleans up from here. */
+         * corrupts memory. The next run tries them again, and refuses to
+         * start while they are out, and mirisdr_close() frees them once the
+         * handle has taken them off libusb's list. */
         if (mirisdr_async_drain(p, 5) < 0) {
             fprintf(stderr, "libmirisdr: transfers would not cancel, "
                             "abandoning them\n");
+            p->xfer_abandoned = 1;
             r = -1;
         }
         /* every completion is in: nothing of ours is on libusb's list */
@@ -930,6 +944,24 @@ static int mirisdr_read_async_run (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb,
     if (!p) goto failed;
     if (!p->dh) goto failed;
 
+    /* a run before gave up on its transfers: they are made for its count and sizes, and
+       are reused only once all of them are back */
+    if (p->xfer_abandoned) {
+        /* still marked while they come in, so they are only counted */
+        mirisdr_xfer_lock(p);
+        if ((r = mirisdr_async_drain(p, 2)) == 0) {
+            mirisdr_async_free(p);
+            p->xfer_abandoned = 0;
+        }
+        mirisdr_xfer_unlock(p);
+
+        if (r < 0) {
+            fprintf(stderr, "libmirisdr: the transfers of the last stream are still out, "
+                            "no stream until the device is closed\n");
+            goto failed;
+        }
+    }
+
     p->cb = cb;
     p->cb_ctx = ctx;
 
@@ -949,6 +981,8 @@ static int mirisdr_read_async_run (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb,
     }
 #endif
     memset(&p->stats, 0, sizeof(p->stats));
+    p->count_index = p->count_gaps = 0;
+    p->count_addr = 0;
     p->sync_run = 0;
     p->addr_valid = 0;
     p->bulk_carry_n = 0;
@@ -979,16 +1013,20 @@ static int mirisdr_read_async_run (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb,
         if (r < 0) {
             fprintf(stderr, "Failed to submit transfer %lu reason: %d\n", i, r);
             /* the ones before it are in flight: get them back first */
-            if (mirisdr_async_drain(p, 5) < 0) goto failed;
+            if (mirisdr_async_drain(p, 5) < 0) { p->xfer_abandoned = 1; goto failed; }
             goto failed_free;
         }
-        p->xfer_inflight++;
+        mirisdr_atomic_add(&p->xfer_inflight, 1);
     }
 
-    /* start streaming; a cancel while starting has made it canceling */
+    /* start streaming. A cancel while starting has made it canceling. Not started: the
+       transfers come back through the failed state's drain */
     p->xfer_draining = 0;
     mirisdr_iso_settle(p);
-    mirisdr_streaming_start(p);
+    if (mirisdr_streaming_start(p) < 0) {
+        fprintf(stderr, "libmirisdr: the stream would not start\n");
+        mirisdr_async_fail(p);
+    }
     mirisdr_async_move(p, MIRISDR_ASYNC_STARTING, MIRISDR_ASYNC_RUNNING);
 
     for (;;) {
@@ -1077,13 +1115,17 @@ static int mirisdr_start_async_held (mirisdr_dev_t *p) {
             mirisdr_async_drain(p, 5);
             goto failed;
         }
-        p->xfer_inflight++;
+        mirisdr_atomic_add(&p->xfer_inflight, 1);
     }
 
     if (mirisdr_async_get(p) != MIRISDR_ASYNC_PAUSED) goto failed;
 
     mirisdr_iso_settle(p);
-    mirisdr_streaming_start(p);
+    if (mirisdr_streaming_start(p) < 0) {
+        p->xfer_draining = 1;
+        mirisdr_async_drain(p, 5);
+        goto failed;
+    }
 
     /* a cancel meanwhile is the run's to finish, these transfers with it */
     if (!mirisdr_async_move(p, MIRISDR_ASYNC_PAUSED, MIRISDR_ASYNC_RUNNING)) goto failed;
@@ -1143,8 +1185,12 @@ static int mirisdr_stop_async_held (mirisdr_dev_t *p) {
     usleep(2000);
 #endif
 
-        /* every transfer back from libusb before the pause is declared */
-    if (mirisdr_async_drain(p, 10) < 0) goto failed;
+    /* every transfer back from libusb before the pause is declared. They would not come
+       back: no longer resubmitted, the stream would stay silent, so it ends with an error */
+    if (mirisdr_async_drain(p, 10) < 0) {
+        mirisdr_async_fail(p);
+        goto failed;
+    }
 
     if (mirisdr_async_get(p) != MIRISDR_ASYNC_RUNNING) goto failed;
 
@@ -1171,6 +1217,15 @@ int mirisdr_start_async (mirisdr_dev_t *p) {
     mirisdr_xfer_unlock(p);
 
     return r;
+}
+
+/* A restart after a pause by a setting: one that would not go ends the stream with an
+   error, as one left paused would wait for ever and the app never paused it */
+static int mirisdr_stream_resume (mirisdr_dev_t *p) {
+    if (mirisdr_start_async(p) == 0) return 0;
+
+    if (mirisdr_async_get(p) == MIRISDR_ASYNC_PAUSED) mirisdr_async_fail(p);
+    return -1;
 }
 
 int mirisdr_stop_async (mirisdr_dev_t *p) {

@@ -67,6 +67,15 @@ static hw_switch_freq_plan_t hw_switch_freq_plan_sdrplay[] = {
 #define RSP1B_250_300   0x3F5F  /* B7 B6 A7 low, A5 low */
 #define RSP1B_300_380   0x3C5F  /* and B1 B0 low */
 #define RSP1B_380_420   0x3E5F  /* and B0 low */
+/* The 30-60 filter sits in the 250-420 bank, behind the amplifier (A5 low), which rolls off
+   below 55 MHz: on both the RSP1B and the RSPdx-R2 (within 1 dB of each other, 2026-10-18)
+   0.7-0.8 dB at 30 MHz, 7 at 33, 11-12 at 36, 15-16 at 40, 19-20 at 45, 22-23 at 50, 24 at
+   54, the receiver's floor not rising with it. Rows by the gain in each stretch */
+#define RSP1B_30_60_ROW(khz, db) \
+        {khz,     MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_30_60, db}
+#define RSP1B_30_60_ROWS \
+        RSP1B_30_60_ROW(30000, 2), RSP1B_30_60_ROW(32000, 7), RSP1B_30_60_ROW(35000, 11), \
+        RSP1B_30_60_ROW(38000, 15), RSP1B_30_60_ROW(42000, 19), RSP1B_30_60_ROW(47000, 23)
 #define RSP1B_380_420_KHZ 403000 /* it beats the 300-380 filter from 403 MHz (0.6 dB at 380, 2026-10-17) */
 
 /* The amplifier A5 low takes in (released bypasses it), against the bypass, 2026-10-17: 25
@@ -83,7 +92,7 @@ static hw_switch_freq_plan_t hw_switch_freq_plan_rsp1b[] = {
         {0,       MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_LPF2, 0},
         {2000,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_2_12, 0},
         {12000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_12_30, 0},
-        {30000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_30_60, 0},
+        RSP1B_30_60_ROWS,
         {55000,   MIRISDR_MODE_VHF, 0, 0, 32, 0xea80, 0, RSP1B_VHF_B45, RSP1B_AMP_VHF},
         {108000,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1B_B3_L, RSP1B_AMP_B3},
         {250000,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1B_B3_L, RSP1B_AMP_B3},
@@ -125,7 +134,7 @@ static hw_switch_freq_plan_t hw_switch_freq_plan_rspdxr2[] = {
         {0,       MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, DXR2_LPF2, 0},
         {DXR2_2_12_KHZ, MIRISDR_MODE_AM, MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_2_12, 0},
         {13000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_12_30, 0},
-        {30000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_30_60, 0},
+        RSP1B_30_60_ROWS,
         {55000,   MIRISDR_MODE_VHF, 0, 0, 32, 0xea80, 0, RSP1B_VHF_B45, DXR2_AMP_VHF},
         {108000,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1B_B3_L, DXR2_AMP_B3},
         {250000,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1B_B3_L, DXR2_AMP_B3},
@@ -186,14 +195,15 @@ static hw_switch_freq_plan_t hw_switch_freq_plan_rspduo[] = {
         {2400000, -1, 0, 0, 0, 0x0000, 0, 0, 0},
 };
 
-/* RSPduo tuner 0 on the Hi-Z input: the tuner's AM input 1, past the filters (whose words
-   keep the 50 ohm port's path as without it). Flat -6..-8 dBFS from 0.1 to 12 MHz at
-   mixbuffer 0, ~8 dB less above (2026-10-17). The input ends at 30 MHz */
+/* RSPduo tuner 0 on the Hi-Z input: the tuner's AM input 1, past the filters (whose words,
+   switching where the 50 ohm plan's do, keep that port's path as without it). Flat -6..-8
+   dBFS from 0.1 to 12 MHz at mixbuffer 0, ~8 dB less above (2026-10-17). A tune ends where
+   its LO reaches 30 MHz, at a low IF the frequency an IF below that */
 #define DUO_HIZ_END_MHZ 30
 
 static hw_switch_freq_plan_t hw_switch_freq_plan_rspduo_hiz[] = {
         {0,       MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT1, 16, 0xea80, 0, DUO_LPF2, 0},
-        {2000,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT1, 16, 0xea80, 0, DUO_2_12, 0},
+        {DUO_2_12_KHZ, MIRISDR_MODE_AM, MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT1, 16, 0xea80, 0, DUO_2_12, 0},
         {12000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT1, 16, 0xea80, 0, DUO_12_30, 0},
         {DUO_HIZ_END_MHZ * 1000, -1, 0, 0, 0, 0x0000, 0, 0, 0},
 };
@@ -482,6 +492,21 @@ static int mirisdr_attenuator_ok (int flavour, int db)
     return 0;
 }
 
+/* The pads for an attenuation: strict, the value itself or -1. Otherwise the nearest step
+   (the smaller of two as near), into 0 to the board's most. A board without pads takes 0
+   only, either way */
+static int mirisdr_attenuator_snap (int flavour, int db, int strict)
+{
+    int v[MIRISDR_ATTENUATOR_MAX], n = mirisdr_attenuator_list(flavour, v), k, best = 0;
+
+    if (strict || (n < 2)) return mirisdr_attenuator_ok(flavour, db) ? db : -1;
+
+    for (k = 1; k < n; k++)
+        if (abs(v[k] - db) < abs(v[best] - db)) best = k;
+
+    return v[best];
+}
+
 /* The flags of the front end a board has, MIRISDR_FRONTEND_* */
 static uint32_t mirisdr_frontend_flags (int flavour)
 {
@@ -616,6 +641,21 @@ static const uint16_t mirisdr_if_bws[] = {
     (1 << MIRISDR_BW_600KHZ) | (1 << MIRISDR_BW_1536KHZ),
     (1 << MIRISDR_BW_600KHZ) | (1 << MIRISDR_BW_1536KHZ),
 };
+
+/* The filter for a bandwidth with an IF: the narrowest it has as wide, the widest if none is */
+static int mirisdr_bw_snap (int ifm, uint32_t hz)
+{
+    int i, n = (int) (sizeof mirisdr_bw_hz / sizeof mirisdr_bw_hz[0]), widest = -1;
+
+    for (i = 0; i < n; i++)
+    {
+        if (!(mirisdr_if_bws[ifm] & (1 << i))) continue;
+        if (mirisdr_bw_hz[i] >= hz) return i;
+        widest = i;
+    }
+
+    return widest;
+}
 static const uint8_t mirisdr_if_bw_widest[] = { MIRISDR_BW_8MHZ, MIRISDR_BW_600KHZ,
                                                 MIRISDR_BW_1536KHZ, MIRISDR_BW_1536KHZ };
 
@@ -676,6 +716,7 @@ typedef struct mirisdr_tune_plan
     mirisdr_frontend_raw_t fe;  /* the front end words it sends, every part the board has */
     uint32_t fe_raw;            /* the parts of fe the tune replaced */
     mirisdr_gr_t gr;            /* the gain reductions it ends up with */
+    int att;                    /* dB of pads in force, frontend.attenuator snapped */
 } mirisdr_tune_plan_t;
 
 /* The words the front end gets: the plan's with the frontend fields, then the raw parts
@@ -695,7 +736,7 @@ static void mirisdr_frontend_words (mirisdr_dev_t *p, const mirisdr_tune_config_
     if (pl->fe.fields & MIRISDR_FRONTEND_RAW_EXP1)
         pl->fe.expander[0] = mirisdr_sdrplay_word(p->hw_flavour, pl->w.expander, c->frontend.notch, c->frontend.bias,
                                                   c->frontend.antenna, pl->ds, pl->ds_lna,
-                                                  pl->gr.amp_db && pl->gr.amp, c->frontend.attenuator);
+                                                  pl->gr.amp_db && pl->gr.amp, pl->att);
     /* RSPduo: the filters of the tuners the stream takes, this one's and the other's (of
        its tune in force, if any), each through its amplifier (path and supply) unless
        bypassed. A chain not streamed gets no path and its amplifier no supply, which keeps
@@ -720,7 +761,7 @@ static void mirisdr_frontend_words (mirisdr_dev_t *p, const mirisdr_tune_config_
         }
         notch[n] = c->frontend.notch;
         notch[1 - n] = o->notch;
-        att[n] = c->frontend.attenuator;
+        att[n] = pl->att;
         att[1 - n] = o->attenuator;
         pl->fe.expander[0] = mirisdr_duo_route(w, mirisdr_stream_tuners(p), n);
         if (c->frontend.flags & MIRISDR_FRONTEND_REF_OUT) pl->fe.expander[0] &= (uint16_t) ~DUO1_REF_OUT;
@@ -769,12 +810,20 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
 
         if (i == (int) (sizeof mirisdr_bw_hz / sizeof mirisdr_bw_hz[0]))
         {
-            mirisdr_refuse(p, "unsupported bandwidth: %u Hz\n", c->bandwidth);
-            return -1;
+            if (c->strict)
+            {
+                mirisdr_refuse(p, "unsupported bandwidth: %u Hz\n", c->bandwidth);
+                return -1;
+            }
+            i = mirisdr_bw_snap(pl->ifm, c->bandwidth);
         }
 
         pl->bw = i;
     }
+
+    /* not with this IF: the nearest it has, as above, unless strict */
+    if (!adjust && !c->strict && !(mirisdr_if_bws[pl->ifm] & (1 << pl->bw)))
+        pl->bw = mirisdr_bw_snap(pl->ifm, c->bandwidth);
 
     if (!(mirisdr_if_bws[pl->ifm] & (1 << pl->bw)))
     {
@@ -845,8 +894,12 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
 
     if (c->synth_thresh > 4095)
     {
-        mirisdr_refuse(p, "unsupported synthesizer threshold: %u\n", c->synth_thresh);
-        return -1;
+        if (c->strict)
+        {
+            mirisdr_refuse(p, "unsupported synthesizer threshold: %u\n", c->synth_thresh);
+            return -1;
+        }
+        pl->cfg.synth_thresh = 4095;
     }
 
     if ((c->dc_removal < MIRISDR_DC_AUTO) || (c->dc_removal > MIRISDR_DC_OFF))
@@ -901,7 +954,7 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
     }
 
     if ((c->gain.mode < MIRISDR_GAIN_KEEP) || (c->gain.mode > MIRISDR_GAIN_STAGES) ||
-        ((c->gain.mode == MIRISDR_GAIN_TOTAL) && (c->gain.total < 0)))
+        (c->strict && (c->gain.mode == MIRISDR_GAIN_TOTAL) && (c->gain.total < 0)))
     {
         mirisdr_refuse(p, "unsupported gain: mode %d, %d dB\n", c->gain.mode, c->gain.total);
         return -1;
@@ -930,7 +983,7 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
 
     pl->lo = (uint32_t) lo;
 
-    mirisdr_tune_words(p, pl->lo, c->frequency, pl->ifm, pl->bw, pl->iq, 0, c->synth_thresh, &pl->w);
+    mirisdr_tune_words(p, pl->lo, c->frequency, pl->ifm, pl->bw, pl->iq, 0, pl->cfg.synth_thresh, &pl->w);
     p->antenna = ant;
 
     /* past the plan the single setters go on, as far as the synthesizer can count */
@@ -959,7 +1012,7 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
     pl->gr.amp_db = pl->ds ? 0 : pl->w.row->amp_db;
     if (g.mode == MIRISDR_GAIN_STAGES)
     {
-        if (mirisdr_gr_of_stages(pl->w.band, &g, &pl->gr) < 0)
+        if (mirisdr_gr_of_stages(pl->w.band, &g, &pl->gr, c->strict) < 0)
         {
             mirisdr_refuse(p, "unsupported gain stages for the band: lna %d mixer %d mixbuffer %d baseband %d"
                     " amp_bypass %d\n", c->gain.lna, c->gain.mixer, c->gain.mixbuffer, c->gain.baseband,
@@ -967,16 +1020,36 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
             return -1;
         }
     }
-    else if (c->gain.mode == MIRISDR_GAIN_TOTAL) mirisdr_split_of(pl->w.band, c->gain.total, &pl->gr);
+    else if (c->gain.mode == MIRISDR_GAIN_TOTAL)
+    {
+        if (c->strict && !pl->ds && (c->gain.total > mirisdr_max_gain_of(pl->w.band) + pl->gr.amp_db))
+        {
+            mirisdr_refuse(p, "unsupported gain %d dB: the band reaches %d\n", c->gain.total,
+                           mirisdr_max_gain_of(pl->w.band) + pl->gr.amp_db);
+            return -1;
+        }
+        mirisdr_split_of(pl->w.band, c->gain.total, &pl->gr);
+    }
     /* the stages kept: the mixbuffer by its dB between the two AM inputs */
     else if (p->gain_stages_set) pl->gr.mixbuffer = mirisdr_mixbuffer_keep(p->band, pl->w.band, pl->gr.mixbuffer);
     else mirisdr_split_of(pl->w.band, p->gain, &pl->gr);
 
-    if (!mirisdr_attenuator_ok(p->hw_flavour, c->frontend.attenuator))
+    /* the pads, the Hi-Z has none */
+    pl->att = mirisdr_attenuator_snap(p->hw_flavour, c->frontend.attenuator, c->strict);
+    if (pl->att < 0)
     {
         mirisdr_refuse(p, "unsupported attenuator %d dB: the RSPduo and RSP1B take 0, 6, 13 or 19, the RSPdx-R2 0 to 36 in"
                        " 3 dB steps, other boards none\n", c->frontend.attenuator);
         return -1;
+    }
+    if (hiz && pl->att)
+    {
+        if (c->strict)
+        {
+            mirisdr_refuse(p, "unsupported attenuator %d dB on the Hi-Z input, which has no pads\n", c->frontend.attenuator);
+            return -1;
+        }
+        pl->att = 0;
     }
 
     mirisdr_frontend_words(p, c, pl);
@@ -984,7 +1057,6 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
     return 0;
 }
 
-/* Where the received frequency lands, given what the stream captures */
 /* The notches a request turns on: the FM and MW notches share a switch */
 static int mirisdr_notch_in_force (int notch)
 {
@@ -992,6 +1064,7 @@ static int mirisdr_notch_in_force (int notch)
     return notch;
 }
 
+/* Where the received frequency lands, given what the stream captures */
 static void mirisdr_tune_result_of (int adc, uint32_t rx, uint32_t lo, int iq, uint32_t bw,
                                     mirisdr_band_t band, const mirisdr_gr_t *gr, mirisdr_tune_result_t *res)
 {
@@ -1089,7 +1162,7 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
     p->bias = c->frontend.bias ? 1 : 0;
     p->notch = c->frontend.notch;
     p->antenna = c->frontend.antenna;
-    p->attenuator = c->frontend.attenuator;
+    p->attenuator = pl.att;
     p->fe_flags = c->frontend.flags;
     p->ds = pl.ds;
     p->ds_lna = pl.ds_lna;
@@ -1131,7 +1204,7 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
     if (restream)
     {
         mirisdr_stream_regs(p, &spl);
-        if (streaming && (mirisdr_start_async(p) < 0)) r = -1;
+        if (streaming && (mirisdr_stream_resume(p) < 0)) r = -1;
     }
     else if (nco) mirisdr_bb_move(p, spl.bb_if);
 
@@ -1266,7 +1339,7 @@ static int mirisdr_tune_check_of (mirisdr_dev_t *p, const mirisdr_tune_config_t 
         res->frontend.bias = cfg->frontend.bias ? 1 : 0;
         res->frontend.notch = mirisdr_notch_in_force(cfg->frontend.notch);
         res->frontend.antenna = cfg->frontend.antenna;
-        res->frontend.attenuator = cfg->frontend.attenuator;
+        res->frontend.attenuator = pl.att;
         res->frontend.flags = cfg->frontend.flags;
         res->frontend.raw = pl.fe;
         mirisdr_tune_result_ds(pl.ds, pl.ds_lna, pl.ds_edge, cfg->frequency, bb, res);
