@@ -18,8 +18,17 @@
 # Mirics MSi2500 default (e.g. VTX3D card, SDRplay RSP1)
 SUBSYSTEMS=="usb", ATTRS{idVendor}=="1df7", ATTRS{idProduct}=="2500", MODE:="0666"
 
+# Hauppauge WinTV 133559 LF
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="2040", ATTRS{idProduct}=="d300", MODE:="0666"
+
+# AverMedia A859 Pure DVBT
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="07ca", ATTRS{idProduct}=="8591", MODE:="0666"
+
 # IO-DATA GV-TV100 stick
 SUBSYSTEMS=="usb", ATTRS{idVendor}=="04bb", ATTRS{idProduct}=="0537", MODE:="0666"
+
+# Logitec LDT-1S310U/J
+SUBSYSTEMS=="usb", ATTRS{idVendor}=="0511", ATTRS{idProduct}=="0037", MODE:="0666"
 
 # SDRplay RSP1A
 SUBSYSTEMS=="usb", ATTRS{idVendor}=="1df7", ATTRS{idProduct}=="3000", MODE:="0666"

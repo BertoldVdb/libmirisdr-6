@@ -66,6 +66,12 @@
 #endif
 #define _USE_MATH_DEFINES
 #endif
+/* MinGW has unistd.h but no sigaction: the console handler and binary stdout */
+#if defined (__MINGW32__)
+#include <windows.h>
+#include <fcntl.h>
+#include <io.h>
+#endif
 
 #include <math.h>
 #include <pthread.h>
@@ -142,6 +148,8 @@ struct demod_state
 	int      deemph, deemph_a;
 	int      now_lpr;
 	int      prev_lpr_index;
+	int      now_ps;        /* low_pass_simple's sum and count so far */
+	int      prev_ps_index;
 	int      dc_block, dc_avg;
 	void     (*mode_demod)(struct demod_state*);
 	pthread_rwlock_t rw;
@@ -271,7 +279,7 @@ void usage(void)
 	exit(1);
 }
 
-#if defined (_WIN32) && !defined(__MINGW32__)
+#if defined (_WIN32)
 BOOL WINAPI
 sighandler(int signum)
 {
@@ -365,20 +373,21 @@ void low_pass(struct demod_state *d)
 	d->lp_len = i2;
 }
 
-int low_pass_simple(int16_t *signal2, int len, int step)
-// no wrap around, length must be multiple of step
+void low_pass_simple(struct demod_state *d)
+/* down by post_downsample: the sum of each step, carried over from buffer to buffer
+   as a buffer need not hold a whole number of them. In place */
 {
-	int i, i2, sum;
-	for(i=0; i < len; i+=step) {
-		sum = 0;
-		for(i2=0; i2<step; i2++) {
-			sum += (int)signal2[i + i2];
-		}
-		//signal2[i/step] = (int16_t)(sum / step);
-		signal2[i/step] = clip16(sum);
+	int i, i2 = 0;
+	int step = d->post_downsample;
+	for (i = 0; i < d->result_len; i++) {
+		d->now_ps += d->result[i];
+		if (++d->prev_ps_index < step) {
+			continue;}
+		d->result[i2++] = clip16(d->now_ps);
+		d->now_ps = 0;
+		d->prev_ps_index = 0;
 	}
-	signal2[i/step + 1] = signal2[i/step];
-	return len / step;
+	d->result_len = i2;
 }
 
 void low_pass_real(struct demod_state *s)
@@ -742,7 +751,7 @@ void full_demod(struct demod_state *d)
 	/* todo, fm noise squelch */
 	// use nicer filter here too?
 	if (d->post_downsample > 1) {
-		d->result_len = low_pass_simple(d->result, d->result_len, d->post_downsample);}
+		low_pass_simple(d);}
 	if (d->deemph) {
 		deemph_filter(d);}
 	if (d->dc_block) {
@@ -826,17 +835,35 @@ static void *demod_thread_fn(void *arg)
 	return 0;
 }
 
+static volatile int write_failed = 0;
+
 static void *output_thread_fn(void *arg)
 {
 	struct output_state *s = arg;
+	size_t n;
 	while (!do_exit) {
 		// use timedwait and pad out under runs
 		safe_cond_wait(&s->ready, &s->ready_m);
 		pthread_rwlock_rdlock(&s->rw);
-		fwrite(s->result, 2, s->result_len, s->file);
+		n = fwrite(s->result, 2, s->result_len, s->file);
 		pthread_rwlock_unlock(&s->rw);
+		/* a full disk or a closed pipe ends the program */
+		if (n != (size_t)s->result_len) {
+			write_failed = 1;
+			do_exit = 1;
+			mirisdr_cancel_async(dongle.dev);
+			break;}
 	}
 	return 0;
+}
+
+static int gcd_int(int a, int b)
+{
+	while (b) {
+		int t = a % b;
+		a = b;
+		b = t;}
+	return a;
 }
 
 /* The low IFs, the least rate each gives (just over its converter rate / 512) and its
@@ -907,8 +934,19 @@ static void optimal_settings(void)
 		dm->output_scale = 1;}
 
 	/* about 20 ms a buffer, of whole groups of four for the rotation and of the
-	   oversampling */
+	   oversampling. At zero IF also of whole box filter sums of it, so each buffer
+	   gives as many outputs. The -F filter needs that, the box filter and the
+	   oversampling carry what is left over to the next buffer */
 	k = 16 * lcm_post[dm->post_downsample];
+	if (dm->downsample > 1) {
+		int m = dm->downsample * dm->post_downsample;
+		int ks = k / gcd_int(k, m) * m;
+		if (ks <= MAXIMUM_BUF_LENGTH / 2) {
+			k = ks;
+		} else if (dm->downsample_passes) {
+			fprintf(stderr, "The rate is too low for -F.\n");
+			exit(1);}
+	}
 	i = ((int)(d->rate / 50) / k) * k;
 	if (i < k) {
 		i = k;}
@@ -921,10 +959,15 @@ static void optimal_settings(void)
    above what it is told, so it is told less */
 static uint32_t capture_freq(uint32_t freq)
 {
-	freq += controller.edge * demod.rate_in / 2;
+	double f = freq;
+	f += controller.edge * (demod.rate_in / 2.0);
 	if (dongle.rotate) {
-		freq += dongle.rate / 4;}
-	return (uint32_t)llround((double)freq / (1.0 + dongle.ppm_error * 1e-6));
+		f += dongle.rate / 4;}
+	f = f / (1.0 + dongle.ppm_error * 1e-6);
+	/* the library refuses what it cannot tune, so only keep it in range */
+	if (f > 4294967295.0) {
+		f = 4294967295.0;}
+	return (uint32_t)llround(f);
 }
 
 /* The first channel's tune and the stream, before any thread runs: the stream
@@ -966,6 +1009,8 @@ static int dongle_setup(struct controller_state *s)
 	mirisdr_get_stream(dongle.dev, &sc, NULL);
 	sc.baseband = 1;
 	sc.rate = dongle.rate;
+	/* the demod's rates follow from this one: refuse one out of reach */
+	sc.strict = 1;
 	sc.format = formats[dongle.format];
 	if (dongle.transfer == 1) {
 		sc.transfer = "ISOC";}
@@ -975,6 +1020,9 @@ static int dongle_setup(struct controller_state *s)
 		fprintf(stderr, "Failed to set up the stream.\n");
 		return -1;
 	}
+	if (sr.rate != dongle.rate) {
+		fprintf(stderr, "Warning: sampling at %u S/s, not the %u S/s asked, the output rate is off by %+.3f%%.\n",
+			sr.rate, dongle.rate, 100.0 * ((double)sr.rate / dongle.rate - 1.0));}
 	mirisdr_get_tune(dongle.dev, 0, NULL, &tr);
 	if (dongle.if_mode) {
 		fprintf(stderr, "Sampling at %u S/s, %s, %d Hz IF, filtered down to %u S/s%s%s.\n",
@@ -1018,10 +1066,30 @@ static void *controller_thread_fn(void *arg)
 	return 0;
 }
 
+/* A frequency in Hz with the k, M and G suffixes, from 1 Hz to the most a uint32_t holds */
+static uint32_t parse_freq(char *arg)
+{
+	double f = atofs(arg);
+	if (!(f >= 1.0 && f <= 4294967295.0)) {
+		fprintf(stderr, "%s is not a frequency.\n", arg);
+		exit(1);}
+	return (uint32_t)llround(f);
+}
+
+/* A rate in Hz with the suffixes, small enough to take the oversampling */
+static int parse_rate(char *arg, const char *opt)
+{
+	double r = atofs(arg);
+	if (!(r >= 1.0 && r <= 100e6)) {
+		fprintf(stderr, "%s needs a rate, from 1 Hz to 100 MHz.\n", opt);
+		exit(1);}
+	return (int)lround(r);
+}
+
 void frequency_range(struct controller_state *s, char *arg)
 {
 	char *start, *stop, *step;
-	int i;
+	uint64_t f, f_stop, f_step;
 	start = arg;
 	if (!(stop = strchr(start, ':')) || !(step = strchr(stop + 1, ':'))) {
 		fprintf(stderr, "A range is start:stop:step, %s is not.\n", arg);
@@ -1030,12 +1098,15 @@ void frequency_range(struct controller_state *s, char *arg)
 	step++;
 	stop[-1] = '\0';
 	step[-1] = '\0';
-	if ((int)atofs(step) <= 0 || (int)atofs(stop) < (int)atofs(start)) {
+	f = parse_freq(start);
+	f_stop = parse_freq(stop);
+	f_step = parse_freq(step);
+	if (f_stop < f) {
 		fprintf(stderr, "The range %s:%s:%s has no frequencies.\n", start, stop, step);
 		exit(1);}
-	for(i=(int)atofs(start); i<=(int)atofs(stop); i+=(int)atofs(step))
+	for (; f <= f_stop; f += f_step)
 	{
-		s->freqs[s->freq_len] = (uint32_t)i;
+		s->freqs[s->freq_len] = (uint32_t)f;
 		s->freq_len++;
 		if (s->freq_len >= FREQUENCIES_LIMIT) {
 			break;}
@@ -1081,6 +1152,8 @@ void demod_init(struct demod_state *s)
 	s->prev_lpr_index = 0;
 	s->deemph_a = 0;
 	s->now_lpr = 0;
+	s->now_ps = 0;
+	s->prev_ps_index = 0;
 	s->dc_block = 0;
 	s->dc_avg = 0;
 	pthread_rwlock_init(&s->rw, NULL);
@@ -1148,10 +1221,10 @@ void sanity_checks(void)
 
 int main(int argc, char **argv)
 {
-#if !defined (_WIN32) || defined(__MINGW32__)
+#if !defined (_WIN32)
 	struct sigaction sigact;
 #endif
-	int r, opt;
+	int r, r2, opt;
 	int dev_given = 0;
 	int custom_ppm = 0;
 	dongle_init(&dongle);
@@ -1161,7 +1234,7 @@ int main(int argc, char **argv)
     mirisdr_hw_flavour_t hw_flavour = MIRISDR_HW_AUTO;
     int intval;
 
-	while ((opt = getopt(argc, argv, "b:d:T:e:f:g:i:l:m:o:p:r:s:t:w:E:F:A:M:h")) != -1) {
+	while ((opt = getopt(argc, argv, "d:T:e:f:g:i:l:m:o:p:r:s:t:w:E:F:A:M:h")) != -1) {
 		switch (opt) {
 		case 'd':
 			dongle.dev_index = verbose_device_search(optarg);
@@ -1191,7 +1264,7 @@ int main(int argc, char **argv)
 				{frequency_range(&controller, optarg);}
 			else
 			{
-				controller.freqs[controller.freq_len] = (uint32_t)atofs(optarg);
+				controller.freqs[controller.freq_len] = parse_freq(optarg);
 				controller.freq_len++;
 			}
 			break;
@@ -1220,18 +1293,12 @@ int main(int argc, char **argv)
 				exit(1);}
 			break;
 		case 's':
-			demod.rate_in = (int)atofs(optarg);
-			demod.rate_out = (int)atofs(optarg);
-			if (demod.rate_in <= 0) {
-				fprintf(stderr, "-s needs a rate.\n");
-				exit(1);}
+			demod.rate_in = parse_rate(optarg, "-s");
+			demod.rate_out = demod.rate_in;
 			break;
 		case 'r':
-			output.rate = (int)atofs(optarg);
-			demod.rate_out2 = (int)atofs(optarg);
-			if (demod.rate_out2 <= 0) {
-				fprintf(stderr, "-r needs a rate.\n");
-				exit(1);}
+			output.rate = parse_rate(optarg, "-r");
+			demod.rate_out2 = output.rate;
 			break;
 		case 'o':
 			demod.post_downsample = (int)atof(optarg);
@@ -1351,7 +1418,7 @@ int main(int argc, char **argv)
 	}
 
 
-#if !defined (_WIN32) || defined(__MINGW32__)
+#if !defined (_WIN32)
 	sigact.sa_handler = sighandler;
 	sigemptyset(&sigact.sa_mask);
 	sigact.sa_flags = 0;
@@ -1375,7 +1442,7 @@ int main(int argc, char **argv)
 
 	if (strcmp(output.filename, "-") == 0) { /* Write samples to stdout */
 		output.file = stdout;
-#if defined (_WIN32) && !defined(__MINGW32__)
+#if defined (_WIN32)
 		_setmode(_fileno(output.file), _O_BINARY);
 #endif
 	} else {
@@ -1408,6 +1475,8 @@ int main(int argc, char **argv)
 	r = read_result;
 	if (r < 0) {
 		fprintf(stderr, "\nLibrary error %d, exiting...\n", r);}
+	else if (write_failed) {
+		fprintf(stderr, "\nWriting the output failed, exiting...\n");}
 	else {
 		fprintf(stderr, "\nUser cancel, exiting...\n");}
 
@@ -1425,11 +1494,16 @@ int main(int argc, char **argv)
 	output_cleanup(&output);
 	controller_cleanup(&controller);
 
-	if (output.file != stdout) {
-		fclose(output.file);}
+	/* what is still buffered can fail to go out too */
+	r2 = fflush(output.file) != 0 || ferror(output.file);
+	if (output.file != stdout && fclose(output.file) != 0) {
+		r2 = 1;}
+	if (r2 && !write_failed) {
+		fprintf(stderr, "Writing the output failed.\n");
+		write_failed = 1;}
 
 	mirisdr_close(dongle.dev);
-	return (r < 0) ? 1 : 0;
+	return (r < 0 || write_failed) ? 1 : 0;
 }
 
 // vim: tabstop=8:softtabstop=8:shiftwidth=8:noexpandtab

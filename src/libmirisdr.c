@@ -93,7 +93,7 @@ static int mirisdr_reserved_set (const uint32_t *r, size_t n)
 #include "null.c"
 
 static int mirisdr_setup (mirisdr_dev_t **out_dev, mirisdr_dev_t *dev) {
-    int r;
+    int r, standby = 0;
 
     mirisdr_xfer_lock_init(dev);
 
@@ -158,22 +158,33 @@ static int mirisdr_setup (mirisdr_dev_t **out_dev, mirisdr_dev_t *dev) {
     {
         int t, r = 0;
 
+        /* tuner 1 goes to standby: the stream takes tuner 0 at first, and one left running
+           (a process that ended without closing) still shows in what is heard */
         if (dev->hw_flavour == MIRISDR_HW_RSPDUO)
             for (t = 0; t < 2; t++)
             {
                 if (mirisdr_sdrplay_send(dev, 0, mirisdr_duo_route(0xFFFF, 1, t)) < 0) r = -1;
                 if (mirisdr_tuner_write(dev, MIRISDR_TUNER_IDLE, 0, 1) < 0) r = -1;
+                if (t && (mirisdr_tuner_write(dev, 0, 0, 1) < 0)) r = -1;
             }
         else if (mirisdr_tuner_write(dev, MIRISDR_TUNER_IDLE, 0, 1) < 0) r = -1;
 
-        /* both tuners' last word is known then, as the contexts copy it */
+        /* the last word is known then, as the contexts copy it */
         dev->tuner_valid = 0;
         dev->tuner_last = r ? 0 : MIRISDR_TUNER_IDLE;
+        standby = !r && (dev->hw_flavour == MIRISDR_HW_RSPDUO);
     }
 
     /* initialise the tuner */
     mirisdr_tuner_defaults(dev);
     mirisdr_tuner_ctx_init(dev);
+    if (standby)
+    {
+        /* tuner 1 asleep, so its first tune wakes it in order */
+        dev->tctx[1].tuner_reg[0] = 0;
+        dev->tctx[1].tuner_valid = 1;
+        dev->tctx[1].tuner_last = 0;
+    }
     dev->rate = DEFAULT_RATE;
     dev->format_auto = MIRISDR_FORMAT_AUTO_ON;
     dev->decimation_bypass = MIRISDR_DECIMATION_BYPASS_AUTO;
@@ -280,10 +291,6 @@ failed:
 
 static int mirisdr_open_fd_raw (mirisdr_dev_t **p, int fd, int external_tuner, uint8_t gpio_in, int flavour) {
     mirisdr_dev_t *dev = NULL;
-    libusb_device **list, *device = NULL;
-    struct libusb_device_descriptor dd;
-    ssize_t i, i_max;
-    size_t count = 0;
     int r;
 
     *p = NULL;
@@ -329,6 +336,9 @@ int mirisdr_open (mirisdr_dev_t **p, uint32_t index) {
 int mirisdr_open_fd (mirisdr_dev_t **p, int fd) {
     mirisdr_open_config_t cfg;
 
+    /* -1 in the config means no descriptor, which would open receiver 0 */
+    if (fd < 0) return -1;
+
     mirisdr_open_config_default(&cfg);
     cfg.fd = fd;
 
@@ -356,6 +366,28 @@ int mirisdr_close (mirisdr_dev_t *p) {
         {
             if (p->scan) mirisdr_scan_stop(p);
             mirisdr_load_list(p, 0, 0, NULL, 0);
+        }
+
+        /* the tuners to standby, which the next open's tune wakes: they draw power, and a
+           running one shows in what another receiver hears */
+        if (!p->external_tuner)
+        {
+            int t;
+
+            for (t = 0; t < mirisdr_tuners_of(p); t++)
+            {
+                mirisdr_tuner_select(p, t);
+                if (mirisdr_duo_route_to(p, t) == 0) mirisdr_tuner_write(p, 0, 0, 0);
+            }
+        }
+
+        /* and the bias-T, the amplifiers and the pads off, which would otherwise stay
+           powered until the next open */
+        mirisdr_sdrplay_off(p);
+        if (p->bias && !MIRISDR_HW_EXPANDER(p->hw_flavour))
+        {
+            p->bias = 0;
+            update_reg_8(p);
         }
 
         libusb_release_interface(p->dh, 0);
@@ -447,8 +479,15 @@ int mirisdr_reset_buffer (mirisdr_dev_t *p) {
 
     /* not yet clear what this would be for, so only restart the async part. A stream the
        app paused stays paused */
-    if ((mirisdr_async_get(p) == MIRISDR_ASYNC_RUNNING) && (mirisdr_stop_async(p) == 0) &&
-        (mirisdr_stream_resume(p) < 0)) goto failed;
+    if (mirisdr_async_get(p) == MIRISDR_ASYNC_RUNNING)
+    {
+        int r = 0;
+
+        mirisdr_xfer_lock(p);
+        if ((mirisdr_stop_async(p) < 0) || (mirisdr_stream_resume(p) < 0)) r = -1;
+        mirisdr_xfer_unlock(p);
+        if (r < 0) goto failed;
+    }
 
     return 0;
 
@@ -565,7 +604,8 @@ static void mirisdr_flavour_clean (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_fla
         p->tune.frontend.notch = 0;
     }
 
-    if (hw_flavour == MIRISDR_HW_RSPDUO)
+    /* the RSPduo's bias-T is tuner 1's */
+    if ((hw_flavour == MIRISDR_HW_RSPDUO) && !p->tuner_cur)
     {
         p->bias = 0;
         p->tune.frontend.bias = 0;
@@ -589,11 +629,24 @@ static void mirisdr_flavour_clean (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_fla
 
 int mirisdr_set_hw_flavour (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_flavour) {
     mirisdr_tune_config_t c;
-    int t, n, cur;
+    mirisdr_tuner_ctx_t old_ctx[MIRISDR_TUNERS];
+    mirisdr_hw_flavour_t old_flavour;
+    uint32_t old_flags;
+    int t, n, cur, old_tuners, r = 0;
 
     if (!p) goto failed;
 
     if (hw_flavour < MIRISDR_HW_DEFAULT || hw_flavour > MIRISDR_HW_RSPDUO) goto failed;
+
+    /* the board it is already: nothing to clean, and nothing to tune again */
+    if (hw_flavour == p->hw_flavour) return 0;
+
+    /* what it was, for a refusal */
+    mirisdr_tuner_save(p);
+    memcpy(old_ctx, p->tctx, sizeof old_ctx);
+    old_flavour = p->hw_flavour;
+    old_flags = p->fe_flags;
+    old_tuners = p->stream.tuners;
 
     /* the tuners as the old board had them, each one's stored tune cleaned, tuner 0 last */
     n = mirisdr_tuners_of(p);
@@ -614,15 +667,37 @@ int mirisdr_set_hw_flavour (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_flavour) {
     if (hw_flavour != MIRISDR_HW_RSPDUO) p->stream.tuners = 0;
     else if (cur) mirisdr_tuner_select(p, cur);
 
+    /* the stream again when it no longer takes the tuners it did, its filters with it */
+    if (p->stream.tuners != old_tuners)
+    {
+        mirisdr_tuner_select(p, mirisdr_tuner_primary(p));
+        if (mirisdr_set_hard(p) < 0) r = -1;
+    }
+
     /* the front end as this board has it, register 8 with it: the stored tune again */
+    if (!r && p->dh)
+    {
+        c = p->tune;
+        c.gain.mode = MIRISDR_GAIN_KEEP;
+        if (mirisdr_tune(p, p->tuner_cur, &c, NULL) < 0) r = -1;
+    }
+
+    if (!r) return 0;
+
+    /* refused: the board as it was, and what it had sent again as far as it goes */
+    memcpy(p->tctx, old_ctx, sizeof old_ctx);
+    p->hw_flavour = old_flavour;
+    p->fe_flags = old_flags;
+    p->stream.tuners = old_tuners;
+    p->exp_valid = 0;
+    mirisdr_tuner_load(p, cur);
+    mirisdr_set_hard(p);
     if (p->dh)
     {
         c = p->tune;
         c.gain.mode = MIRISDR_GAIN_KEEP;
-        if (mirisdr_tune(p, p->tuner_cur, &c, NULL) < 0) goto failed;
+        mirisdr_tune(p, p->tuner_cur, &c, NULL);
     }
-
-    return 0;
 
 failed:
     return -1;

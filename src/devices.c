@@ -39,6 +39,10 @@ static mirisdr_device_t *mirisdr_device_get (uint16_t vid, uint16_t pid) {
     return NULL;
 }
 
+int mirisdr_device_known (uint16_t vid, uint16_t pid) {
+    return mirisdr_device_get(vid, pid) != NULL;
+}
+
 #define MIRISDR_OWN_VID         0x16d0
 #define MIRISDR_OWN_PID         0x158c
 #define MIRISDR_OWN_RSP1B       "B-"    /* our ids hide the board: an RSP1B serial starts so, */

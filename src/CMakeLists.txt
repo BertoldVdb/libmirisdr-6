@@ -68,8 +68,13 @@ endif()
 add_executable(miri_sdr miri_sdr.c)
 add_executable(miri_fm miri_fm.c)
 add_executable(miri_eeprom miri_eeprom.c)
+set(INSTALL_TARGETS mirisdr_shared mirisdr_static miri_sdr miri_fm miri_eeprom)
+
+# the tests run groups in child processes, with fork, so not on Windows
+if(NOT WIN32)
 add_executable(miri_test miri_test.c)
-set(INSTALL_TARGETS mirisdr_shared mirisdr_static miri_sdr miri_fm miri_eeprom miri_test)
+list(APPEND INSTALL_TARGETS miri_test)
+endif()
 
 target_link_libraries(miri_sdr mirisdr_shared
     ${LIBUSB_LIBRARIES}
@@ -86,11 +91,13 @@ target_link_libraries(miri_eeprom mirisdr_shared
     ${CMAKE_THREAD_LIBS_INIT}
 )
 
+if(NOT WIN32)
 target_link_libraries(miri_test mirisdr_shared
     ${LIBUSB_LIBRARIES}
     ${CMAKE_THREAD_LIBS_INIT}
 )
-if(MIRISDR_SOAPY)
+endif()
+if(MIRISDR_SOAPY AND NOT WIN32)
     # the soapy group: the module from this build, else the installed one. Its own
     # library keeps SoapySDR's C++ compile options off the C sources
     add_library(miri_test_soapy STATIC miri_test_soapy.cpp)
@@ -115,11 +122,16 @@ set_property(TARGET miri_sdr APPEND PROPERTY COMPILE_DEFINITIONS "mirisdr_STATIC
 set_property(TARGET miri_fm APPEND PROPERTY COMPILE_DEFINITIONS "mirisdr_STATIC" )
 endif()
 
+# miri_fm's threads: winpthread on MinGW, where the threads check finds none
+if(MINGW)
+target_link_libraries(miri_fm pthread)
+endif()
+
 ########################################################################
 # Install built library files & utilities
 ########################################################################
 install(TARGETS ${INSTALL_TARGETS}
-    LIBRARY DESTINATION lib${LIB_SUFFIX} # .so/.dylib file
-    ARCHIVE DESTINATION lib${LIB_SUFFIX} # .lib file
-    RUNTIME DESTINATION bin              # .dll file
+    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} # .so/.dylib file
+    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR} # .lib file
+    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} # .dll file
 )

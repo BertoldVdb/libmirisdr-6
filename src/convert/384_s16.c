@@ -26,7 +26,7 @@ static int mirisdr_samples_convert_384_s16 (mirisdr_dev_t *p, unsigned char* buf
         /* skip the 16 byte header, 6 blocks, each with its 4 byte shift block at the end */
         for (src+= 16, j = 0; j < 6; j++, src+= 4) {
             /* 2 bits for each value: its shift */
-            shift = src[160 + 3] << 24 | src[160 + 2] << 16 | src[160 + 1] << 8 | src[160 + 0] << 0;
+            shift = (uint32_t) src[160 + 3] << 24 | (uint32_t) src[160 + 2] << 16 | src[160 + 1] << 8 | src[160 + 0] << 0;
 
             /* 16x 10 bytes */
             for (k = 0; k < 16; k++, src+= 10, ret+= 8) {

@@ -1,3 +1,17 @@
+libmirisdr6 (5.1~git20261020-1) UNRELEASED; urgency=medium
+
+  * libmirisdr-6: RSP1B, RSPdx-R2 and RSPduo support, and a SoapySDR module.
+  * Source renamed libmirisdr6, split into libmirisdr5, libmirisdr5-dev,
+    miri-sdr6 and soapysdr-module-libmirisdr. The library goes to the
+    multiarch directory and the udev rule to /usr/lib/udev/rules.d.
+  * libmirisdr5 installs next to Debian's libmirisdr4. libmirisdr5-dev and
+    miri-sdr6 take the place of Debian's libmirisdr-dev and miri-sdr, which
+    ship the same files.
+  * Man pages for miri_sdr, miri_fm and miri_eeprom, and a copyright file.
+    miri_test is a development tool and is not packaged.
+
+ -- Bertold Van den Bergh <vandenbergh@bertold.org>  Tue, 20 Oct 2026 00:00:00 +0200
+
 libmirisdr5 (1.1.3-1) UNRELEASED; urgency=medium
 
   * Initial release.

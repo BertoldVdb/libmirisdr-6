@@ -210,6 +210,8 @@ struct mirisdr_dev {
     size_t              xfer_out_pos;
     unsigned char       *xfer_out;
     uint32_t            addr;
+    uint32_t            addr_seen;      /* the last header's counter, as read */
+    unsigned char       fill_zeros[4096];   /* gap fill handed to the callback */
     uint32_t            addr_step;
     int                 swap_iq;
     int                 driver_active;
@@ -398,6 +400,29 @@ static void mirisdr_xfer_lock (mirisdr_dev_t *p)         { pthread_mutex_lock(&p
 static void mirisdr_xfer_unlock (mirisdr_dev_t *p)       { pthread_mutex_unlock(&p->xfer_lock); }
 static void mirisdr_ev_lock (mirisdr_dev_t *p)           { pthread_mutex_lock(&p->ev_lock); }
 static void mirisdr_ev_unlock (mirisdr_dev_t *p)         { pthread_mutex_unlock(&p->ev_lock); }
+#endif
+
+/* A monotonic clock in ns, and usleep where the compiler has none */
+#if defined(_WIN32)
+static uint64_t mirisdr_now_ns (void)
+{
+    LARGE_INTEGER f, c;
+
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&c);
+    return (uint64_t) ((double) c.QuadPart * 1e9 / (double) f.QuadPart);
+}
+#else
+static uint64_t mirisdr_now_ns (void)
+{
+    struct timespec t;
+
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (uint64_t) t.tv_sec * 1000000000u + (uint64_t) t.tv_nsec;
+}
+#endif
+#if defined(_MSC_VER)
+static void usleep (unsigned us) { Sleep((us + 999) / 1000); }
 #endif
 
 /* A change of the stream state that depends on the state it leaves is one compare

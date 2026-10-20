@@ -12,6 +12,10 @@
    4 kB in the USB FIFO. Those 12 blocks are dropped and the next starts the count */
 #define MIRISDR_ADDR_DROP 12
 
+/* Without our firmware's stamp the most a gap is taken to be, about a second at the
+   highest rate: more is a misread header */
+#define MIRISDR_ADDR_GAP_MAX (1u << 25)
+
 /* Output bytes a sample, I/Q pair or real value, takes */
 static uint32_t mirisdr_unit_bytes (mirisdr_dev_t *p) {
     switch (p->format) {
@@ -33,8 +37,10 @@ static uint64_t mirisdr_gap_note (mirisdr_dev_t *p, uint64_t missing) {
 
     if (!p->gap_track) return 0;
 
-    /* up to one bulk transfer's worth */
-    if (p->gap_fill && p->fills_n < (int) (sizeof p->fills / sizeof p->fills[0])) {
+    /* up to one bulk transfer's worth. Not with the queue full: the gap folds into the
+       last one, and fill there would not follow on from that one's */
+    if (p->gap_fill && p->fills_n < (int) (sizeof p->fills / sizeof p->fills[0]) &&
+        p->gapq_n < (int) (sizeof p->gapq / sizeof p->gapq[0])) {
         f = missing;
         if (f > 16 * (uint64_t) p->addr_step) f = 16 * (uint64_t) p->addr_step;
         p->fills[p->fills_n].off = (uint32_t) ((p->stats.samples - p->conv_samples - p->conv_filled) * ub);
@@ -46,10 +52,9 @@ static uint64_t mirisdr_gap_note (mirisdr_dev_t *p, uint64_t missing) {
     at = p->fed_bytes + (p->stats.samples - p->conv_samples) * ub;
     i = p->gapq_n;
     if (i == (int) (sizeof p->gapq / sizeof p->gapq[0])) {
-        /* full: fold into the last, so the timeline still adds up */
+        /* full: fold into the last, unfilled, so the timeline still adds up */
         i--;
         p->gapq[i].samples += missing;
-        p->gapq[i].filled += (uint32_t) f;
     } else {
         p->gapq[i].at = at;
         p->gapq[i].samples = missing;
@@ -64,7 +69,8 @@ static uint64_t mirisdr_gap_note (mirisdr_dev_t *p, uint64_t missing) {
    counter and the IR block last completed run (if enabled). */
 /* returns 1 for a block to drop */
 static int mirisdr_addr_next (mirisdr_dev_t *p, const uint8_t *hdr, uint32_t step) {
-    uint32_t addr = hdr[3] << 24 | hdr[2] << 16 | hdr[1] << 8 | hdr[0] << 0;
+    uint32_t addr = (uint32_t) hdr[3] << 24 | (uint32_t) hdr[2] << 16 | (uint32_t) hdr[1] << 8 | hdr[0];
+    const uint32_t seen = addr;
     int32_t d;
 
     if (p->addr_restart) {
@@ -72,9 +78,11 @@ static int mirisdr_addr_next (mirisdr_dev_t *p, const uint8_t *hdr, uint32_t ste
 
         /* the device counts again from its start */
         p->addr_restart = 0;
+        /* the events go on from the last packet before: what a setting changed while
+           stopped shows in the first one after, with the packets between missed */
         if (p->addr_valid) {
             mirisdr_ir_resync(p);
-            p->ev_valid = 0;
+            p->ev_missed = 1;
         }
         p->addr_valid = 0;
     }
@@ -84,16 +92,29 @@ static int mirisdr_addr_next (mirisdr_dev_t *p, const uint8_t *hdr, uint32_t ste
     if (!p->addr_valid) {
         p->addr_valid = 1;
     } else if ((d > MIRISDR_ADDR_JITTER) || (d < -MIRISDR_ADDR_JITTER)) {
-        fprintf(stderr, "%d samples lost, %08x:%08x\n", d, p->addr, addr);
+        /* Blocks go missing whole. Without our firmware's stamp a misaligned stream reads
+           sample data as a header: a counter that went backwards, or on by part of a block,
+           is that, not samples that went missing. The count goes on from the last true one */
+        uint32_t part = (d > 0) ? (uint32_t) d % step : 0;
+        int misread = (d < 0) || (!p->fw_ours && (((uint32_t) d > MIRISDR_ADDR_GAP_MAX) ||
+                                                  ((part > MIRISDR_ADDR_JITTER) && (step - part > MIRISDR_ADDR_JITTER))));
+
         p->stats.gaps++;
         p->sync_run++;
         mirisdr_ir_resync(p);
         p->ev_missed = 1;
 
-        /* a counter that went backwards is a misaligned stream reading sample
-           data as a header, not samples that went missing */
-        if (d > 0) {
+        /* two headers in a row that agree with each other: the count is theirs from here,
+           what came between unknown */
+        if (misread && (addr == p->addr_seen + step)) {
+            fprintf(stderr, "libmirisdr: the block count taken again, %08x:%08x\n", p->addr, addr);
+        } else if (misread) {
+            fprintf(stderr, "libmirisdr: a block header off the count, %08x:%08x\n", p->addr, addr);
+            addr = p->addr;
+        } else {
             uint64_t f = mirisdr_gap_note(p, (uint32_t) d);
+
+            fprintf(stderr, "%d samples lost, %08x:%08x\n", d, p->addr, addr);
 
             /* filled samples are delivered, at their own index */
             p->stats.lost += (uint32_t) d - f;
@@ -113,6 +134,7 @@ static int mirisdr_addr_next (mirisdr_dev_t *p, const uint8_t *hdr, uint32_t ste
     mirisdr_events_latch(p, hdr, p->stats.samples, p->stats.samples + p->stats.lost, step);
 
     p->stats.samples+= step;
+    p->addr_seen = seen;
     p->addr = addr + step;
 
     mirisdr_atomic_add(&p->count_seq, 1);

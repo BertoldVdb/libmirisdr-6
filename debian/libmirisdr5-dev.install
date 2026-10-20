@@ -1,0 +1,5 @@
+usr/include/mirisdr.h
+usr/include/mirisdr_export.h
+usr/lib/*/libmirisdr.so
+usr/lib/*/libmirisdr.a
+usr/lib/*/pkgconfig/libmirisdr.pc

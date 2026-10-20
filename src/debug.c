@@ -125,6 +125,7 @@ int mirisdr_reboot (mirisdr_dev_t *p, int mode)
 {
     if (!p) goto failed;
     if (!p->dh) goto failed;
+    if ((mode != MIRISDR_BOOT_ROM) && (mode != MIRISDR_BOOT_RAM) && (mode != MIRISDR_BOOT_IGNORE_EEPROM)) goto failed;
 
     if (mode == MIRISDR_BOOT_IGNORE_EEPROM)
     {

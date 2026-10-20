@@ -3,5 +3,9 @@
 	dh $@ --buildsystem=cmake
 
 override_dh_auto_configure:
-	dh_auto_configure --buildsystem=cmake -- -DDETACH_KERNEL_DRIVER=ON \
+	dh_auto_configure -- -DDETACH_KERNEL_DRIVER=ON -DENABLE_SOAPY=ON \
 	-DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+# the udev rule lets users open the receivers without root
+execute_after_dh_install:
+	install -D -m 644 mirisdr.rules debian/libmirisdr5/usr/lib/udev/rules.d/60-libmirisdr5.rules

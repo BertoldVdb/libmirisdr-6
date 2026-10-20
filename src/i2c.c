@@ -61,12 +61,20 @@ static int mirisdr_i2c_status (mirisdr_dev_t *p, unsigned int ms)
     return st;
 }
 
+/* GPIO_1 and GPIO_2 are the bus's: not where the app holds them as inputs, nor on the
+   SDRplay boards with an expander, whose front end they drive (the RSPduo's second chip
+   select, the RSPdx-R2's direct sampling switch) */
+static int mirisdr_i2c_pins_free (mirisdr_dev_t *p)
+{
+    return !(p->gpio_hold & 0x6) && !MIRISDR_HW_EXPANDER(p->hw_flavour);
+}
+
 static int mirisdr_i2c_xfer (mirisdr_dev_t *p, uint8_t addr, unsigned int flags,
                              uint8_t *buf, int len, int in)
 {
     unsigned int ms;
 
-    if (!p || !p->dh || !p->fw_ours) return -1;
+    if (!p || !p->dh || !p->fw_ours || !mirisdr_i2c_pins_free(p)) return -1;
     if ((addr > 0x7F) || (len < 0) || (len > MIRISDR_I2C_CHUNK) || (!buf && len)) return -1;
 
     ms = (unsigned int) ((uint64_t) (len + 1) * 9 * p->i2c_clock_ns / 1000000) + CTRL_TIMEOUT;
@@ -96,7 +104,7 @@ int mirisdr_i2c_read (mirisdr_dev_t *p, uint8_t addr, unsigned int flags,
 
 int mirisdr_i2c_recover (mirisdr_dev_t *p)
 {
-    if (!p || !p->dh || !p->fw_ours) return -1;
+    if (!p || !p->dh || !p->fw_ours || !mirisdr_i2c_pins_free(p)) return -1;
 
     p->reg8_valid = 0;
 
@@ -111,6 +119,9 @@ int mirisdr_i2c_recover (mirisdr_dev_t *p)
 int mirisdr_i2c_transfer (mirisdr_dev_t *p, uint8_t addr,
                           const uint8_t *out, int outlen, uint8_t *in, int inlen)
 {
+    /* the read checked first: refused after a write held open, the bus would stay held */
+    if ((inlen < 0) || (inlen > MIRISDR_I2C_CHUNK) || (!in && inlen)) return -1;
+
     if (outlen || !inlen)
     {
         int st = mirisdr_i2c_write(p, addr, inlen ? MIRISDR_I2C_NO_STOP : 0, out, outlen);

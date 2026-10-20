@@ -60,12 +60,14 @@ int mirisdr_feed_bulk (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx, 
     if (!p || p->dh || !cb || (!data && n)) return -1;
     if (n > (1u << 24)) return -1;          /* in pieces: the parser counts in int */
 
-    /* the callback's buffer size is fixed by the first call, as read_async's is */
+    /* the callback's buffer size is fixed by the first call, as read_async's is: set once
+       its buffer is there */
     if (!p->cb) {
+        if (buf_len % 8) return -1;
+        if (buf_len && !p->xfer_out && !(p->xfer_out = malloc(buf_len))) return -1;
         p->cb = cb;
         p->user_out_len = buf_len;
         p->xfer_out_len = p->bb ? 0 : buf_len;
-        if (buf_len && !(p->xfer_out = malloc(buf_len))) return -1;
         mirisdr_bb_start(p);
     }
     p->cb_ctx = ctx;

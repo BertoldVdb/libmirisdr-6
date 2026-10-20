@@ -1,0 +1,167 @@
+.TH MIRI_FM 1 "October 2026" "libmirisdr-6" "User Commands"
+.ad l
+.ss 12 0
+.SH NAME
+miri_fm \- demodulate FM, AM and SSB with a Mirics based receiver
+.SH SYNOPSIS
+.B miri_fm
+.B \-f
+.I frequency
+.RI [ options ]
+.RI [ file ]
+.SH DESCRIPTION
+.B miri_fm
+tunes a receiver built on the Mirics MSi2500 and MSi001, such as the SDRplay
+RSP1, RSP1B, RSPdx\-R2 and RSPduo, demodulates what it hears and writes the
+audio as signed 16 bit mono samples, little endian. Without a file, or with
+.BR \- ,
+the audio goes to standard output. Play it with
+.BR play (1)
+or
+.BR aplay (1),
+as in the examples below.
+.PP
+Frequencies and rates take the suffixes k, M and G, so 24k is 24000.
+.SH OPTIONS
+.TP
+.BI \-f " frequency"
+The frequency to tune to. Give
+.B \-f
+more than once to scan the frequencies, which needs a squelch. A range such as
+.B 118M:137M:25k
+scans from 118 to 137 MHz in steps of 25 kHz.
+.TP
+.BI \-M " modulation"
+.B fm
+(the default),
+.BR wbfm ,
+.BR am ,
+.BR usb ,
+.B lsb
+or
+.BR raw .
+.B wbfm
+is short for
+.BR "\-M fm \-s 170k \-o 4 \-A fast \-r 32k \-l 0 \-E deemp" .
+.B raw
+writes I and Q as pairs of signed 16 bit numbers, at the rate it prints.
+.TP
+.BI \-s " rate"
+The rate of the demodulated channel. The default is 24k.
+.TP
+.BI \-r " rate"
+Resample the audio to this rate. By default it stays at the rate of
+.BR \-s .
+.TP
+.BI \-g " gain"
+The total tuner gain in units of 10 dB, so 4.5 is 45 dB. The nearest gain the
+band has is taken. The default is the library's, 43 dB.
+.TP
+.BI \-l " level"
+The squelch level, as the RMS of the channel with full scale at 16384. The
+default is 0, no squelch.
+.TP
+.BI \-t " delay"
+How long the squelch waits, in buffers of about 20 ms. The default is 10. A
+positive value mutes the audio or moves on to the next frequency. A negative
+value ends the program.
+.TP
+.BI \-o " factor"
+Oversampling, from 1 to 16. The default is 1, and 4 is recommended.
+.TP
+.BI \-p " ppm"
+The error of the reference in parts per million, to correct the tuning. The
+default is 0, or the value at the end of the serial when it ends in a number
+followed by p.
+.TP
+.BI \-E " option"
+Turn on an option. Give
+.B \-E
+more than once for more than one.
+.B edge
+tunes to the lower edge of the channel,
+.B dc
+removes the DC offset,
+.B deemp
+adds de\-emphasis and
+.B direct
+turns on direct sampling.
+.B offset
+is accepted but does nothing.
+.TP
+.BI \-i " if"
+The IF in Hz.
+.B auto
+(the default) takes 450 kHz, or 1620 kHz for a channel wider than 480 kHz.
+0 is zero IF, which needs a rate of 1.3 Msps or more. 450000, 1620000 and
+2048000 are the low IFs, which take any rate. The demodulator then runs at a
+whole multiple of the audio rate and averages it down.
+.TP
+.BI \-w " bandwidth"
+The IF filter in Hz. It defaults to the widest the IF allows. 200000 and 300000
+need the 450 kHz IF, 600000 any low IF and 1536000 zero IF or the 1620 or
+2048 kHz IF. Zero IF also takes 5000000 to 8000000 in 1 MHz steps. A filter the
+IF cannot have is refused.
+.TP
+.BI \-F " size"
+A filter with less leakage when the rate is brought down, of size 0 or 9. Size 0
+has a poor roll off. It works with zero IF only, a low IF has filters of its own.
+.TP
+.BI \-A " method"
+How the phase is worked out:
+.B std
+(the default),
+.B fast
+or
+.BR lut .
+.TP
+.BI \-m " format"
+How samples are packed on the USB:
+.B 504
+(8 bits, the fastest),
+.B 384
+(10 bits plus 2),
+.B 336
+(12 bits) or
+.B 252
+(14 bits). By default the format with the most bits that fits is taken.
+.TP
+.BI \-e " mode"
+The USB transfer,
+.B ISOC
+(the default) or
+.BR BULK .
+1 and 2 are taken as ISOC and BULK.
+.TP
+.BI \-d " receiver"
+Which receiver to open: an index counting from 0, the serial of the receiver,
+or the start of its serial. The default is 0.
+.TP
+.BI \-T " board"
+The board, when the USB ids do not tell it: 0 a plain MSi2500 and MSi001 board,
+1 the RSP1, 2 the RSP1B, 3 the RSPdx\-R2 and 4 the RSPduo.
+.SH EXAMPLES
+Listen to an FM station:
+.PP
+.RS
+miri_fm \-M wbfm \-f 96.3M | play \-r 32k \-t raw \-e s \-b 16 \-c 1 \-V1 \-
+.RE
+.PP
+Scan the air band with a squelch:
+.PP
+.RS
+miri_fm \-M am \-f 118M:137M:25k \-l 70 | aplay \-r 24k \-f S16_LE \-t raw \-c 1
+.RE
+.PP
+Decode pagers with multimon:
+.PP
+.RS
+miri_fm \-f 466.025M \-s 22050 | multimon \-t raw /dev/stdin
+.RE
+.SH SEE ALSO
+.BR miri_sdr (1),
+.BR miri_eeprom (1),
+.BR play (1),
+.BR aplay (1)
+.PP
+https://github.com/BertoldVdb/libmirisdr\-6

@@ -1,0 +1,132 @@
+.TH MIRI_EEPROM 1 "October 2026" "libmirisdr-6" "User Commands"
+.ad l
+.ss 12 0
+.SH NAME
+miri_eeprom \- read, back up and write the EEPROM of a Mirics based receiver
+.SH SYNOPSIS
+.B miri_eeprom
+.RB [ \-d
+.IR index ]
+.I command
+.RI [ arguments ]
+.RB [ \-\-force ]
+.SH DESCRIPTION
+Many receivers built on the Mirics MSi2500 keep a small EEPROM next to it. The
+chip reads it when it starts, and it can hold the USB ids the chip shows or a
+whole firmware image to boot instead of the one in its ROM.
+.B miri_eeprom
+reads and writes it.
+.PP
+With the libmirisdr\-6 firmware in the EEPROM the receiver has its own serial
+from the moment it is plugged in, so programs find the same receiver again. The
+receiver must be unplugged and plugged in again before a new image runs.
+.PP
+.B Make a backup before anything else.
+Writing the firmware replaces what the maker put there, and without a copy it
+may be hard to go back to the vendor software. Plug the receiver in again so it
+runs from its ROM, and read the EEPROM before any other program opens it:
+.PP
+.RS
+miri_eeprom saferead backup.bin
+.RE
+.PP
+Every command that writes also saves the whole EEPROM first, to
+.I miri_eeprom\-backup\-<serial or ids>\-<time>.bin
+in the current directory, and writes nothing if that fails.
+.B "miri_eeprom write"
+with that file puts it back.
+.SH COMMANDS
+.TP
+.BI saferead " file" " \fR[\fIbytes\fR] [\fB\-u\fI vid\fB:\fIpid\fR] [\fB\-g\fI reg8\fR]"
+The safest way to dump the EEPROM to a file. It does not load the firmware of
+the library and does nothing else with the receiver. It counts
+.B \-d
+among the devices with vendor id 1df7, or with the ids given with
+.BR \-u .
+.B \-g
+sets register 8 of the chip to this value before the read, for boards that need
+other pins.
+.TP
+.B info
+Show how the EEPROM is addressed and what its first byte says it holds.
+.TP
+.B probe
+Measure the real size of the EEPROM. What it changes to find out is put back.
+.TP
+.BI read " file" " \fR[\fIbytes\fR]"
+Dump the EEPROM to a file.
+.TP
+.BI write " file" " \fR[\fIaddress\fR]"
+Write a file to the EEPROM, at address 0 unless given. At address 0 the blocks
+of a boot image must load below 0x1800.
+.TP
+.BI writeids " vid pid" " \fR[\fIbcd\fR]"
+Have the ROM start with these USB ids.
+.TP
+.BI writefw " image" " \fR[\fB\-v\fI vid\fR] [\fB\-p\fI pid\fR] [\fB\-s\fI serial\fR]"
+Boot this image instead of the ROM.
+.B default
+is the firmware built into the library. With none of
+.BR \-v ,
+.B \-p
+and
+.B \-s
+the receiver keeps the ids and serial it has now. Otherwise those not given come
+from the image, and
+.B \-s """"
+gives no serial.
+.B "\-s random"
+makes one up. The image covers bytes 0x40 to 0x4F, where SDRplay boards keep a
+factory string, so only the backup keeps that.
+.TP
+.B disable
+Set the first byte back to 0xFF, so the chip starts from its ROM again.
+.SH OPTIONS
+.TP
+.BI \-d " index"
+Which receiver, counting from 0. It may come anywhere on the line.
+.TP
+.B \-\-force
+Also write USB ids the library would not find again, an image it does not know
+or boot blocks it would refuse.
+.PP
+Numbers are decimal unless they start with 0x. The USB ids are hexadecimal, as
+.BR lsusb (8)
+prints them.
+.SH SERIALS OF SDRPLAY BOARDS
+The firmware shows up with the USB ids 16d0:158c, which do not tell the board.
+The library takes it from the serial instead, so on an SDRplay board the serial
+must start with the letter of the board and a dash, followed by the 10
+characters of the SDRplay serial:
+.B B\-
+for the RSP1B,
+.B C\-
+for the RSPdx\-R2 and
+.B D\-
+for the RSPduo. Other boards take any serial of up to 12 characters.
+.SH EXAMPLES
+Back up the EEPROM of the second receiver:
+.PP
+.RS
+miri_eeprom \-d 1 saferead backup.bin
+.RE
+.PP
+Put the firmware on an RSP1B, with its SDRplay serial:
+.PP
+.RS
+miri_eeprom writefw default \-s B\-1234567890
+.RE
+.PP
+Go back to the backup:
+.PP
+.RS
+miri_eeprom write backup.bin
+.RE
+.SH NOTES
+After a replug the USB ids change, so udev may need to run its rules again
+before a user can open the receiver.
+.SH SEE ALSO
+.BR miri_sdr (1),
+.BR miri_fm (1)
+.PP
+https://github.com/BertoldVdb/libmirisdr\-6

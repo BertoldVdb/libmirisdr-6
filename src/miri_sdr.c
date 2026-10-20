@@ -29,6 +29,12 @@
 #else
 #include <Windows.h>
 #endif
+/* the console handler and binary stdout, MinGW too */
+#if defined (_WIN32)
+#include <windows.h>
+#include <fcntl.h>
+#include <io.h>
+#endif
 
 #include "mirisdr.h"
 
@@ -118,7 +124,7 @@ void usage(void)
 	exit(1);
 }
 
-#if defined (_WIN32) && !defined(__MINGW32__)
+#if defined (_WIN32)
 BOOL WINAPI
 sighandler(int signum)
 {
@@ -139,6 +145,19 @@ static void sighandler(int signum)
 	mirisdr_cancel_async(dev);
 }
 #endif
+
+/* A whole number from 0 to the most a uint32_t holds, else the program ends */
+static uint32_t parse_u32(const char *arg, const char *what)
+{
+	char *end;
+	double v = strtod(arg, &end);
+
+	if (end == arg || *end || !(v >= 0.0 && v <= 4294967295.0)) {
+		fprintf(stderr, "%s: %s is not a number from 0 to 4294967295.\n", what, arg);
+		exit(2);
+	}
+	return (uint32_t)(v + 0.5);
+}
 
 static void mirisdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 {
@@ -175,7 +194,7 @@ static void mirisdr_callback(unsigned char *buf, uint32_t len, void *ctx)
 
 int main(int argc, char **argv)
 {
-#if !defined (_WIN32) || defined(__MINGW32__)
+#if !defined (_WIN32)
 	struct sigaction sigact;
 #endif
 	char *filename = NULL;
@@ -187,6 +206,7 @@ int main(int argc, char **argv)
 	int sync_mode = 0;
 	int baseband = 0;
 	int block_given = 0;
+	int flush_failed;
 	int transfer_given = 0;
 	int swap_iq = 0;
 	FILE *file;
@@ -219,7 +239,7 @@ int main(int argc, char **argv)
 	while ((opt = getopt(argc, argv, "b:Bd:D:T:e:f:g:G:i:m:qs:w:S::")) != -1) {
 		switch (opt) {
 		case 'b':
-			out_block_size = (uint32_t)atof(optarg);
+			out_block_size = parse_u32(optarg, "-b");
 			block_given = 1;
 			break;
 		case 'B':
@@ -253,7 +273,7 @@ int main(int argc, char **argv)
 				transfer_name = optarg;}
 			break;
 		case 'f':
-			frequency = (uint32_t)atof(optarg);
+			frequency = parse_u32(optarg, "-f");
 			break;
 		case 'g':
 			gain = (int)(atof(optarg) * 10 + 0.5); /* dB */
@@ -311,7 +331,7 @@ int main(int argc, char **argv)
 			swap_iq = 1;
 			break;
 		case 's':
-			samp_rate = (uint32_t)atof(optarg);
+			samp_rate = parse_u32(optarg, "-s");
 			break;
 		case 'w':
 			bw = atoi(optarg);
@@ -334,9 +354,14 @@ int main(int argc, char **argv)
 	if(argc <6)
 		usage();
 	dev_index = atoi(argv[1]);
-	samp_rate = atoi(argv[2])*1000;
+	samp_rate = parse_u32(argv[2], "samplerate");
+	if (samp_rate > 4294967295u / 1000) {
+		fprintf(stderr, "samplerate: %s kHz is too high.\n", argv[2]);
+		exit(2);
+	}
+	samp_rate *= 1000;
 	gain=(int)(atof(argv[3]) * 10 + 0.5); /* dB */
-	frequency = atoi(argv[4]);
+	frequency = parse_u32(argv[4], "frequency");
 	filename = argv[5];
 #endif
 	if(out_block_size < MINIMAL_BUF_LENGTH ||
@@ -398,7 +423,7 @@ int main(int argc, char **argv)
 	}
 
 
-#if !defined (_WIN32) || defined(__MINGW32__)
+#if !defined (_WIN32)
 	sigact.sa_handler = sighandler;
 	sigemptyset(&sigact.sa_mask);
 	sigact.sa_flags = 0;
@@ -492,6 +517,9 @@ int main(int argc, char **argv)
 
 	if(strcmp(filename, "-") == 0) { /* Write samples to stdout */
 		file = stdout;
+#if defined (_WIN32)
+		_setmode(_fileno(file), _O_BINARY);
+#endif
 	} else {
 		file = fopen(filename, "wb");
 		if (!file) {
@@ -517,6 +545,7 @@ int main(int argc, char **argv)
 
 			if (fwrite(buffer, 1, n_read, file) != (size_t)n_read) {
 				fprintf(stderr, "Short write, samples lost, exiting!\n");
+				write_failed = 1;
 				r = -1;
 				break;
 			}
@@ -541,12 +570,15 @@ int main(int argc, char **argv)
 	else
 		fprintf(stderr, "\nLibrary error %d, exiting...\n", r);
 
+	/* what is still buffered can fail to go out too */
+	flush_failed = fflush(file) != 0 || ferror(file);
+	if (file != stdout && fclose(file) != 0)
+		flush_failed = 1;
+	if (flush_failed && !write_failed)
+		fprintf(stderr, "Writing the output failed.\n");
 	/* a cancel in the callback after a short write ends the stream without an error */
-	if (write_failed)
+	if (flush_failed || write_failed)
 		r = -1;
-
-	if (file != stdout)
-		fclose(file);
 
 out:
 	mirisdr_close(dev);

@@ -26,7 +26,7 @@ The SoapySDR module is built too when the SoapySDR development files are install
 
 <h3>The kernel's own drivers</h3>
 
-Linux has its own drivers for these chips, `msi2500` and `msi001`. They take the original RSP1 and a Hauppauge TV stick (USB ids `1df7:2500` and `2040:d300`) as a radio device, `/dev/swradio0`. The RSP1A and later receivers have other ids, which these drivers do not take. libmirisdr detaches the kernel driver when it opens such a receiver and gives it back when it closes it. Two drivers taking turns on one receiver is fragile, so it is better to keep the kernel's away altogether:
+Linux has its own drivers for these chips, `msi2500` and `msi001`. They take the original RSP1 and a Hauppauge TV stick (USB ids `1df7:2500` and `2040:d300`) as a radio device, `/dev/swradio0`. The RSP1A and later receivers have other ids, which these drivers do not take. On Linux libmirisdr detaches the kernel driver when it opens such a receiver and gives it back when it closes it (build with `-DDETACH_KERNEL_DRIVER=OFF` to leave it alone). Two drivers taking turns on one receiver is fragile, so it is better to keep the kernel's away altogether:
 
     printf 'blacklist msi2500\nblacklist msi001\n' | sudo tee /etc/modprobe.d/blacklist-msi.conf
     sudo modprobe -r msi2500 msi001

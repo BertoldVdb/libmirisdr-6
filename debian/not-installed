@@ -1,0 +1,2 @@
+# a test suite for development, it pulls SoapySDR into miri-sdr
+usr/bin/miri_test

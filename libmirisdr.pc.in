@@ -6,6 +6,7 @@ includedir=@includedir@
 Name: MiriSDR Library
 Description: C Utility Library
 Version: @VERSION@
-Cflags: -I${includedir}/ @MIRISDR_PC_CFLAGS@
-Libs: -L${libdir} -lmirisdr -lusb-1.0
+Requires.private: @MIRISDR_PC_REQUIRES@
+Cflags: -I${includedir}/
+Libs: -L${libdir} -lmirisdr
 Libs.private: @MIRISDR_PC_LIBS@

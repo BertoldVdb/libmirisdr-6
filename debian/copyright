@@ -1,0 +1,109 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: libmirisdr-6
+Upstream-Contact: Bertold Van den Bergh <vandenbergh@bertold.org>
+Source: https://github.com/BertoldVdb/libmirisdr-6
+
+Files: *
+Copyright:
+ 2012-2013 OSMOCOM project
+ 2012 Steve Markgraf <steve@steve-m.de>
+ 2012 Dimitri Stolnikov <horiz0n@gmx.net>
+ 2012 Hoernchen <la@tfc-server.de>
+ 2012 Kyle Keen <keenerd@gmail.com>
+ 2013-2014 Miroslav Slugen <thunder.m@email.cz>
+ 2014 Leif Asbrink SM5BSZ
+ 2016-2017 Edouard Griffiths (f4exb) <f4exb06@gmail.com>
+ 2021-2025 Erik Brocko (ericek111)
+ 2022 Vladisslav P <vladisslav2011@gmail.com>
+ 2024 Christopher Andrews
+ 2024-2026 Peter Hackenberg <peter@dr-hackenberg.de>
+ 2026 Bertold Van den Bergh <vandenbergh@bertold.org>
+License: GPL-2+
+
+Files: CMakeLists.txt
+ include/CMakeLists.txt
+ src/CMakeLists.txt
+ cmake/Modules/Version.cmake
+ mirisdr.rules
+Copyright: 2012-2013 OSMOCOM project
+License: GPL-3+
+
+Files: src/iqconverter_float.c
+ src/iqconverter_float.h
+Copyright:
+ 2014 Youssef Touil <youssef@airspy.com>
+ 2026 Bertold Van den Bergh <vandenbergh@bertold.org>
+License: MIT
+
+Files: src/firmware_pps.c
+Copyright: 2026 Bertold Van den Bergh <vandenbergh@bertold.org>
+License: MIT
+Comment:
+ Generated from the msi2500-pps firmware, whose source is at
+ https://github.com/BertoldVdb/msi2500-pps
+
+Files: src/getopt/*
+Copyright: 1987-2001 Free Software Foundation, Inc.
+License: LGPL-2.1+
+
+Files: src/libusb.h.1.0.13
+Copyright:
+ 2001 Johannes Erdfelt <johannes@erdfelt.com>
+ 2007-2008 Daniel Drake <dsd@gentoo.org>
+ 2012 Pete Batard <pete@akeo.ie>
+License: LGPL-2.1+
+
+Files: debian/*
+Copyright:
+ 2024 Christopher Andrews
+ 2025 Erik Brocko (ericek111)
+ 2026 Bertold Van den Bergh <vandenbergh@bertold.org>
+License: GPL-2+
+
+License: GPL-2+
+ This program is free software: you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation, either version 2 of the License, or
+ (at your option) any later version.
+ .
+ On Debian systems, the complete text of the GNU General Public License
+ version 2 can be found in "/usr/share/common-licenses/GPL-2".
+
+License: GPL-3+
+ This program is free software: you can redistribute it and/or modify
+ it under the terms of the GNU General Public License as published by
+ the Free Software Foundation, either version 3 of the License, or
+ (at your option) any later version.
+ .
+ On Debian systems, the complete text of the GNU General Public License
+ version 3 can be found in "/usr/share/common-licenses/GPL-3".
+
+License: LGPL-2.1+
+ This library is free software; you can redistribute it and/or modify
+ it under the terms of the GNU Lesser General Public License as
+ published by the Free Software Foundation; either version 2.1 of the
+ License, or (at your option) any later version.
+ .
+ On Debian systems, the complete text of the GNU Lesser General Public
+ License version 2.1 can be found in "/usr/share/common-licenses/LGPL-2.1".
+
+License: MIT
+ Permission is hereby granted, free of charge, to any person obtaining
+ a copy of this software and associated documentation files (the
+ "Software"), to deal in the Software without restriction, including
+ without limitation the rights to use, copy, modify, merge, publish,
+ distribute, sublicense, and/or sell copies of the Software, and to
+ permit persons to whom the Software is furnished to do so, subject to
+ the following conditions:
+ .
+ The above copyright notice and this permission notice shall be
+ included in all copies or substantial portions of the Software.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ SOFTWARE.

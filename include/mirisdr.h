@@ -28,7 +28,9 @@ extern "C" {
 // 1=gain and frequency info.
 // 2=extended debug (register writes)
 // 3=more extended debug (function calls)
+#ifndef MIRISDR_DEBUG
 #define MIRISDR_DEBUG 0
+#endif
 
 #include <stdint.h>
 #include <mirisdr_export.h>
@@ -63,6 +65,8 @@ typedef struct mirisdr_dev mirisdr_dev_t;
 
 /* devices */
 MIRISDR_API uint32_t mirisdr_get_device_count (void);
+/* 1 when the library takes a USB VID:PID as a receiver, 0 when not */
+MIRISDR_API int mirisdr_device_known (uint16_t vid, uint16_t pid); /* extra */
 MIRISDR_API const char *mirisdr_get_device_name (uint32_t index);
 /* The serial is the system's copy (libusb >= 1.0.30, or sysfs on Linux), otherwise read by opening
    the device for a moment. If serial is NULL, the device is never opened. */
@@ -80,6 +84,7 @@ MIRISDR_API int mirisdr_get_device_port (uint32_t index, char *port, int port_le
 
 /* main */
 MIRISDR_API int mirisdr_open (mirisdr_dev_t **p, uint32_t index);
+/* On the stock firmware this loads the library's and returns MIRISDR_REOPEN: open again with the new fd */
 MIRISDR_API int mirisdr_open_fd (mirisdr_dev_t **p, int fd);
 MIRISDR_API int mirisdr_close (mirisdr_dev_t *p);
 MIRISDR_API int mirisdr_reset (mirisdr_dev_t *p);                       /* extra */
@@ -107,9 +112,9 @@ MIRISDR_API int mirisdr_read_sync (mirisdr_dev_t *p, void *buf, int len, int *n_
  * GPIO and the other I/O); the library has no lock around them. The callback runs on
  * the thread inside mirisdr_read_async() and may only cancel and read the stream
  * (buffer info, stats, mirisdr_get_stream()). mirisdr_cancel_async() may come from any
- * thread, also during a setting that restarts the stream. During such a setting the
- * callback can run on the control thread, for the transfers that come back while it waits.
- * See doc/c-api.md, Threads. */
+ * thread, also during a setting that restarts the stream. The callback can also run on
+ * any thread whose call goes to the USB (a setting, a tune, GPIO, mirisdr_scan_feed()),
+ * for the transfers that come back while it waits. See doc/c-api.md, Threads. */
 typedef void(*mirisdr_read_async_cb_t) (unsigned char *buf, uint32_t len, void *ctx);
 MIRISDR_API int mirisdr_read_async (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb, void *ctx, uint32_t num, uint32_t len);
 /* A cancel is kept from the moment mirisdr_read_async() is entered, also before its
@@ -177,7 +182,8 @@ typedef struct mirisdr_stream_stats
 	uint64_t gaps;      /* number of gaps in the stream */
 	uint64_t jitter;    /* number of jitter events. These happen at very high rates and are harmless. */
 	uint64_t resyncs;   /* byte alignment recoveries */
-	uint64_t index;     /* absolute index of the first sample in the buffer */
+	uint64_t index;     /* absolute index of the first sample of the USB transfer being converted
+	                       (the buffer's own is in mirisdr_buffer_info_t) */
 	uint64_t filled;    /* samples gap fill put in the stream, counted in samples, not in lost */
 	uint32_t reserved[MIRISDR_RESERVED];
 } mirisdr_stream_stats_t;
@@ -853,7 +859,9 @@ MIRISDR_API int mirisdr_set_pps_source (mirisdr_dev_t *p, int sof, int divider);
 MIRISDR_API int mirisdr_get_pps (mirisdr_dev_t *p, mirisdr_pps_t *out); /* extra */
 
 /* I2C master on GPIO_1 (SDA) and GPIO_2 (SCL). A read or write is at most 64 bytes
- * (the firmware's buffer). The result is 0, MIRISDR_I2C_NACK, or -1 for a USB failure */
+ * (the firmware's buffer). The result is 0, MIRISDR_I2C_NACK, or -1 for a USB failure.
+ * Refused where the open config holds those pins as inputs, and on the RSP1B, RSPdx-R2
+ * and RSPduo, whose front end uses them */
 #define MIRISDR_I2C_NO_STOP     0x01
 #define MIRISDR_I2C_REPEAT      0x02
 #define MIRISDR_I2C_NACK        1
@@ -863,7 +871,8 @@ MIRISDR_API int mirisdr_i2c_read (mirisdr_dev_t *p, uint8_t addr, unsigned int f
 MIRISDR_API int mirisdr_i2c_transfer (mirisdr_dev_t *p, uint8_t addr, const uint8_t *out, int outlen, uint8_t *in, int inlen); /* extra */
 MIRISDR_API int mirisdr_i2c_recover (mirisdr_dev_t *p); /* extra */
 
-/* Send UART data via GPIO_2 */
+/* Send UART data via GPIO_2. Refused where the open config holds it as an input, and on
+ * the RSP1B, RSPdx-R2 and RSPduo, whose front end uses it */
 MIRISDR_API int mirisdr_uart_write (mirisdr_dev_t *p, uint32_t baud, const uint8_t *buf, int len); /* extra */
 
 /* The MSI2500 has a remote control receiver on GPIO3, this function allows to configure a

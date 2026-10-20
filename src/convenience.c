@@ -130,7 +130,15 @@ int nearest_gain(mirisdr_dev_t *dev, int target_gain)
 		return 0;
 	}
 	gains = malloc(sizeof(int) * count);
+	if (!gains) {
+		fprintf(stderr, "WARNING: Out of memory for the gain list.\n");
+		return -1;
+	}
 	count = mirisdr_get_tuner_gains(dev, gains);
+	if (count <= 0) {
+		free(gains);
+		return 0;
+	}
 	nearest = gains[0];
 	for (i=0; i<count; i++) {
 		err1 = abs(target_gain - nearest);
@@ -166,7 +174,8 @@ int verbose_set_sample_rate(mirisdr_dev_t *dev, uint32_t samp_rate)
 	if (r < 0) {
 		fprintf(stderr, "WARNING: Failed to set sample rate.\n");
 	} else {
-		fprintf(stderr, "Sampling at %u S/s.\n", samp_rate);
+		/* the rate reached, which can differ from the one asked */
+		fprintf(stderr, "Sampling at %u S/s.\n", mirisdr_get_sample_rate(dev));
 	}
 	return r;
 }

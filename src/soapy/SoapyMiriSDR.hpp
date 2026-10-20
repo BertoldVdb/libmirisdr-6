@@ -159,7 +159,8 @@ private:
     std::string ifMode;     /* "auto": zero IF from rateMin up, a low IF below; or a fixed one */
     int converters;         /* MIRISDR_IQ_BOTH, _ONLY_I or _ONLY_Q */
     bool baseband;          /* the band at 0 Hz in complex float, whatever the IF */
-    uint32_t wantRate, wantBw;  /* as asked, wantBw 0 for the library's choice */
+    uint32_t wantRate;          /* as asked */
+    uint32_t wantBw[2];         /* each tuner's filter as asked, 0 for the library's choice */
     uint32_t argBw;             /* the device string's bandwidth, what 0 falls back to */
     bool bandGainRanges;    /* gain ranges of the band tuned, not the most of any band */
 
@@ -194,18 +195,20 @@ private:
     bool dropPending;
     bool pairOpen;          /* two tuners: the slot at ringTail has tuner 0's half */
     size_t slotPos, gapPos;
-    std::atomic<long long> timeOffsetNs;
-    std::atomic<long long> lastIndex;
-    std::atomic<uint32_t> lastRate;
+    /* the time, read and moved as one under timeMutex */
+    mutable std::mutex timeMutex;
+    long long timeOffsetNs;
+    long long lastIndex;
+    uint32_t lastRate;
     /* the index counts samples at the rate of each part: time up to the last rate change */
-    std::atomic<long long> timeBaseNs, timeBaseIndex;
-    std::atomic<uint32_t> timeBaseRate;
+    long long timeBaseNs, timeBaseIndex;
+    uint32_t timeBaseRate;
     uint32_t asyncBuffers;
     int chanOrder[2];       /* the stream's buffers: channel of each, -1 none */
 
-    /* the tuner the call in progress acts on, its channel's: the device-wide settings
-       act on tuner 0, but for biastee (channel 1's port) and port_tie and ref_out (the
-       streamed tuner's tune carries them) */
+    /* the tuner the call in progress acts on, its channel's. Of the device settings the IF
+       ones act on each tuner streamed, the notches on tuner 0, biastee on the tuner with
+       the bias-T, and port_tie and ref_out through the streamed tuner's tune */
     mutable int tunerSel;
     int chanOf(size_t channel) const;
     int streamTuners(void) const { return streamCfg.tuners ? streamCfg.tuners : 1; }
@@ -213,6 +216,7 @@ private:
 
     bool applyStream(const mirisdr_stream_config_t &cfg, bool strict = false);
     bool configure(uint32_t rate);
+    void setIfSetting(const std::string &key, const std::string &value);
     bool realOut(void) const;
     std::vector<uint32_t> lowIfRates(uint32_t ifHz) const;
     void lowIfRange(uint32_t ifHz, uint32_t &lo, uint32_t &hi) const;
@@ -228,4 +232,6 @@ private:
     long long indexToNs(uint64_t index, uint32_t rate) const;
     void timeRebase(uint64_t index, uint32_t rate);
     uint32_t fixedIf(void) const;
+    bool zeroIfFixed(void) const { return ifMode == "0"; }
+    long long hardwareTime(void) const;
 };

@@ -376,6 +376,9 @@ static int mirisdr_rs_run (mirisdr_rs_t *r, float *io, int n)
     const int H = r->W - 1;
     int out = 0, k;
 
+    /* nothing in: nothing moves, and the history may not be there yet */
+    if (n <= 0) return 0;
+
     if (n > r->cap) {
         float *xi = realloc(r->xi, (size_t) (H + n) * sizeof(float));
         float *xq = xi ? realloc(r->xq, (size_t) (H + n) * sizeof(float)) : NULL;
@@ -1078,13 +1081,13 @@ static void mirisdr_bb_call (mirisdr_dev_t *p, mirisdr_bb_t *b, float *iq, uint3
 }
 
 /* One chain's share of a converters' buffer, in its info (whose counts each converter
-   shares. It is a copy, as the deliveries overwrite p->cb_info) */
-static void mirisdr_bb_feed_one (mirisdr_dev_t *p, mirisdr_bb_t *b, unsigned char *buf, uint32_t len,
+   shares. It is a copy, as the deliveries overwrite p->cb_info). The output is in b->work,
+   its count returned, for mirisdr_bb_emit */
+static uint32_t mirisdr_bb_take (mirisdr_dev_t *p, mirisdr_bb_t *b, unsigned char *buf, uint32_t len,
                                  const mirisdr_buffer_info_t *in)
 {
     uint64_t lost_in = in->index - in->sample;
-    uint32_t k, n, at, chunk;
-    float *w;
+    uint32_t k, n;
 
     /* the unfilled gaps before this buffer, as output samples. Behind a buffer being filled
        they come after its start, so its index leaves them out */
@@ -1116,39 +1119,54 @@ static void mirisdr_bb_feed_one (mirisdr_dev_t *p, mirisdr_bb_t *b, unsigned cha
     }
 
     n = (uint32_t) mirisdr_bb_process(p, b, buf, len);
-    w = b->work;
     b->produced += n;
+
+    return n;
+}
+
+/* Of a chain's n outputs from at on, up to and with the next buffer handed out: all of them
+   as they come, or up to a buffer of the size asked for. Returns where it got to */
+static uint32_t mirisdr_bb_emit (mirisdr_dev_t *p, mirisdr_bb_t *b, uint32_t n, uint32_t at)
+{
+    const float *w = b->work;
+    uint32_t chunk;
+
+    if (at >= n) return n;
 
     /* buffers as they come */
     if (!p->user_out_len || p->user_out_len < 2 * sizeof(float)) {
-        if (n) mirisdr_bb_call(p, b, w, n);
-        return;
+        mirisdr_bb_call(p, b, (float *) w + 2 * at, n - at);
+        return n;
     }
 
     /* or of the size asked for */
     if (!b->out || b->out_cap != p->user_out_len / (2 * sizeof(float))) {
         float *o = realloc(b->out, p->user_out_len);
-        if (!o) return;
+        if (!o) return n;
         b->out = o;
         b->out_cap = (uint32_t) (p->user_out_len / (2 * sizeof(float)));
         b->out_n = 0;
     }
 
-    for (at = 0; at < n; at += chunk) {
+    while (at < n) {
         chunk = b->out_cap - b->out_n;
         if (chunk > n - at) chunk = n - at;
 
         if (!b->out_n && chunk == b->out_cap) {
-            mirisdr_bb_call(p, b, w + 2 * at, chunk);
-            continue;
+            mirisdr_bb_call(p, b, (float *) w + 2 * at, chunk);
+            return at + chunk;
         }
         memcpy(b->out + 2 * b->out_n, w + 2 * at, (size_t) chunk * 2 * sizeof(float));
         b->out_n += chunk;
+        at += chunk;
         if (b->out_n == b->out_cap) {
             mirisdr_bb_call(p, b, b->out, b->out_cap);
             b->out_n = 0;
+            return at;
         }
     }
+
+    return at;
 }
 
 /* From mirisdr_cb_call, with the converters' buffer and its info in p->cb_info. Two
@@ -1161,7 +1179,8 @@ static void mirisdr_bb_feed (mirisdr_dev_t *p, unsigned char *buf, uint32_t len)
     uint32_t k, n;
 
     if (!p->bb2) {
-        mirisdr_bb_feed_one(p, p->bb, buf, len, &in);
+        n = mirisdr_bb_take(p, p->bb, buf, len, &in);
+        for (k = 0; k < n; k = mirisdr_bb_emit(p, p->bb, n, k));
         return;
     }
 
@@ -1190,6 +1209,16 @@ static void mirisdr_bb_feed (mirisdr_dev_t *p, unsigned char *buf, uint32_t len)
         }
     }
 
-    mirisdr_bb_feed_one(p, p->bb, p->bb_split, half, &in);
-    mirisdr_bb_feed_one(p, p->bb2, p->bb_split + half, half, &in);
+    /* both chains, then their buffers in turn: tuner 0's, tuner 1's for the same span. The
+       chains run alike, so they fill their buffers together */
+    {
+        uint32_t n0 = mirisdr_bb_take(p, p->bb, p->bb_split, half, &in);
+        uint32_t n1 = mirisdr_bb_take(p, p->bb2, p->bb_split + half, half, &in);
+        uint32_t a0 = 0, a1 = 0;
+
+        while ((a0 < n0) || (a1 < n1)) {
+            a0 = mirisdr_bb_emit(p, p->bb, n0, a0);
+            a1 = mirisdr_bb_emit(p, p->bb2, n1, a1);
+        }
+    }
 }

@@ -235,6 +235,9 @@ int mirisdr_scan_compile (mirisdr_dev_t *p, int tuner, const mirisdr_tune_config
     sh->fw_list_at = 1;             /* SPI writes wait in the list */
     sh->stream.follow_tune = 0;
     sh->bb = NULL;              /* the device's filters are not the shadow's */
+    sh->bb2 = NULL;
+    sh->bb_split = NULL;
+    sh->bb_split_cap = 0;
     sh->batch_depth = 0;
     sh->batch_n = 0;
     sh->batch_running = 0;

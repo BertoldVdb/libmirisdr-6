@@ -391,7 +391,7 @@ static int mirisdr_fw_ids_wanted (mirisdr_dev_t *p, const mirisdr_open_config_t 
    holds one behind the ids. Not when byte 0 says microcode follows instead. */
 static int mirisdr_fw_ee_serial (mirisdr_dev_t *p, char *out, int len)
 {
-    uint8_t b[MIRISDR_FW_SERIAL_MAX];
+    uint8_t b[MIRISDR_FW_SERIAL_MAX + 1];      /* one more, to see a longer one */
     mirisdr_device_t *d;
     uint16_t vid, pid;
     int n;
@@ -402,9 +402,10 @@ static int mirisdr_fw_ee_serial (mirisdr_dev_t *p, char *out, int len)
     if ((mirisdr_read_eeprom(p, 0, b, 1) < 0) || (b[0] != MIRISDR_EE_IDS)) return 0;
     if (mirisdr_read_eeprom(p, MIRISDR_EE_SERIAL_AT, b, sizeof b) < 0) return 0;
 
-    /* printable up to the first byte that is not, 0xFF on the RSP1B and RSPdx-R2 */
+    /* printable up to the first byte that is not, 0xFF on the RSP1B and RSPdx-R2. One
+       longer than the image takes is not cut short: the image keeps its own */
     for (n = 0; (n < (int) sizeof b) && (b[n] >= 0x20) && (b[n] < 0x7F); n++);
-    if (!n || (n >= len)) return 0;
+    if (!n || (n > MIRISDR_FW_SERIAL_MAX) || (n >= len)) return 0;
 
     memcpy(out, b, (size_t) n);
     out[n] = 0;
@@ -509,6 +510,11 @@ static struct {
     char serial[MIRISDR_FW_SERIAL_MAX + 1];
     time_t at;
     int stage;
+    /* the identity the load gives it, worked out before the reboots: past the EEPROM the
+       ROM declares only its own */
+    int have_ids, have_serial;
+    uint16_t vid, pid;
+    char want[MIRISDR_FW_SERIAL_MAX + 1];
 } mirisdr_fd_note;
 
 static int mirisdr_fd_stage (mirisdr_dev_t *dev)
@@ -573,6 +579,12 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
     if ((cfg->hw_flavour < MIRISDR_HW_AUTO) || (cfg->hw_flavour > MIRISDR_HW_RSPDUO))
     {
         fprintf(stderr, "libmirisdr: hw_flavour %d is not a board\n", cfg->hw_flavour);
+        return -1;
+    }
+
+    if ((cfg->firmware_ids < MIRISDR_FW_IDS_IMAGE) || (cfg->firmware_ids > MIRISDR_FW_IDS_SET))
+    {
+        fprintf(stderr, "libmirisdr: firmware_ids %d is not one of MIRISDR_FW_IDS_*\n", cfg->firmware_ids);
         return -1;
     }
 
@@ -658,7 +670,30 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
 
     /* by fd: the steps an earlier open of this device took, see mirisdr_fd_note */
     fd_stage = (cfg->fd >= 0) ? mirisdr_fd_stage(dev) : 0;
-    if ((from_rom == 1) && (cfg->fd >= 0)) mirisdr_fd_mark(dev, 0);
+    if ((from_rom == 1) && (cfg->fd >= 0))
+    {
+        /* back on the ROM after the reboot past the EEPROM, moments ago: the identity
+           worked out from the firmware it ran before */
+        if (work && (mirisdr_fd_note.stage == 2) && (time(NULL) - mirisdr_fd_note.at <= MIRISDR_FD_NOTE_S))
+        {
+            have_ids = mirisdr_fd_note.have_ids;
+            vid = mirisdr_fd_note.vid;
+            pid = mirisdr_fd_note.pid;
+            have_serial = mirisdr_fd_note.have_serial;
+            snprintf(serial, sizeof serial, "%s", mirisdr_fd_note.want);
+            if (have_ids && (mirisdr_fw_set_ids(work, size, vid, pid) < 0)) goto out;
+            if (have_serial && (mirisdr_fw_set_serial(work, size, serial) < 0)) goto out;
+        }
+        mirisdr_fd_mark(dev, 0);
+    }
+    else if ((from_rom == 0) && (cfg->fd >= 0) && !fd_stage)
+    {
+        mirisdr_fd_note.have_ids = have_ids;
+        mirisdr_fd_note.vid = vid;
+        mirisdr_fd_note.pid = pid;
+        mirisdr_fd_note.have_serial = have_serial;
+        snprintf(mirisdr_fd_note.want, sizeof mirisdr_fd_note.want, "%s", have_serial ? serial : "");
+    }
 
     if ((from_rom == 0) && (fd_stage == 2))
     {
@@ -676,7 +711,11 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
     {
         /* the plain reboot came back to firmware: past the EEPROM this time */
         mirisdr_fd_mark(dev, 2);
-        if (mirisdr_reboot(dev, MIRISDR_BOOT_IGNORE_EEPROM) != MIRISDR_REOPEN) goto out;
+        if (mirisdr_reboot(dev, MIRISDR_BOOT_IGNORE_EEPROM) != MIRISDR_REOPEN)
+        {
+            mirisdr_fd_mark(dev, 0);
+            goto out;
+        }
         r = mirisdr_fw_recycle(&dev, cfg, &path, &at, index);
         goto out;
     }
@@ -685,7 +724,11 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
     {
         /* Try a plain reboot first */
         if (cfg->fd >= 0) mirisdr_fd_mark(dev, 1);
-        if (mirisdr_reboot(dev, MIRISDR_BOOT_ROM) != MIRISDR_REOPEN) goto out;
+        if (mirisdr_reboot(dev, MIRISDR_BOOT_ROM) != MIRISDR_REOPEN)
+        {
+            if (cfg->fd >= 0) mirisdr_fd_mark(dev, 0);
+            goto out;
+        }
 
         if ((r = mirisdr_fw_recycle(&dev, cfg, &path, &at, index))) goto out;
 

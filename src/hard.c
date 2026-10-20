@@ -90,6 +90,8 @@ static int mirisdr_stream_adc (mirisdr_dev_t *p)
 #define MIRISDR_STREAM_ADJUST   1       /* the single setters: clamp and warn rather than refuse, and
                                            no combination checks */
 #define MIRISDR_STREAM_FORCE    2       /* write it all even if nothing changed */
+#define MIRISDR_STREAM_REPLAN   4       /* counts the plans again for a lower baseband rate */
+#define MIRISDR_STREAM_REPLAN_MAX 12    /* three of them */
 
 static const struct { const char *name; int format; } mirisdr_formats[] = {
 	{ "252_S16",      MIRISDR_FORMAT_252_S16 },
@@ -634,7 +636,7 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 	if ((uint64_t) pl->rate > most)
 	{
 		/* snapped quietly, the result says, and the single setters warn */
-		if (!snap || adjust || (pl->bb_path >= MIRISDR_BASEBAND_COMPLEX))
+		if (!snap || adjust)
 		{
 			mirisdr_refuse(p, "rate %u needs %lu B/s of blocks, more than the engine's %lu", pl->rate,
 			        (long unsigned) ((uint64_t) pl->rate * 1024 / spp), (long unsigned) MIRISDR_ENGINE_BLOCK_RATE);
@@ -642,7 +644,25 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 			mirisdr_refuse(p, "\n");
 		}
 
-		if (!snap || (pl->bb_path >= MIRISDR_BASEBAND_COMPLEX)) return -1;
+		if (!snap) return -1;
+
+		/* a low IF's converters run at a rate its filters are planned for: planned again for
+		   a lower output, by as much as the converters are over. The format can change with
+		   it, so a few rounds at most */
+		if (pl->bb_path >= MIRISDR_BASEBAND_COMPLEX)
+		{
+			mirisdr_stream_config_t cc = *c;
+			uint32_t out = pl->bb_rate;
+
+			cc.rate = (uint32_t) ((uint64_t) out * most / pl->rate);
+			if ((cc.rate >= out) || (flags & MIRISDR_STREAM_REPLAN_MAX) == MIRISDR_STREAM_REPLAN_MAX)
+			{
+				mirisdr_refuse(p, "rate %u: no baseband rate under the engine's limit\n", out);
+				return -1;
+			}
+
+			return mirisdr_stream_plan(p, &cc, flags + MIRISDR_STREAM_REPLAN, iq, if_hz, ds_edge, pl);
+		}
 
 		pl->rate = (uint32_t) most;
 
@@ -656,6 +676,9 @@ static int mirisdr_stream_plan (mirisdr_dev_t *p, const mirisdr_stream_config_t 
 	}
 
 	pl->pll_rate = pl->decim ? pl->rate / 2 : pl->rate;
+	/* the clock runs at twice an odd rate's half: the rate is what it reaches (a low IF's
+	   converters keep theirs, the filters are planned for it, and are off by under a ppm) */
+	if (pl->decim && (pl->bb_path < MIRISDR_BASEBAND_COMPLEX)) pl->rate = 2 * pl->pll_rate;
 	if (pl->bb_path == MIRISDR_BASEBAND_ZERO_IF) pl->bb_rate = pl->rate;
 	pl->cfg.rate = (pl->bb_path >= MIRISDR_BASEBAND_COMPLEX) ? pl->bb_rate : pl->rate;
 
@@ -718,12 +741,14 @@ static void mirisdr_stream_result_of (uint32_t rate, int format, int swap, int d
 	res->tuners = tuners;
 }
 
-/* the registers only: the stream is stopped around this */
-static void mirisdr_stream_regs (mirisdr_dev_t *p, const mirisdr_stream_plan_t *pl)
+/* the registers only: the stream is stopped around this. -1: out of memory for the
+   filters (baseband is then off) or a register not written */
+static int mirisdr_stream_regs (mirisdr_dev_t *p, const mirisdr_stream_plan_t *pl)
 {
 	uint32_t reg3 = 0, reg4 = 0, reg7;
 	uint64_t i, vco, n, fract;
 	unsigned try;
+	int r = 0;
 
 	p->rate = pl->rate;
 	p->format = pl->format;
@@ -741,22 +766,27 @@ static void mirisdr_stream_regs (mirisdr_dev_t *p, const mirisdr_stream_plan_t *
 	p->bb_if = pl->bb_if;
 	p->bb_if2 = pl->bb_if2;
 	p->bb_ds = pl->bb_ds;
-	mirisdr_bb_setup(p);
+	if (mirisdr_bb_setup(p) < 0)
+	{
+		p->stream.baseband = 0;
+		r = -1;
+	}
 	p->xfer_out_len = p->bb ? 0 : p->user_out_len;
 	p->xfer_out_pos = 0;
 
 	reg7 = mirisdr_format_reg7(pl->format) | (pl->swap ? (1 << 9) : 0) | (pl->decim ? (1 << 3) : 0) |
 	       ((mirisdr_alt_burst(pl->alt) - 1) << 6);
-	mirisdr_write_reg(p, 0x07, reg7);
+	if (mirisdr_write_reg(p, 0x07, reg7) < 0) r = -1;
 	p->addr_step = mirisdr_format_spp(pl->format);
 	p->addr = p->addr_step + 2;
 
 	i = pl->cand[0];
 	vco = (uint64_t) pl->pll_rate * i * 12;
 
-	/* N is at least 4 here */
+	/* N is at least 4 here. The fraction to the nearest step, a whole one carried */
 	n = vco / 48000000UL;
-	fract = 0x200000UL * (vco % 48000000UL) / 48000000UL;
+	fract = (0x200000UL * (vco % 48000000UL) + 24000000UL) / 48000000UL;
+	if (fract == 0x200000UL) { n++; fract = 0; }
 #if MIRISDR_DEBUG >= 1
 	fprintf(stderr, "rate: %u, pll: %u, vco: %lu (%lu), n: %lu, fraction: %lu\n", pl->rate, pl->pll_rate,
 	        (long unsigned) vco, (long unsigned) (i / 2) - 1, (long unsigned) n, (long unsigned) fract);
@@ -775,8 +805,7 @@ static void mirisdr_stream_regs (mirisdr_dev_t *p, const mirisdr_stream_plan_t *
 
 	reg4 |= (0xfffff & fract) << 0;
 
-	mirisdr_write_reg(p, 0x04, reg4);
-	mirisdr_write_reg(p, 0x03, reg3);
+	if ((mirisdr_write_reg(p, 0x04, reg4) < 0) || (mirisdr_write_reg(p, 0x03, reg3) < 0)) r = -1;
 
 	/* The part reports its VCO band selection in read index 0, low nibble.
 	   Extremes: 0xF when it wants more capacitance than the bank has, 0 when it has
@@ -805,7 +834,8 @@ static void mirisdr_stream_regs (mirisdr_dev_t *p, const mirisdr_stream_plan_t *
 		alt = (try < pl->ncand) ? pl->cand[try] : pl->cand[0];
 		v = (uint64_t) pl->pll_rate * alt * 12;
 		n = v / 48000000UL;
-		fract = 0x200000UL * (v % 48000000UL) / 48000000UL;
+		fract = (0x200000UL * (v % 48000000UL) + 24000000UL) / 48000000UL;
+		if (fract == 0x200000UL) { n++; fract = 0; }
 
 		reg3 = (reg3 & ~0xf9cUL)
 		     | ((0x07 & (uint32_t) (alt / 2 - 1)) << 2)
@@ -819,33 +849,48 @@ static void mirisdr_stream_regs (mirisdr_dev_t *p, const mirisdr_stream_plan_t *
 #endif
 		vco = v;
 
-		mirisdr_write_reg(p, 0x04, reg4);
-		mirisdr_write_reg(p, 0x03, reg3);
+		if ((mirisdr_write_reg(p, 0x04, reg4) < 0) || (mirisdr_write_reg(p, 0x03, reg3) < 0)) r = -1;
 
 		if (try == pl->ncand) break;
 	}
+
+	return r;
 }
 
-/* stopped and started around it if it runs; returns whether it ran */
+/* Stopped and started around it if it runs, returns whether it ran. The caller holds the
+   transfers' lock until the stream is going again: a stream that starts meanwhile sets up
+   under it, so it is either through (running or ending) or takes what this sets. Still
+   starting here, it has not begun */
 static int mirisdr_stream_pause (mirisdr_dev_t *p)
 {
 	int s;
 
-	/* a stream still starting sets up its transfers from what this changes */
-	while (mirisdr_async_get(p) == MIRISDR_ASYNC_STARTING)
-#if defined (_WIN32) && !defined(__MINGW32__)
-		Sleep(1);
-#else
-		usleep(1000);
-#endif
-
 	/* the synchronous reads: stopped, the next one starts it again */
 	if (p->sync_ready) return (mirisdr_streaming_stop(p) < 0) ? -1 : 0;
+
+	s = mirisdr_async_get(p);
+	if (s == MIRISDR_ASYNC_RUNNING)
+	{
+		if (mirisdr_stop_async(p) == 0)
+		{
+			/* refused: as it was, streaming again (or ended, when it will not) */
+			if (mirisdr_adc_stop(p) < 0)
+			{
+				mirisdr_stream_resume(p);
+				return -1;
+			}
+
+			return 1;
+		}
+
+		/* a cancel meanwhile: the stream ends, as below */
+		s = mirisdr_async_get(p);
+		if ((s != MIRISDR_ASYNC_CANCELING) && (s != MIRISDR_ASYNC_FAILED)) return -1;
+	}
 
 	/* a stream ending: its transfers still come in, and feed the filters this replaces.
 	   Back here first, under the lock the run drains and frees them under. Once in, a
 	   canceled stream submits none */
-	s = mirisdr_async_get(p);
 	if ((s == MIRISDR_ASYNC_CANCELING) || (s == MIRISDR_ASYNC_FAILED))
 	{
 		int r = 0;
@@ -863,20 +908,25 @@ static int mirisdr_stream_pause (mirisdr_dev_t *p)
 		return ((r < 0) || (mirisdr_adc_stop(p) < 0)) ? -1 : 0;
 	}
 
-	if (s != MIRISDR_ASYNC_RUNNING) return 0;
-
-	return ((mirisdr_stop_async(p) < 0) || (mirisdr_adc_stop(p) < 0)) ? -1 : 1;
+	return 0;
 }
 
 static int mirisdr_stream_send (mirisdr_dev_t *p, const mirisdr_stream_plan_t *pl)
 {
-	int streaming;
+	int streaming, r = 0;
 
-	if ((streaming = mirisdr_stream_pause(p)) < 0) return -1;
+	mirisdr_xfer_lock(p);
+	if ((streaming = mirisdr_stream_pause(p)) < 0) r = -1;
+	else if (mirisdr_stream_regs(p, pl) < 0)
+	{
+		/* not what the app asked for, and not what it had: a stream ends with an error */
+		if (streaming) mirisdr_async_fail(p);
+		r = -1;
+	}
+	else if (streaming && (mirisdr_stream_resume(p) < 0)) r = -1;
+	mirisdr_xfer_unlock(p);
 
-	mirisdr_stream_regs(p, pl);
-
-	return (streaming && (mirisdr_stream_resume(p) < 0)) ? -1 : 0;
+	return r;
 }
 
 /* What a stream c takes from the tune in force: under direct sampling the I converter,

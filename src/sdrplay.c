@@ -326,3 +326,16 @@ static int mirisdr_sdrplay_send (mirisdr_dev_t *p, int chip, uint16_t w)
 
     return r;
 }
+
+/* At close: the bias-T, the amplifiers, pads and notches off, and on the RSPduo the ports
+   apart (its second chip all released). The rest of the word as it was, all released when
+   it is not known. The next open sets the expanders up again */
+static int mirisdr_sdrplay_off (mirisdr_dev_t *p)
+{
+    int chip = (p->hw_flavour == MIRISDR_HW_RSPDUO) ? 1 : 0;
+    uint16_t off = chip ? 0xFFFF : (SDRPLAY_A1 | SDRPLAY_A4 | SDRPLAY_A5 | SDRPLAY_A6 | (0xFu << DXR2_PAD));
+
+    if (!MIRISDR_HW_EXPANDER(p->hw_flavour)) return 0;
+
+    return mirisdr_sdrplay_send(p, chip, ((p->exp_valid & (1 << chip)) ? p->exp_iodir[chip] : 0xFFFF) | off);
+}

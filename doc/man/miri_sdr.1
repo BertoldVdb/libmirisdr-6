@@ -1,0 +1,139 @@
+.TH MIRI_SDR 1 "October 2026" "libmirisdr-6" "User Commands"
+.ad l
+.ss 12 0
+.SH NAME
+miri_sdr \- capture samples from a Mirics based receiver
+.SH SYNOPSIS
+.B miri_sdr
+.B \-f
+.I frequency
+.RI [ options ]
+.I file
+.SH DESCRIPTION
+.B miri_sdr
+tunes a receiver built on the Mirics MSi2500 and MSi001, such as the SDRplay
+RSP1, RSP1B, RSPdx\-R2 and RSPduo, and writes the samples it receives to a file.
+Give
+.B \-
+as the file to write them to standard output.
+It runs until it is stopped with Ctrl+C.
+.PP
+Complex samples are written as I and Q pairs, little endian.
+With
+.B "\-m 504"
+each value is a signed 8 bit number. The other formats give signed 16 bit
+numbers. With
+.B \-B
+the output is 32 bit floats.
+.SH OPTIONS
+.TP
+.BI \-f " frequency"
+The frequency to tune to, in Hz.
+.TP
+.BI \-s " rate"
+The sample rate in Hz. The default is 2048000.
+.TP
+.BI \-m " format"
+How samples are packed on the USB.
+.B auto
+(the default) takes the format with the most bits that the USB can carry at the rate.
+.B 504
+is 8 bits,
+.B 384
+10 bits plus 2,
+.B 336
+12 bits and
+.B 252
+14 bits.
+The real formats use one converter, and only make sense with a low IF:
+.BR autor ,
+.B 768r
+(10 bits plus 2),
+.B 672r
+(12 bits) and
+.B 504r
+(16 bits).
+.TP
+.BI \-g " gain"
+The total gain in units of 10 dB, so 4.5 is 45 dB. The nearest gain the band has
+is taken. Without it the gain stays as it is set. There is no automatic gain.
+.TP
+.BI \-G " mixer,lna,mixbuffer,baseband"
+The gain of each stage instead of a total. The mixer and LNA take 0 or 1, the
+mixbuffer 0, 6, 12, 18 or 24 and the baseband 0 to 59.
+.TP
+.BI \-i " if"
+The IF in Hz: 0 (zero IF, the default), 450000, 1620000 or 2048000.
+.TP
+.BI \-w " bandwidth"
+The IF filter in Hz. It defaults to the widest the IF allows. 200000 and 300000
+need the 450 kHz IF, 600000 any low IF and 1536000 zero IF or the 1620 or
+2048 kHz IF. Zero IF also takes 5000000 to 8000000 in 1 MHz steps, and 14000000
+for no filter. A filter the IF cannot have is refused.
+.TP
+.B \-B
+Write complex floats with the tuned frequency at 0 Hz, whatever the IF. A low IF
+gives four times the IF, halved 0 to 8 times, for example
+.BR "\-i 2048000 \-s 256000" .
+With a real format one converter is used.
+.TP
+.BI \-D " mode"
+Bypass the decimation stage.
+.B auto
+(the default) bypasses it above 14.5 Msps, where the PLL runs out.
+.B on
+always bypasses it, for 2.6 to 30 Msps.
+.B off
+never does, for 1.3 to 15 Msps.
+.TP
+.BI \-e " mode"
+The USB transfer.
+.B ISOC
+(the default) reserves 3 packets of 1024 bytes each microframe, 24.576 MB/s.
+.B ISOC2
+reserves 2 and
+.B ISOC1
+reserves 1.
+.B BULK
+is not tied to microframes. 1 and 2 are taken as ISOC and BULK.
+.TP
+.BI \-d " index"
+Which receiver to open, counting from 0. The default is 0.
+.TP
+.BI \-T " board"
+The board, when the USB ids do not tell it: 0 a plain MSi2500 and MSi001 board,
+1 the RSP1, 2 the RSP1B, 3 the RSPdx\-R2 and 4 the RSPduo.
+.TP
+.BI \-b " size"
+The size of each block written, in bytes. The default is 16 times 16384. With
+.B \-B
+blocks are written as they come.
+.TP
+.B \-q
+Swap I and Q. With a real format this picks the converter that is sampled.
+.TP
+.B \-S
+Read synchronously instead of with callbacks. This needs the BULK transfer and
+does not work with
+.BR \-B .
+.SH EXAMPLES
+Capture 2 Msps at 100 MHz with 40 dB of gain:
+.PP
+.RS
+miri_sdr \-f 100000000 \-s 2000000 \-g 4 capture.bin
+.RE
+.PP
+Write baseband floats at 256 ksps through the 2048 kHz IF to another program:
+.PP
+.RS
+miri_sdr \-f 433920000 \-i 2048000 \-s 256000 \-B \- | other_program
+.RE
+.SH FILES
+.TP
+.I /usr/lib/udev/rules.d/60\-libmirisdr5.rules
+Lets users open the receivers without root.
+.SH SEE ALSO
+.BR miri_fm (1),
+.BR miri_eeprom (1)
+.PP
+https://github.com/BertoldVdb/libmirisdr\-6

@@ -15,7 +15,7 @@ A receiver has two configurations.
   - The tune: the frequency, the IF, the filter and the gain. It lives in a `mirisdr_tune_config_t`.
   - The stream: the sample rate, how samples cross the USB, and what the program gets. It lives in a `mirisdr_stream_config_t`.
 
-You change either one the same way. Read the one in force, change the fields you care about and apply it. The library checks the whole configuration first. If any part of it is not possible, it refuses all of it, prints the reason on stderr and keeps what it had. It never quietly picks something else.
+You change either one the same way. Read the one in force, change the fields you care about and apply it. The library checks the whole configuration first. If any part of it is not possible, it refuses all of it, prints the reason on stderr and keeps what it had. A value with no exact step, such as a rate, a filter, a gain or a pad, is taken to the nearest one there is, and the result says which. Set `strict` in the configuration to have those refused instead.
 
 Each apply call can fill in a result. The result says what is really running, such as the exact rate or the LO frequency the synthesizer reached. There is also a check call for each configuration, which gives the same result without changing anything.
 
@@ -87,7 +87,7 @@ It prints `810000 samples/s from 6480000, LO 435120000 Hz, bandwidth 1536000 Hz`
 
 <h3>Opening a receiver</h3>
 
-`mirisdr_open(&dev, index)` opens a receiver by its place in the list. `mirisdr_get_device_count()`, `mirisdr_get_device_name()` and `mirisdr_get_device_usb_strings()` describe the receivers found. `mirisdr_get_index_by_serial()` finds one by its serial, or by the USB port it is listed at when it has none (`1:3`). The USB port keeps working once it has a serial. `mirisdr_get_device_port()` gives the port of any receiver in the list, and the serial it reports, empty when it reports none. `mirisdr_get_index_by_serial_port()` finds one by serial, port or both, the way `mirisdr_open_ex()` does. None of these open a receiver, so one in use by another program is not disturbed: the serial is the copy the system keeps, from libusb 1.0.30 on or from sysfs on Linux. Only with an older libusb on other systems is each receiver opened for a moment to read its serial; a port alone and `mirisdr_get_device_usb_strings()` with `serial` NULL never do.
+`mirisdr_open(&dev, index)` opens a receiver by its place in the list. `mirisdr_get_device_count()`, `mirisdr_get_device_name()` and `mirisdr_get_device_usb_strings()` describe the receivers found. `mirisdr_get_index_by_serial()` finds one by its serial, or by the USB port it is listed at when it has none (`1:3`). The USB port keeps working once it has a serial. `mirisdr_get_device_port()` gives the port of any receiver in the list, and the serial it reports, empty when it reports none. `mirisdr_get_index_by_serial_port()` finds one by serial, port or both, the way `mirisdr_open_ex()` does. `mirisdr_device_known()` says whether the library takes a USB VID:PID as a receiver. None of these open a receiver, so one in use by another program is not disturbed: the serial is the copy the system keeps, from libusb 1.0.30 on or from sysfs on Linux. Only with an older libusb on other systems is each receiver opened for a moment to read its serial. A port alone and `mirisdr_get_device_usb_strings()` with `serial` NULL never do.
 
 For more control use `mirisdr_open_ex()`. Fill the config with `mirisdr_open_config_default()` first and change only what you need.
 
@@ -101,7 +101,7 @@ if (mirisdr_open_ex(&dev, &cfg) < 0)
 
 The fields you are most likely to use:
 
-  - `index`, `serial`, `usb_port` or `fd`: which receiver. A serial or port wins over the index. `serial` also takes the USB port a receiver is listed at, such as `1:3`. `fd` takes a USB file descriptor that is already open, as on Android.
+  - `index`, `serial`, `usb_port` or `fd`: which receiver. A serial or port wins over the index. `serial` also takes the USB port a receiver is listed at, such as `1:3`. `fd` takes a USB file descriptor that is already open, as on Android. A receiver opened that way still running the stock firmware gets the library's loaded, reboots and the open returns `MIRISDR_REOPEN`: the application opens it again with the new descriptor. The stock firmware is not kept, as it tends to lock up after a while and then needs a replug.
 
 With both `serial` and `usb_port`, the receiver with that serial is taken, in whatever port. When none has it, the receiver in `usb_port` is taken, but only if it reports no serial, as one running from its ROM after a power cycle. One that reports another serial is not.
 
@@ -109,7 +109,7 @@ Avoid opening based on an index: a receiver plugged in or out shifts the index o
   - `hw_flavour`: the kind of board. `MIRISDR_HW_AUTO`, the default, tells from the USB ids. Other values are `MIRISDR_HW_DEFAULT`, `MIRISDR_HW_SDRPLAY`, `MIRISDR_HW_RSP1B`, `MIRISDR_HW_RSPDXR2` and `MIRISDR_HW_RSPDUO`. A wrong value can switch things the board does not have, such as a bias-T.
   - `firmware`, `firmware_path` and `keep_running`: the library loads its own firmware into the receiver by default, and replaces a different one that is running. Give another image, or set `keep_running` to use what runs.
 
-`mirisdr_close()` stops any stream and frees everything.
+`mirisdr_close()` stops any stream and frees everything. It also puts the tuners in standby and switches off the bias-T and the front end's amplifiers, pads and notches. On the RSPduo it takes the ports apart.
 
 
 <h3>Tuning</h3>
@@ -347,7 +347,7 @@ You can apply a new stream config while samples are flowing. The stream restarts
 `mirisdr_read_async(dev, callback, ctx, num, len)` streams until it is cancelled. It calls `callback(buf, len, ctx)` from its own thread for every buffer.
 
   - `num` is the number of USB transfers in flight. 0 means 32.
-  - `len` is the buffer length in bytes. 0 means the buffers come as the USB delivers them, which is the best choice for most programs. A fixed length gathers samples into buffers of exactly that size.
+  - `len` is the buffer length in bytes. 0 means the buffers come as the USB delivers them, which is the best choice for most programs. A fixed length gathers samples into buffers of exactly that size. It has to be a multiple of 8, so a buffer holds whole samples in every format.
 
 Call `mirisdr_reset_buffer()` before you start. Stop with `mirisdr_cancel_async()`, from the callback or from another thread. A cancel counts from the moment `mirisdr_read_async()` is entered, even before the first transfer runs. A cancel made before that is lost, so keep a flag of your own and check it in the callback.
 
@@ -377,7 +377,7 @@ Gap fill only covers short gaps. It puts in at most 16 USB packets of zeros per 
 
 <h4>Stream statistics</h4>
 
-`mirisdr_get_stream_stats()` gives totals since the stream started: samples delivered, samples lost, gaps, samples filled, and a few error counters. Call it from the callback, where the numbers are consistent. Its `index` is the position of the current buffer's first sample.
+`mirisdr_get_stream_stats()` gives totals since the stream started: samples delivered, samples lost, gaps, samples filled, and a few error counters. Call it from the callback, where the numbers are consistent. Its `index` is the position of the first sample of the USB transfer being converted, which is not where the buffer starts once buffers have a fixed length or a gap is filled. For the buffer's own position use `mirisdr_get_buffer_info()`.
 
 <h4>Reading without a callback</h4>
 
@@ -512,6 +512,7 @@ The comments in `mirisdr.h` describe the timing in detail.
   - GPIO: `mirisdr_set_gpio_direction()`, `mirisdr_set_gpio_output()`, `mirisdr_get_gpio_input()` and related calls, for 4 pins.
   - I2C on GPIO 1 and 2: `mirisdr_i2c_write()`, `mirisdr_i2c_read()` and `mirisdr_i2c_transfer()`.
   - Serial output on GPIO 2: `mirisdr_uart_write()`.
+  - I2C and serial output are refused on pins the open config holds as inputs, and on the RSP1B, RSPdx-R2 and RSPduo, whose front end uses those pins.
   - The infrared receiver on GPIO 3: `mirisdr_set_ir()` calls a function for every pulse.
   - The EEPROM: `mirisdr_read_eeprom()`, `mirisdr_write_eeprom()` and `mirisdr_eeprom_size()`.
   - Firmware: `mirisdr_get_fw_id()` reads the id of the running image. `mirisdr_fw_get()` and `mirisdr_fw_patch()` read and change the USB ids and serial inside an image.
@@ -532,7 +533,7 @@ The comments in `mirisdr.h` describe the timing in detail.
 The library follows rtl-sdr's model. A device has no lock around its calls, so the threads that use it share the work as follows:
 
   - **One control thread.** Tuning, gain, rate, format and the other settings, scans, GPIO, EEPROM, UART, I2C and register access all come from one thread at a time. Several of them are made of a sequence of USB requests, and the library keeps the registers it last wrote in a cache. Two control threads at once interleave those requests and let the cache go out of date. If your program has more than one thread that changes settings, hold a lock of your own around these calls.
-  - **The stream thread** is the one inside `mirisdr_read_async()`. It calls your callback. While a setting restarts the stream, the control thread waits for the transfers under way to come back, and the callback can then run on the control thread, inside that setting's call, for the buffers they carry. Do not hold a lock in the callback that the control thread holds around its settings, or take a recursive one.
+  - **The stream thread** is the one inside `mirisdr_read_async()`. It calls your callback. The callback can also run on any thread that makes a call which goes to the USB: libusb hands completed transfers to whichever thread is handling its events, and a control request does that while it waits. Settings, tuning, GPIO, EEPROM, register access and `mirisdr_scan_feed()` all can, and a setting that restarts the stream always does, while it waits for the transfers under way to come back. Do not hold a lock in the callback that a thread holds around such calls, or take a recursive one.
   - **The stream event callback** runs under a lock of the library's: once `mirisdr_set_stream_events()` returns, the old callback no longer runs, and the callback and its context always go together.
   - **From the callback**, call only `mirisdr_cancel_async()` and the calls that read the stream: `mirisdr_get_buffer_info()`, `mirisdr_get_stream_stats()` and `mirisdr_get_stream()`. A setting changed from the callback would have to stop the stream, which waits for the callback that is asking it to.
   - **`mirisdr_cancel_async()`** may come from any thread at any time, also while the control thread changes a setting that restarts the stream.

@@ -138,6 +138,8 @@ static int mirisdr_set_gain_words(mirisdr_dev_t *p)
                               MIRISDR_DC_OFFSET_CALIBRATION_SPEEDUP_OFF) << 13;
     if (p->external_tuner) return 0;
 
+    /* RSPduo: the words go to the selected tuner, wherever the last ones went */
+    if (mirisdr_duo_route_to(p, p->tuner_cur) < 0) return -1;
     if (mirisdr_tuner_write(p, 1, reg1, 0) < 0) return -1;
 
     /* DC Offset Calibration setup */
@@ -169,11 +171,6 @@ static int mirisdr_front_gain_of(mirisdr_band_t band)
     case MIRISDR_BAND_L:    return 4;
     default:                return 24;
     }
-}
-
-static int mirisdr_front_gain(mirisdr_dev_t *p)
-{
-    return mirisdr_front_gain_of(p->band);
 }
 
 static int mirisdr_max_gain_of(mirisdr_band_t band)
@@ -287,15 +284,18 @@ static void mirisdr_gr_set(mirisdr_dev_t *p, const mirisdr_gr_t *r)
 }
 
 /* Stages asked for as reductions, for a band and r->amp_db. Strict: dB values the band
-   cannot do are refused, and a bypass where there is no amplifier. Otherwise each is taken
-   to the nearest the band has (on or off, baseband 0-59, the mixbuffer's steps). On a path
-   without the amplifier its state is left as it was */
+   cannot do are refused, the mixbuffer off the AM inputs, and a bypass where there is no
+   amplifier. Otherwise each is taken to the nearest the band has (on or off, baseband 0-59,
+   the mixbuffer's steps). The LNA's state is kept on the AM inputs, which do not have it, for
+   the band after (the stages read back carry it there). On a path without the amplifier its
+   state is left as it was */
 static int mirisdr_gr_of_stages(mirisdr_band_t band, const mirisdr_gain_config_t *g, mirisdr_gr_t *r, int strict)
 {
     int mb = g->mixbuffer, bb = g->baseband;
+    const int am = (band == MIRISDR_BAND_AM1) || (band == MIRISDR_BAND_AM2);
 
     if (strict && ((g->lna & ~1) || (g->mixer & ~1) || (g->amp_bypass & ~1) || (bb < 0) || (bb > 59) ||
-                   (g->amp_bypass && !r->amp_db)))
+                   (g->amp_bypass && !r->amp_db) || (!am && mb)))
         return -1;
 
     if (bb < 0) bb = 0;
@@ -361,32 +361,32 @@ static void mirisdr_gain_retune (mirisdr_dev_t *p)
  * The (first) call with *gains==NULL returns number of available gains.
  * The (second) call with *gains!=NULL fills the array and returns the count.
  *
- * The max. available gain depends on the selected band: 102, 85 in band IV/V, 82 in
- * L band and 96 on AM port 1, plus the board's amplifier: from 30 MHz on the RSP1B and
- * RSPdx-R2, from 55 MHz on the RSPduo.
+ * The count is the same for a board whatever the band, as programs size the array
+ * once: up to 102 dB, plus the most the board's amplifier gives. A band that reaches
+ * less (85 in band IV/V, 82 in L band, 96 on AM port 1, the amplifier only on part of
+ * the range) takes the higher values as its most.
  */
+static int mirisdr_board_amp_max(mirisdr_dev_t *p);
+
 int mirisdr_get_tuner_gains(mirisdr_dev_t *p, int *gains)
 {
-    int i;
+    int i, n;
 
     if (!p) return -1;
 #if MIRISDR_DEBUG >= 3
     fprintf(stderr, "mirisdr_get_tuner_gains: %p (band: %d)\n", gains, p->band);
 #endif
-    i = mirisdr_max_gain(p) + 1;
+    n = 59 + 19 + 24 + mirisdr_board_amp_max(p) + 1;
     if (gains)
-    {
-        for (i = 0; i <= mirisdr_max_gain(p); i++)
-        {
-            gains[i] = i;
-        }
-    }
+        for (i = 0; i < n; i++) gains[i] = i;
 
-    return i;
+    return n;
 }
 
 int mirisdr_set_tuner_gain(mirisdr_dev_t *p, int gain)
 {
+    int old, old_stages;
+
     if (!p)
     {
         fprintf(stderr, "mirisdr_set_tuner_gain: error: nil device pointer!\n");
@@ -401,9 +401,11 @@ int mirisdr_set_tuner_gain(mirisdr_dev_t *p, int gain)
         goto gain_auto;
     }
 
+    old = p->gain;
+    old_stages = p->gain_stages_set;
     p->gain = gain;
     p->gain_stages_set = 0;
-    if (p->ds) return mirisdr_gain_tune(p);
+    if (p->ds) goto retune;
 
     /* the board's amplifier switched on or off is an expander pin: the tune again */
     if (p->amp_db)
@@ -412,11 +414,18 @@ int mirisdr_set_tuner_gain(mirisdr_dev_t *p, int gain)
 
         mirisdr_gr_get(p, &r);
         mirisdr_split_of(p->band, gain, &r);
-        if (r.amp != p->gain_reduction_amp) return mirisdr_gain_tune(p);
+        if (r.amp != p->gain_reduction_amp) goto retune;
     }
     mirisdr_gain_split(p);
 
     return mirisdr_set_gain(p);
+
+retune:
+    /* refused, the gain in force stays */
+    if (mirisdr_gain_tune(p) == 0) return 0;
+    p->gain = old;
+    p->gain_stages_set = old_stages;
+    return -1;
 
     gain_auto: return mirisdr_set_tuner_gain_mode(p, 0);
 }
@@ -531,7 +540,9 @@ int mirisdr_set_mixbuffer_gain(mirisdr_dev_t *p, int gain)
         gain = 18; // clamp
     }
 
-    p->gain_reduction_mixbuffer = (3 - gain / 6) & 0x03;
+    /* to the nearest step, as a tune's stages take it */
+    if (p->band == MIRISDR_BAND_AM2) p->gain_reduction_mixbuffer = (gain >= 12) ? 0 : 3;
+    else p->gain_reduction_mixbuffer = 3 - (gain + 3) / 6;
 
     p->gain_stages_set = 1;
 
@@ -548,10 +559,20 @@ int mirisdr_set_lna_gain(mirisdr_dev_t *p, int gain)
 #if MIRISDR_DEBUG >= 3
     fprintf(stderr, "mirisdr_set_lna_gain: %d (band: %d)\n", gain, p->band);
 #endif
-    p->gain_reduction_lna = gain ? 0 : 1;
+    if (p->ds)
+    {
+        int old = p->gain_reduction_lna, old_stages = p->gain_stages_set;
 
+        p->gain_reduction_lna = gain ? 0 : 1;
+        p->gain_stages_set = 1;
+        if (mirisdr_gain_tune(p) == 0) return 0;
+        p->gain_reduction_lna = old;
+        p->gain_stages_set = old_stages;
+        return -1;
+    }
+
+    p->gain_reduction_lna = gain ? 0 : 1;
     p->gain_stages_set = 1;
-    if (p->ds) return mirisdr_gain_tune(p);
 
     return mirisdr_set_gain(p);
 }
@@ -613,7 +634,9 @@ int mirisdr_get_lna_gain(mirisdr_dev_t *p)
     if (!p) return -1;
 
     gain = 24;
-    if (p->gain_reduction_lna) gain = 0;
+    /* under direct sampling its amplifier */
+    if (p->ds) gain = p->ds_lna ? MIRISDR_DS_LNA_DB : 0;
+    else if (p->gain_reduction_lna) gain = 0;
     else if (p->band == MIRISDR_BAND_45) gain = 7;
     else if (p->band == MIRISDR_BAND_L) gain = 4; /* mean of measured values, with LNA cal */
 #if MIRISDR_DEBUG >= 3

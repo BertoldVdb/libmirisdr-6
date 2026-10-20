@@ -71,61 +71,84 @@ SoapySDR::ArgInfoList SoapyMiriSDR::getStreamArgsInfo(const int direction, const
     return list;
 }
 
+/* a stream argument as a whole number from lo to hi, thrown otherwise */
+static long streamArg(const SoapySDR::Kwargs &args, const char *key, long def, long lo, long hi)
+{
+    long v;
+    size_t end = 0;
+
+    if (!args.count(key)) return def;
+    try { v = std::stol(args.at(key), &end); }
+    catch (const std::exception &) { end = 0; v = lo - 1; }
+    if (end != args.at(key).size() || v < lo || v > hi)
+        throw std::runtime_error("mirisdr: " + std::string(key) + " " + args.at(key) + " is not a number from " +
+                                 std::to_string(lo) + " to " + std::to_string(hi));
+    return v;
+}
+
+/* Everything is checked before anything changes: refused, the receiver keeps what it had */
 SoapySDR::Stream *SoapyMiriSDR::setupStream(const int direction, const std::string &format,
                                             const std::vector<size_t> &channels, const SoapySDR::Kwargs &args)
 {
     ReportScope report_(*this);
-    size_t slots = SOAPY_MIRISDR_SLOTS;
+    std::lock_guard<std::recursive_mutex> lock(devMutex);
+    const size_t nch = getNumChannels(SOAPY_SDR_RX);
+    int order[2], tuners = 0, out;
+    size_t slots;
+    uint32_t transfers;
 
     if (direction != SOAPY_SDR_RX) throw std::runtime_error("mirisdr: receive only");
-    if (rxThread.joinable()) throw std::runtime_error("mirisdr: a stream is already set up");
-
-    /* the channels: one tuner, or on the RSPduo both, each a low IF on its converter */
     {
-        std::lock_guard<std::recursive_mutex> lock(devMutex);
-        const size_t nch = getNumChannels(SOAPY_SDR_RX);
-        int tuners = 0;
-
-        if (channels.size() > nch) throw std::runtime_error("mirisdr: at most " + std::to_string(nch) + " channels");
-        chanOrder[0] = channels.empty() ? 0 : (int) channels[0];
-        chanOrder[1] = channels.size() > 1 ? (int) channels[1] : -1;
-        for (int i = 0; i < 2; i++)
-        {
-            if (chanOrder[i] < 0) continue;
-            if ((size_t) chanOrder[i] >= nch || (tuners & (1 << chanOrder[i])))
-                throw std::runtime_error("mirisdr: channel " + std::to_string(chanOrder[i]) + " not available");
-            tuners |= 1 << chanOrder[i];
-        }
-        if (streamTuners() != tuners)
-        {
-            const mirisdr_stream_config_t was = streamCfg;
-            mirisdr_stream_config_t lib;
-
-            /* what the library took, not what was asked: a refused one is put back */
-            streamCfg.tuners = tuners == 1 ? 0 : tuners;
-            if (!configure(wantRate) || (mirisdr_get_stream(dev, &lib, NULL) < 0) ||
-                ((lib.tuners ? lib.tuners : 1) != tuners))
-            {
-                streamCfg = was;
-                configure(wantRate);
-                throw std::runtime_error("mirisdr: these channels together refused");
-            }
-        }
+        std::lock_guard<std::mutex> rl(ringMutex);
+        if (!ring.empty() || rxThread.joinable()) throw std::runtime_error("mirisdr: a stream is already set up");
     }
 
-    if (format == SOAPY_SDR_CS16) outFormat = OUT_CS16;
-    else if (format == SOAPY_SDR_CF32) outFormat = OUT_CF32;
-    else if (format == SOAPY_SDR_CS8) outFormat = OUT_CS8;
-    else if (format == SOAPY_SDR_S16) outFormat = OUT_S16;
-    else if (format == SOAPY_SDR_F32) outFormat = OUT_F32;
+    if (format == SOAPY_SDR_CS16) out = OUT_CS16;
+    else if (format == SOAPY_SDR_CF32) out = OUT_CF32;
+    else if (format == SOAPY_SDR_CS8) out = OUT_CS8;
+    else if (format == SOAPY_SDR_S16) out = OUT_S16;
+    else if (format == SOAPY_SDR_F32) out = OUT_F32;
     else throw std::runtime_error("mirisdr: format " + format + " not supported, use CF32, CS16 or CS8 (S16 or F32 "
                                   "real, from one converter without baseband)");
 
-    if (args.count("buffers")) slots = std::max(4, std::stoi(args.at("buffers")));
-    asyncBuffers = args.count("transfers") ? (uint32_t) std::max(0, std::stoi(args.at("transfers"))) : 0;
+    slots = (size_t) streamArg(args, "buffers", SOAPY_MIRISDR_SLOTS, 4, 65536);
+    transfers = (uint32_t) streamArg(args, "transfers", 0, 0, 1024);
 
+    /* the channels: one tuner, or on the RSPduo both, each a low IF on its converter */
+    if (channels.size() > nch) throw std::runtime_error("mirisdr: at most " + std::to_string(nch) + " channels");
+    order[0] = channels.empty() ? 0 : (int) channels[0];
+    order[1] = channels.size() > 1 ? (int) channels[1] : -1;
+    for (int i = 0; i < 2; i++)
+    {
+        if (order[i] < 0) continue;
+        if ((size_t) order[i] >= nch || (tuners & (1 << order[i])))
+            throw std::runtime_error("mirisdr: channel " + std::to_string(order[i]) + " not available");
+        tuners |= 1 << order[i];
+    }
+    if (streamTuners() != tuners)
+    {
+        const mirisdr_stream_config_t was = streamCfg;
+        mirisdr_stream_config_t lib;
+
+        /* what the library took, not what was asked: a refused one is put back */
+        streamCfg.tuners = tuners == 1 ? 0 : tuners;
+        if (!configure(wantRate) || (mirisdr_get_stream(dev, &lib, NULL) < 0) ||
+            ((lib.tuners ? lib.tuners : 1) != tuners))
+        {
+            streamCfg = was;
+            configure(wantRate);
+            throw std::runtime_error("mirisdr: these channels together refused");
+        }
+    }
+
+    std::lock_guard<std::mutex> rl(ringMutex);
+    chanOrder[0] = order[0];
+    chanOrder[1] = order[1];
+    outFormat = out;
+    asyncBuffers = transfers;
     ring.assign(slots, Slot());
     ringHead = ringTail = ringCount = 0;
+    slotPos = gapPos = 0;
 
     return (SoapySDR::Stream *) this;
 }
@@ -234,12 +257,15 @@ int SoapyMiriSDR::activateStream(SoapySDR::Stream *stream, const int flags, cons
 
     /* the library counts from 0 again: the time carries on from where the last stream
        ended, setHardwareTime() with it */
-    timeOffsetNs = getHardwareTime("");
-    timeBaseNs = 0;
-    timeBaseIndex = 0;
-    timeBaseRate = 0;
-    lastIndex = 0;
-    lastRate = 0;
+    {
+        std::lock_guard<std::mutex> tl(timeMutex);
+        timeOffsetNs = hardwareTime();
+        timeBaseNs = 0;
+        timeBaseIndex = 0;
+        timeBaseRate = 0;
+        lastIndex = 0;
+        lastRate = 0;
+    }
     stopping = false;
     rxDone = false;
     rxEnded = false;
@@ -439,11 +465,14 @@ int SoapyMiriSDR::readStream(SoapySDR::Stream *stream, void * const *buffs, cons
     index = s.index + slotPos;
     for (k = 0; k < s.gaps.size(); k++)
         if (s.gaps[k].offset > 0 && s.gaps[k].offset <= slotPos) index += s.gaps[k].missing;
-    timeRebase(index, s.rate);
-    timeNs = indexToNs(index, s.rate);
+    {
+        std::lock_guard<std::mutex> tl(timeMutex);
+        timeRebase(index, s.rate);
+        timeNs = indexToNs(index, s.rate);
+        lastIndex = (long long) (index + n);
+        lastRate = s.rate;
+    }
     flags |= SOAPY_SDR_HAS_TIME;
-    lastIndex = (long long) (index + n);
-    lastRate = s.rate;
 
     /* the channels in the order asked: tuner 0's samples, and with two tuners tuner 1's */
     for (k = 0; k < 2 && chanOrder[k] >= 0; k++)

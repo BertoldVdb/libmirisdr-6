@@ -186,7 +186,9 @@ int mirisdr_write_eeprom (mirisdr_dev_t *p, uint16_t addr, const uint8_t *buf, i
         if (mirisdr_ee_get(p, at, &now) < 0) goto out;
         if (now == buf[i]) continue;
 
+        /* and read back: a protected part takes the write without a word */
         if (mirisdr_ee_put(p, at, buf[i]) < 0) goto out;
+        if ((mirisdr_ee_get(p, at, &now) < 0) || (now != buf[i])) goto out;
     }
 
     r = 0;

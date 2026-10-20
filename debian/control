@@ -1,18 +1,64 @@
-Source: libmirisdr5
+Source: libmirisdr6
 Section: hamradio
 Priority: optional
-Maintainer: ericek111 <erik@brocko.eu>
+Maintainer: Bertold Van den Bergh <vandenbergh@bertold.org>
 Rules-Requires-Root: no
-Build-Depends: debhelper-compat (= 13), cmake, libusb-1.0-0-dev
+Build-Depends: debhelper-compat (= 13), cmake, pkg-config, libusb-1.0-0-dev, libsoapysdr-dev
 Standards-Version: 4.7.0
-Homepage: https://github.com/ericek111/libmirisdr-5
-#Vcs-Browser: https://salsa.debian.org/debian/libmirisdr5
-Vcs-Git: https://github.com/ericek111/libmirisdr-5.git
+Homepage: https://github.com/BertoldVdb/libmirisdr-6
+Vcs-Browser: https://github.com/BertoldVdb/libmirisdr-6
+Vcs-Git: https://github.com/BertoldVdb/libmirisdr-6.git
 
 Package: libmirisdr5
+Section: libs
 Architecture: any
-Depends: ${misc:Depends}, ${shlibs:Depends}, libusb-1.0-0
-Conflicts: libmirisdr4
 Multi-Arch: same
-Description: Library for Mirics-based devices
- Software support for the Mirics based software defined radio devices
+Depends: ${misc:Depends}, ${shlibs:Depends}
+Description: Library for Mirics-based receivers
+ Software support for receivers built on the Mirics MSi2500 and MSi001
+ chips, such as the SDRplay RSP1, RSP1B, RSPdx-R2 and RSPduo.
+ .
+ This package has the shared library and the udev rule that lets users
+ open the receivers without root.
+
+Package: libmirisdr5-dev
+Section: libdevel
+Architecture: any
+Multi-Arch: same
+Depends: libmirisdr5 (= ${binary:Version}), libusb-1.0-0-dev, ${misc:Depends}
+Provides: libmirisdr-dev
+Conflicts: libmirisdr-dev
+Breaks: libmirisdr5 (<< 5.1~)
+Replaces: libmirisdr-dev, libmirisdr5 (<< 5.1~)
+Description: Library for Mirics-based receivers (development files)
+ Software support for receivers built on the Mirics MSi2500 and MSi001
+ chips, such as the SDRplay RSP1, RSP1B, RSPdx-R2 and RSPduo.
+ .
+ This package has the headers, the static library and the pkg-config file.
+
+Package: miri-sdr6
+Architecture: any
+Multi-Arch: foreign
+Depends: libmirisdr5 (= ${binary:Version}), ${misc:Depends}, ${shlibs:Depends}
+Provides: miri-sdr
+Conflicts: miri-sdr
+Breaks: libmirisdr5 (<< 5.1~)
+Replaces: miri-sdr, libmirisdr5 (<< 5.1~)
+Description: Library for Mirics-based receivers (tools)
+ Software support for receivers built on the Mirics MSi2500 and MSi001
+ chips, such as the SDRplay RSP1, RSP1B, RSPdx-R2 and RSPduo.
+ .
+ This package has the command line tools: miri_sdr to capture samples,
+ miri_fm to demodulate and miri_eeprom for the EEPROM.
+
+Package: soapysdr-module-libmirisdr
+Section: libs
+Architecture: any
+Multi-Arch: same
+Depends: libmirisdr5 (= ${binary:Version}), ${misc:Depends}, ${shlibs:Depends}
+Description: Library for Mirics-based receivers (SoapySDR module)
+ Software support for receivers built on the Mirics MSi2500 and MSi001
+ chips, such as the SDRplay RSP1, RSP1B, RSPdx-R2 and RSPduo.
+ .
+ This package has the SoapySDR module, for programs that use the receivers
+ with driver=mirisdr.

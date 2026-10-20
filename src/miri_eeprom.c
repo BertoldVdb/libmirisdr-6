@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -32,9 +33,16 @@
 #define EE_IDS              0xB4
 #define EE_IMAGE            0xD2
 #define EE_IDLE             0xFF
+#define EE_RAM              0x1800      /* the ROM loads code below this */
+#define EE_MIN              256         /* the smallest part */
+#define EE_CHUNK            256
+#define EE_SERIAL_AT        7           /* SDRplay keep the serial right behind the ids */
 
 static mirisdr_dev_t *dev;
 static int ee_size;
+static int ee_fit;                      /* the part as measured, 0 until then */
+static int force;
+static char backup_name[160];
 
 static void usage (void)
 {
@@ -46,13 +54,24 @@ static void usage (void)
         "  info                          the addressing and what byte 0 says\n"
         "  probe                         measure the real size, restoring what it touches\n"
         "  read <file> [bytes]           dump to a file\n"
-        "  write <file> [address]        write a file back\n"
+        "  write <file> [address]        write a file back. At address 0, the blocks of a\n"
+        "                                boot image (0xD2) must load below 0x1800\n"
         "  writeids <vid> <pid> [bcd]    boot the ROM with these ids (hex, 0x optional)\n"
         "  writefw <image|default> [-v vid] [-p pid] [-s serial|random]\n"
-        "                                boot this image instead of the ROM (ids in hex)\n"
+        "                                boot this image instead of the ROM (ids in hex).\n"
+        "                                With none of -v, -p and -s it keeps the ids and\n"
+        "                                serial the device has now, else the image's for\n"
+        "                                those not given (-s \"\" for none). It covers\n"
+        "                                bytes 0x40-0x4F, where SDRplay boards keep a\n"
+        "                                factory string, so only the backup keeps that\n"
         "  disable                       byte 0 back to 0xFF\n\n"
         "  -d may come anywhere; numbers are decimal unless they start with 0x, except\n"
-        "  the USB ids, which are hex as lsusb prints them\n");
+        "  the USB ids, which are hex as lsusb prints them\n\n"
+        "  Every command that writes first saves what the whole EEPROM holds to\n"
+        "  miri_eeprom-backup-<serial or ids>-<time>.bin in this directory, and does not\n"
+        "  write if that fails. \"miri_eeprom write <that file>\" puts it back.\n"
+        "  --force writes ids this library does not find again, an image it does not\n"
+        "  know, or boot blocks it would refuse\n");
 
     exit(1);
 }
@@ -91,11 +110,24 @@ static int verify (uint16_t addr, const uint8_t *want, int len)
     return bad ? -1 : 0;
 }
 
+/* After a failed write: where the contents from before are */
+static void lost (void)
+{
+    static int told;
+
+    if (told || !backup_name[0]) return;
+
+    told = 1;
+    fprintf(stderr, "what the EEPROM held before is in %s\n"
+                    "\"miri_eeprom write %s\" puts it back\n", backup_name, backup_name);
+}
+
 static int store (uint16_t addr, const uint8_t *buf, int len)
 {
     if (mirisdr_write_eeprom(dev, addr, buf, len))
     {
         fprintf(stderr, "write failed at 0x%04X\n", addr);
+        lost();
 
         return -1;
     }
@@ -103,6 +135,7 @@ static int store (uint16_t addr, const uint8_t *buf, int len)
     if (verify(addr, buf, len))
     {
         fprintf(stderr, "verify failed at 0x%04X\n", addr);
+        lost();
 
         return -1;
     }
@@ -114,9 +147,9 @@ static int commit (const uint8_t *buf, int len)
 {
     uint8_t idle = EE_IDLE;
 
-    if ((len < 2) || (len > ee_size))
+    if ((len < 2) || (len > ee_fit))
     {
-        fprintf(stderr, "%d bytes does not fit a %d byte part\n", len, ee_size);
+        fprintf(stderr, "%d bytes does not fit a %d byte part\n", len, ee_fit);
 
         return -1;
     }
@@ -181,34 +214,201 @@ static const char *make_serial (void)
     return out;
 }
 
-static int patch (uint8_t *img, long len, long vid, long pid, const char *serial)
+/* The receivers the library finds, its table in devices.c. A board given other ids is
+   lost to the library and to this tool, only saferead -u still reaches it */
+#define OWN_VID             0x16d0
+#define OWN_PID             0x158c
+
+static int ids_ok (long vid, long pid)
+{
+    if ((vid >= 0) && (vid <= 0xFFFF) && (pid >= 0) && (pid <= 0xFFFF) &&
+        mirisdr_device_known((uint16_t) vid, (uint16_t) pid)) return 0;
+
+    if (force)
+    {
+        fprintf(stderr, "  %04lx:%04lx is not a receiver this library finds again, written anyway (--force)\n",
+                vid, pid);
+
+        return 0;
+    }
+
+    fprintf(stderr, "%04lx:%04lx is not a receiver this library finds again: neither it nor this tool\n"
+                    "would reach the board afterwards (--force writes it anyway)\n", vid, pid);
+
+    return -1;
+}
+
+/* Byte 0 0xD2: blocks of a big endian length and load address, then the bytes, up to a
+   length of 0. The ROM loads each into RAM, where code may only go below 0x1800 */
+static int chain_ok (const uint8_t *buf, long len)
+{
+    long at = 1, n, to;
+
+    while (at + 2 <= len)
+    {
+        if (!(n = (buf[at] << 8) | buf[at + 1])) return 0;
+        if (at + 4 > len) break;
+
+        to = (buf[at + 2] << 8) | buf[at + 3];
+
+        if (to + n > EE_RAM)
+        {
+            fprintf(stderr, "the block at 0x%04lX loads %ld bytes at 0x%04lX, past 0x%04X\n", at, n, to, EE_RAM);
+
+            return -1;
+        }
+
+        at+= 4 + n;
+    }
+
+    fprintf(stderr, "the boot blocks run past the end of the file, no length of 0 ends them\n");
+
+    return -1;
+}
+
+/* What the ROM would boot from a file written at address 0 */
+static int boot_ok (const uint8_t *buf, long len)
+{
+    if (buf[0] == EE_IMAGE)
+    {
+        if (!chain_ok(buf, len)) return 0;
+        if (!force) { fprintf(stderr, "(--force writes it anyway)\n"); return -1; }
+
+        fprintf(stderr, "  written anyway (--force)\n");
+
+        return 0;
+    }
+
+    if (buf[0] == EE_IDS)
+    {
+        if (len < 7)
+        {
+            fprintf(stderr, "byte 0 is 0xB4 but the ids after it are missing\n");
+
+            return -1;
+        }
+
+        return ids_ok(buf[1] | (buf[2] << 8), buf[3] | (buf[4] << 8));
+    }
+
+    return 0;
+}
+
+/* Our firmware as the library knows it: its information block with a device descriptor,
+   and a jump at the reset vector into the image */
+static int image_known (const uint8_t *img, long len)
 {
     mirisdr_fw_patch_t p;
+    long to = (len >= 3) ? ((img[1] << 8) | img[2]) : len;
 
-    if ((vid < 0) && (pid < 0) && !serial) return 0;
-
-    if (mirisdr_fw_get(img, (uint32_t) len, &p))
+    if ((img[0] != 0x02) || (to >= len))
     {
-        fprintf(stderr, "the image has no information block, nothing can be patched\n");
+        fprintf(stderr, "the image does not start with a jump into itself\n");
 
         return -1;
     }
 
-    p.fields = 0;
-
-    if ((vid >= 0) || (pid >= 0))
+    if (mirisdr_fw_get(img, (uint32_t) len, &p) || !(p.fields & MIRISDR_FW_PATCH_IDS))
     {
-        if (vid >= 0) p.vid = (uint16_t) vid;
-        if (pid >= 0) p.pid = (uint16_t) pid;
+        fprintf(stderr, "the image has no information block this library knows\n");
 
-        p.fields|= MIRISDR_FW_PATCH_IDS;
+        return -1;
     }
 
-    if (serial)
+    return 0;
+}
+
+/* The board an SDRplay is under our own ids, by its serial's first two letters */
+static const char *own_prefix (uint16_t vid, uint16_t pid)
+{
+    if (vid != 0x1df7) return NULL;
+    if (pid == 0x3050) return "B-";
+    if (pid == 0x3060) return "C-";
+    if (pid == 0x3020) return "D-";
+
+    return NULL;
+}
+
+/* The serial an SDRplay keeps behind its ids, printable up to the first byte that is not */
+static int ee_serial (const uint8_t *ee, int ee_len, char *out, int len)
+{
+    int n;
+
+    if ((ee_len < EE_SERIAL_AT + MIRISDR_FW_SERIAL_MAX) || (ee[0] != EE_IDS)) return 0;
+
+    for (n = 0; (n < MIRISDR_FW_SERIAL_MAX) && (ee[EE_SERIAL_AT + n] >= 0x20) && (ee[EE_SERIAL_AT + n] < 0x7F); n++);
+    if (!n || (n >= len)) return 0;
+
+    memcpy(out, ee + EE_SERIAL_AT, (size_t) n);
+    out[n] = 0;
+
+    return n;
+}
+
+/* The ids and serial the image gets. With none of -v, -p and -s, what the device has now,
+   as the library does when it loads its firmware (MIRISDR_FW_IDS_DEVICE), the serial
+   from the EEPROM of an SDRplay running the ROM if it declares none. Else the image's,
+   with what is given in place */
+static int patch (uint8_t *img, long len, long vid, long pid, const char *serial,
+                  const uint8_t *ee, int ee_len)
+{
+    mirisdr_fw_patch_t p, has;
+    uint16_t dvid, dpid;
+    char now[256];
+    const char *pre;
+    int keep;
+
+    if (mirisdr_fw_get(img, (uint32_t) len, &has) || !(has.fields & MIRISDR_FW_PATCH_IDS))
+    {
+        if ((vid >= 0) || (pid >= 0) || serial)
+        {
+            fprintf(stderr, "the image has no information block, nothing can be patched\n");
+
+            return -1;
+        }
+
+        printf("  the image has no information block: it keeps the ids it has, which are not checked\n");
+
+        return 0;
+    }
+
+    keep = (vid < 0) && (pid < 0) && !serial;
+
+    if (mirisdr_get_usb_ids(dev, &dvid, &dpid))
+    {
+        if (keep)
+        {
+            fprintf(stderr, "cannot read the device's USB ids\n");
+
+            return -1;
+        }
+
+        dvid = dpid = 0;
+    }
+
+    memset(&p, 0, sizeof(p));
+    p.fields = MIRISDR_FW_PATCH_IDS;
+    p.vid = (vid >= 0) ? (uint16_t) vid : (keep ? dvid : has.vid);
+    p.pid = (pid >= 0) ? (uint16_t) pid : (keep ? dpid : has.pid);
+
+    if (keep)
+    {
+        if ((mirisdr_get_serial(dev, now, sizeof(now)) > 0) || ee_serial(ee, ee_len, now, sizeof(now)))
+            serial = now;
+    }
+    else if (serial && !(has.fields & MIRISDR_FW_PATCH_SERIAL))
+    {
+        fprintf(stderr, "the image has no serial to set\n");
+
+        return -1;
+    }
+
+    if (serial && (has.fields & MIRISDR_FW_PATCH_SERIAL))
     {
         if ((int) strlen(serial) > MIRISDR_FW_SERIAL_MAX)
         {
-            fprintf(stderr, "a serial is at most %d characters\n", MIRISDR_FW_SERIAL_MAX);
+            fprintf(stderr, "%s: a serial is at most %d characters%s\n", serial, MIRISDR_FW_SERIAL_MAX,
+                    (serial == now) ? ", give one with -s" : "");
 
             return -1;
         }
@@ -217,7 +417,22 @@ static int patch (uint8_t *img, long len, long vid, long pid, const char *serial
         p.fields|= MIRISDR_FW_PATCH_SERIAL;
     }
 
-    return mirisdr_fw_patch(img, (uint32_t) len, &p);
+    if (mirisdr_fw_patch(img, (uint32_t) len, &p) || mirisdr_fw_get(img, (uint32_t) len, &has))
+    {
+        fprintf(stderr, "the image could not be patched\n");
+
+        return -1;
+    }
+
+    printf("  the image will enumerate as %04x:%04x, serial \"%s\"\n", has.vid, has.pid, has.serial);
+
+    /* under our own ids the library tells an SDRplay board by its serial's prefix */
+    if ((has.vid == OWN_VID) && (has.pid == OWN_PID) && (pre = own_prefix(dvid, dpid))
+        && strncmp(has.serial, pre, 2))
+        fprintf(stderr, "  note: under %04x:%04x the library knows this board only by a serial "
+                        "starting \"%s\"\n", OWN_VID, OWN_PID, pre);
+
+    return ids_ok(has.vid, has.pid);
 }
 
 #define SD_VID              0x1df7
@@ -408,18 +623,24 @@ static int cmd_info (void)
     return 0;
 }
 
-/* A part that ignores an address bit reads one cell through two addresses.  Two
-   different markers tell that apart from two cells that happen to agree. */
-static int cmd_probe (void)
+/* A part that ignores an address bit reads one cell through two addresses. Two
+   different markers tell that apart from two cells that happen to agree. The markers
+   go at 0x20 and 0x20 plus a power of two from 0x100 on, which a part of 256 bytes or
+   more never folds onto bytes 0 to 6 */
+static int cmd_probe (int *found)
 {
     uint16_t base = 0x0020;
     uint8_t head, idle = EE_IDLE;
-    int b, r = 0, size = ee_size;
+    int b, r = 0, size = ee_size, gone = 0, clear;
 
     /* the markers land inside a boot image: the ROM boots itself while they are there, and
-       byte 0 comes back last, whatever happened */
+       byte 0 comes back last, only once both are back. The ROM reads no more than bytes
+       0 to 6 for its ids (0xB4), so that byte 0 stays */
     if (mirisdr_read_eeprom(dev, 0, &head, 1)) return -1;
-    if ((head != EE_IDLE) && store(0, &idle, 1)) return -1;
+
+    clear = (head != EE_IDLE) && (head != EE_IDS);
+
+    if (clear && store(0, &idle, 1)) return -1;
 
     for (b = 8; (1 << b) < ee_size; b++)
     {
@@ -441,6 +662,7 @@ static int cmd_probe (void)
             || verify(base, was, 1) || verify(other, was + 1, 1))
         {
             fprintf(stderr, "could not put 0x%04X and 0x%04X back\n", base, other);
+            gone = 1;
             r = -1;
             break;
         }
@@ -462,7 +684,15 @@ static int cmd_probe (void)
         }
     }
 
-    if ((head != EE_IDLE) && store(0, &head, 1))
+    if (gone)
+    {
+        if (clear) fprintf(stderr, "byte 0 stays 0xFF, so the ROM boots itself, not the image with a marker in it\n");
+        lost();
+
+        return -1;
+    }
+
+    if (clear && store(0, &head, 1))
     {
         fprintf(stderr, "could not put byte 0 (0x%02X) back\n", head);
         return -1;
@@ -472,6 +702,162 @@ static int cmd_probe (void)
 
     if (size < ee_size) printf("  A%d is ignored, so the part holds %d bytes\n", b, size);
     else printf("  no address bit is ignored, so the part holds %d bytes\n", ee_size);
+
+    if (found) *found = size;
+
+    return 0;
+}
+
+/* Read the part from 0 in doubling blocks until the contents repeat: a part smaller than
+   its addressing wraps around, so that is its size. A first half that is one byte
+   throughout says nothing, so the reading goes on. Sets ee_fit, 0 when every byte is the
+   same, and returns the contents */
+static uint8_t *snapshot (int *len)
+{
+    uint8_t *buf;
+    time_t t0 = time(NULL);
+    int n = 0, want, half, i;
+
+    if (!(buf = malloc((size_t) ee_size))) return NULL;
+
+    printf("  reading the EEPROM for the backup\n");
+
+    ee_fit = 0;
+
+    for (want = (ee_size < 2 * EE_MIN) ? ee_size : 2 * EE_MIN; ; want*= 2)
+    {
+        for (; n < want; n+= EE_CHUNK)
+        {
+            int c = (want - n < EE_CHUNK) ? want - n : EE_CHUNK;
+
+            if (mirisdr_read_eeprom(dev, (uint16_t) n, buf + n, c))
+            {
+                fprintf(stderr, "read failed at 0x%04X\n", n);
+                free(buf);
+
+                return NULL;
+            }
+        }
+
+        half = want / 2;
+
+        for (i = 1; (i < half) && (buf[i] == buf[0]); i++);
+
+        if ((i < half) && !memcmp(buf, buf + half, (size_t) half))
+        {
+            ee_fit = *len = half;
+            printf("  %d bytes read in %ld s, the contents repeat every %d\n", want, (long) (time(NULL) - t0), half);
+            break;
+        }
+
+        if (want >= ee_size)
+        {
+            for (i = 1; (i < want) && (buf[i] == buf[0]); i++);
+
+            *len = (i < want) ? want : EE_MIN;
+            if (i < want) ee_fit = want;
+            printf("  %d bytes read in %ld s, %s\n", want, (long) (time(NULL) - t0),
+                   (i < want) ? "no repeat" : "every byte the same");
+            break;
+        }
+
+        printf("  %d bytes read in %ld s\n", want, (long) (time(NULL) - t0));
+        fflush(stdout);
+    }
+
+    return buf;
+}
+
+/* A file name from the serial, or the ids */
+static void backup_id (char *id, int len, const uint8_t *ee, int ee_len)
+{
+    char s[256];
+    uint16_t vid = 0, pid = 0;
+    int i;
+
+    if ((mirisdr_get_serial(dev, s, sizeof(s)) <= 0) && !ee_serial(ee, ee_len, s, sizeof(s)))
+    {
+        mirisdr_get_usb_ids(dev, &vid, &pid);
+        snprintf(s, sizeof(s), "%04x-%04x", vid, pid);
+    }
+
+    for (i = 0; s[i] && (i < len - 1); i++)
+    {
+        char c = s[i];
+
+        id[i] = (((c >= '0') && (c <= '9')) || ((c >= 'A') && (c <= 'Z')) || ((c >= 'a') && (c <= 'z'))
+                 || (c == '-') || (c == '_')) ? c : '_';
+    }
+
+    id[i] = 0;
+}
+
+/* The whole EEPROM to a new file here, before anything is written. Measure: when the
+   contents give no size, the markers find it */
+static int backup (int measure)
+{
+    uint8_t *ee;
+    char id[40], stamp[32];
+    time_t t = time(NULL);
+    struct tm *tm = localtime(&t);
+    FILE *f;
+    uint8_t first;
+    int len, k, bad;
+
+    if (!(ee = snapshot(&len))) return -1;
+
+    backup_id(id, sizeof(id), ee, len);
+
+    if (!tm || !strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", tm)) snprintf(stamp, sizeof(stamp), "%ld", (long) t);
+
+    /* never over an earlier one */
+    for (k = 0; k < 100; k++)
+    {
+        if (k) snprintf(backup_name, sizeof(backup_name), "miri_eeprom-backup-%s-%s-%d.bin", id, stamp, k);
+        else snprintf(backup_name, sizeof(backup_name), "miri_eeprom-backup-%s-%s.bin", id, stamp);
+
+        if (!(f = fopen(backup_name, "rb"))) break;
+        fclose(f);
+    }
+
+    if ((k == 100) || !(f = fopen(backup_name, "wb")))
+    {
+        perror(backup_name);
+        fprintf(stderr, "no backup, so nothing is written\n");
+        backup_name[0] = 0;
+        free(ee);
+
+        return -1;
+    }
+
+    bad = fwrite(ee, 1, (size_t) len, f) != (size_t) len;
+    bad|= fclose(f) != 0;
+    first = ee[0];
+    free(ee);
+
+    if (bad)
+    {
+        fprintf(stderr, "%s: cannot write the backup, so nothing is written\n", backup_name);
+        backup_name[0] = 0;
+
+        return -1;
+    }
+
+    printf("  backup of the %d bytes the EEPROM held: %s\n", len, backup_name);
+
+    /* the contents gave no size: the markers measure it, with the backup made */
+    if (!ee_fit && measure)
+    {
+        printf("  every byte is 0x%02X, so the markers measure the size\n", first);
+
+        if (cmd_probe(&ee_fit))
+        {
+            fprintf(stderr, "the size of the part is unknown, so nothing is written\n");
+            ee_fit = 0;
+
+            return -1;
+        }
+    }
 
     return 0;
 }
@@ -503,24 +889,18 @@ static int cmd_read (const char *path, int len)
     return bad ? -1 : 0;
 }
 
-static int cmd_write (const char *path, int addr)
+static int cmd_write (const char *path, const uint8_t *buf, long len, int addr)
 {
-    uint8_t *buf;
-    long len;
     int r;
 
-    if (!(buf = slurp(path, &len))) return -1;
-
-    if (addr + len > ee_size)
+    if (addr + len > ee_fit)
     {
-        fprintf(stderr, "%ld bytes at 0x%04X does not fit a %d byte part\n", len, addr, ee_size);
-        free(buf);
+        fprintf(stderr, "%ld bytes at 0x%04X does not fit a %d byte part\n", len, addr, ee_fit);
 
         return -1;
     }
 
     r = addr ? store((uint16_t) addr, buf, (int) len) : commit(buf, (int) len);
-    free(buf);
 
     if (!r) printf("  %ld bytes from %s at 0x%04X\n", len, path, addr);
 
@@ -546,60 +926,71 @@ static int cmd_ids (long vid, long pid, long bcd)
     return boot();
 }
 
-static int cmd_fw (const char *path, long vid, long pid, const char *serial)
+/* The image, checked before the device is opened */
+static uint8_t *fw_load (const char *path, long *len)
 {
-    uint8_t *img, *blob;
-    long len;
-    int n, r;
+    uint8_t *img;
 
     if (!strcmp(path, "default"))
     {
         uint32_t n;
         const uint8_t *built = mirisdr_default_firmware(&n);
 
-        len = (long) n;
+        *len = (long) n;
 
-        if (!(img = malloc((size_t) len))) return -1;
+        if (!(img = malloc((size_t) *len))) return NULL;
 
-        memcpy(img, built, (size_t) len);
+        memcpy(img, built, (size_t) *len);
     }
-    else if (!(img = slurp(path, &len))) return -1;
+    else if (!(img = slurp(path, len))) return NULL;
 
     /* the ROM loads the image into RAM below 0x1800, and an EEPROM dump starts with a boot byte */
-    if (len > 0x1800)
+    if (*len > EE_RAM)
     {
-        fprintf(stderr, "%s: %ld bytes, more than the 6144 an image may have\n", path, len);
+        fprintf(stderr, "%s: %ld bytes, more than the 6144 an image may have\n", path, *len);
         free(img);
 
-        return -1;
+        return NULL;
     }
     if ((img[0] == EE_IMAGE) || (img[0] == EE_IDS))
     {
         fprintf(stderr, "%s starts with 0x%02X: an EEPROM dump, not a firmware image (use write)\n", path, img[0]);
         free(img);
 
-        return -1;
+        return NULL;
     }
 
-    if (serial && !strcmp(serial, "random") && !(serial = make_serial()))
+    if (image_known(img, *len))
     {
-        free(img);
+        if (!force)
+        {
+            fprintf(stderr, "%s: not an image this library knows (--force writes it anyway)\n", path);
+            free(img);
 
-        return -1;
+            return NULL;
+        }
+
+        fprintf(stderr, "  written anyway (--force)\n");
     }
+
+    return img;
+}
+
+/* The ids and serial go in first, so the backup (made then) is the last step before writing */
+static int cmd_fw (uint8_t *img, long len, long vid, long pid, const char *serial)
+{
+    uint8_t head[EE_SERIAL_AT + MIRISDR_FW_SERIAL_MAX], *blob;
+    int n, r, have = sizeof(head);
+
+    if (mirisdr_read_eeprom(dev, 0, head, have)) have = 0;
 
     if (serial) printf("  serial %s\n", serial);
 
-    if (patch(img, len, vid, pid, serial))
-    {
-        free(img);
-
-        return -1;
-    }
+    if (patch(img, len, vid, pid, serial, head, have)) return -1;
 
     n = (int) len + 7;
 
-    if (!(blob = malloc((size_t) n))) { free(img); return -1; }
+    if (!(blob = malloc((size_t) n))) return -1;
 
     blob[0] = EE_IMAGE;
     blob[1] = (uint8_t) (len >> 8);
@@ -610,12 +1001,11 @@ static int cmd_fw (const char *path, long vid, long pid, const char *serial)
     blob[n - 2] = 0;
     blob[n - 1] = 0;
 
-    r = commit(blob, n);
+    r = backup(1) || commit(blob, n);
 
     free(blob);
-    free(img);
 
-    if (r) return r;
+    if (r) return -1;
 
     printf("  %ld bytes of code, %d in the EEPROM\n", len, n);
 
@@ -656,9 +1046,10 @@ static void bad_arg (const char *what, const char *s)
 int main (int argc, char **argv)
 {
     const char *serial = NULL, *cmd = NULL, *pos[4] = { NULL, NULL, NULL, NULL };
-    long vid = -1, pid = -1, bcd = 0x0200, uvid = -1, upid = -1, reg8 = -1, v;
+    long vid = -1, pid = -1, bcd = 0x0200, uvid = -1, upid = -1, reg8 = -1, v, len = 0, addr = 0;
+    uint8_t *data = NULL;
     uint32_t index = 0;
-    int i, r = 1, npos = 0, need, most;
+    int i, r = 1, npos = 0, need, most, writes;
 
     /* the command, its arguments and the options, in any order */
     for (i = 1; i < argc; i++)
@@ -687,6 +1078,7 @@ int main (int argc, char **argv)
             }
             }
         }
+        else if (!strcmp(a, "--force")) force = 1;
         else if ((a[0] == '-') && a[1] && !((a[1] >= '0') && (a[1] <= '9'))) bad_arg("option", a);
         else if (!cmd) cmd = a;
         else if (npos < 4) pos[npos++] = a;
@@ -703,6 +1095,8 @@ int main (int argc, char **argv)
     else if (!strcmp(cmd, "info") || !strcmp(cmd, "probe") || !strcmp(cmd, "disable")) { need = 0; most = 0; }
     else { fprintf(stderr, "miri_eeprom: no command '%s'\n\n", cmd); usage(); }
     if ((npos < need) || (npos > most)) usage();
+
+    writes = strcmp(cmd, "saferead") && strcmp(cmd, "read") && strcmp(cmd, "info");
 
     if (!strcmp(cmd, "writeids"))
     {
@@ -723,10 +1117,36 @@ int main (int argc, char **argv)
         return r ? 1 : 0;
     }
 
+    /* what would be written, checked before any open too */
+    if (!strcmp(cmd, "writeids") && ids_ok(vid, pid)) return 1;
+
+    if (!strcmp(cmd, "write"))
+    {
+        addr = (npos > 1) ? strtol(pos[1], NULL, 0) : 0;
+
+        if (!(data = slurp(pos[0], &len))) return 1;
+
+        if (addr + len > 0x10000) fprintf(stderr, "%ld bytes at 0x%04lX is past the end of any part\n", len, addr);
+        else if (!addr && (len < 2)) fprintf(stderr, "%s: at address 0 a file needs 2 bytes or more\n", pos[0]);
+
+        if ((addr + len > 0x10000) || (!addr && ((len < 2) || boot_ok(data, len))))
+        {
+            free(data);
+
+            return 1;
+        }
+    }
+
+    if (!strcmp(cmd, "writefw"))
+    {
+        if (serial && !strcmp(serial, "random") && !(serial = make_serial())) return 1;
+        if (!(data = fw_load(pos[0], &len))) return 1;
+    }
 
     if (mirisdr_open(&dev, index) < 0)
     {
         fprintf(stderr, "no device\n");
+        free(data);
 
         return 1;
     }
@@ -738,20 +1158,24 @@ int main (int argc, char **argv)
         fprintf(stderr, "  no EEPROM found on this device\n"
                         "  depending on the board design, a power cycle may be needed\n\n");
         mirisdr_close(dev);
+        free(data);
 
         return 1;
     }
 
-    if (!strcmp(cmd, "info")) r = cmd_info();
-    else if (!strcmp(cmd, "probe")) r = cmd_probe();
+    /* writefw makes its backup itself, once the image is ready */
+    if (writes && strcmp(cmd, "writefw") && backup(strcmp(cmd, "probe") != 0)) r = -1;
+    else if (!strcmp(cmd, "info")) r = cmd_info();
+    else if (!strcmp(cmd, "probe")) r = cmd_probe(NULL);
     else if (!strcmp(cmd, "disable")) r = cmd_disable();
     else if (!strcmp(cmd, "read")) r = cmd_read(pos[0], (npos > 1) ? (int) strtol(pos[1], NULL, 0) : 0);
-    else if (!strcmp(cmd, "write")) r = cmd_write(pos[0], (npos > 1) ? (int) strtol(pos[1], NULL, 0) : 0);
+    else if (!strcmp(cmd, "write")) r = cmd_write(pos[0], data, len, (int) addr);
     else if (!strcmp(cmd, "writeids")) r = cmd_ids(vid, pid, bcd);
-    else r = cmd_fw(pos[0], vid, pid, serial);
+    else r = cmd_fw(data, len, vid, pid, serial);
 
     printf("\n");
     mirisdr_close(dev);
+    free(data);
 
     return r ? 1 : 0;
 }

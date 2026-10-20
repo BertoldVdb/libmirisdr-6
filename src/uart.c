@@ -49,6 +49,9 @@ int mirisdr_uart_write (mirisdr_dev_t *p, uint32_t baud, const uint8_t *buf, int
 
     if (!p || !p->dh || !buf || (len < 0)) return -1;
     if (!p->fw_ours) return -1;
+    /* GPIO_2 is the line: not where the app holds it as an input, nor on the SDRplay
+       boards with an expander, whose front end it drives */
+    if ((p->gpio_hold & 0x4) || MIRISDR_HW_EXPANDER(p->hw_flavour)) return -1;
     if ((delay = mirisdr_uart_delay(baud, &bit_ns)) < 0) return -1;
 
     while (done < len)

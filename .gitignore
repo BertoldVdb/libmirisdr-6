@@ -8,8 +8,12 @@ src/x64
 cmake-build-*
 debian/debhelper-build-stamp
 debian/files
-debian/libmirisdr5.debhelper.log
-debian/libmirisdr5.substvars
+debian/*.debhelper.log
+debian/*.substvars
 debian/libmirisdr5
+debian/libmirisdr-dev
+debian/miri-sdr
+debian/soapysdr-module-libmirisdr
+debian/tmp
 debian/.debhelper
-obj-x86_64-linux-gnu/
+obj-*/

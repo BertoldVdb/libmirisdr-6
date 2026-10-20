@@ -23,6 +23,15 @@
 cmake_minimum_required(VERSION 3.12)
 project(mirisdr C)
 
+########################################################################
+# Install directories: lib${LIB_SUFFIX} when LIB_SUFFIX is given, else the
+# platform's own (lib/<multiarch> on Debian for /usr, lib64 on Fedora)
+########################################################################
+if(LIB_SUFFIX)
+    set(CMAKE_INSTALL_LIBDIR "lib${LIB_SUFFIX}" CACHE PATH "Object code libraries (lib)" FORCE)
+endif()
+include(GNUInstallDirs)
+
 # use, i.e. don't skip the full RPATH for the build tree
 set(CMAKE_SKIP_BUILD_RPATH  FALSE)
 
@@ -30,7 +39,11 @@ set(CMAKE_SKIP_BUILD_RPATH  FALSE)
 # (but later on when installing)
 set(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE) 
 
-SET(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/lib")
+# the library's own directory, unless the linker searches it anyway
+list(FIND CMAKE_C_IMPLICIT_LINK_DIRECTORIES "${CMAKE_INSTALL_FULL_LIBDIR}" _libdir_is_system)
+if(_libdir_is_system EQUAL -1)
+    set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_FULL_LIBDIR}")
+endif()
 
 # add the automatically determined parts of the RPATH
 # which point to directories outside the build tree to the install RPATH
@@ -106,7 +119,14 @@ add_custom_target(uninstall
 ########################################################################
 # Handle detach kernel driver option
 ########################################################################
-option(DETACH_KERNEL_DRIVER "Detach kernel driver if loaded" OFF)
+# on by default on Linux, where msi2500 can hold the receiver: the library gives it
+# back when it closes the receiver
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(DETACH_KERNEL_DRIVER_DEFAULT ON)
+else()
+    set(DETACH_KERNEL_DRIVER_DEFAULT OFF)
+endif()
+option(DETACH_KERNEL_DRIVER "Detach kernel driver if loaded" ${DETACH_KERNEL_DRIVER_DEFAULT})
 if (DETACH_KERNEL_DRIVER)
     message (STATUS "Building with kernel driver detaching enabled")
     add_definitions(-DDETACH_KERNEL_DRIVER=1)
@@ -133,6 +153,12 @@ if(ENABLE_SOAPY)
     endif()
 endif()
 
+# SoapySDR's module helper installs to lib${LIB_SUFFIX}, so keep it in step. Only
+# after finding SoapySDR, which looks for its own library with LIB_SUFFIX
+if(NOT LIB_SUFFIX AND CMAKE_INSTALL_LIBDIR MATCHES "^lib(.+)$")
+    set(LIB_SUFFIX "${CMAKE_MATCH_1}")
+endif()
+
 add_subdirectory(include)
 add_subdirectory(src)
 
@@ -143,13 +169,18 @@ endif()
 ########################################################################
 # Create Pkg Config File
 ########################################################################
-FOREACH(inc ${LIBUSB_INCLUDE_DIR})
-    LIST(APPEND MIRISDR_PC_CFLAGS "-I${inc}")
-ENDFOREACH(inc)
-
-FOREACH(lib ${LIBUSB_LIBRARY_DIRS})
-    LIST(APPEND MIRISDR_PC_LIBS "-L${lib}")
-ENDFOREACH(lib)
+# libusb by its own pkg-config file when it has one, else by where it was found
+IF(LIBUSB_PKG_FOUND)
+    SET(MIRISDR_PC_REQUIRES "libusb-1.0")
+ELSEIF(NOT CMAKE_CROSSCOMPILING)
+    FOREACH(lib ${LIBUSB_LIBRARIES})
+        GET_FILENAME_COMPONENT(libdir_usb "${lib}" DIRECTORY)
+        LIST(APPEND MIRISDR_PC_LIBS "-L${libdir_usb}")
+    ENDFOREACH(lib)
+    LIST(APPEND MIRISDR_PC_LIBS "-lusb-1.0")
+ELSE()
+    LIST(APPEND MIRISDR_PC_LIBS "-lusb-1.0")
+ENDIF(LIBUSB_PKG_FOUND)
 
 # the transfers' lock: a critical section on Windows, pthreads elsewhere
 IF(NOT WIN32)
@@ -162,18 +193,15 @@ IF(UNIX)
 ENDIF(UNIX)
 
 # use space-separation format for the pc file
-STRING(REPLACE ";" " " MIRISDR_PC_CFLAGS "${MIRISDR_PC_CFLAGS}")
 STRING(REPLACE ";" " " MIRISDR_PC_LIBS "${MIRISDR_PC_LIBS}")
-
-# unset these vars to avoid hard-coded paths to cross environment
-IF(CMAKE_CROSSCOMPILING)
-    UNSET(MIRISDR_PC_CFLAGS)
-    UNSET(MIRISDR_PC_LIBS)
-ENDIF(CMAKE_CROSSCOMPILING)
 
 set(prefix ${CMAKE_INSTALL_PREFIX})
 set(exec_prefix \${prefix})
-set(libdir \${exec_prefix}/lib${LIB_SUFFIX})
+if(IS_ABSOLUTE "${CMAKE_INSTALL_LIBDIR}")
+    set(libdir "${CMAKE_INSTALL_LIBDIR}")
+else()
+    set(libdir \${exec_prefix}/${CMAKE_INSTALL_LIBDIR})
+endif()
 set(includedir \${prefix}/include)
 
 CONFIGURE_FILE(
@@ -183,7 +211,7 @@ CONFIGURE_FILE(
 
 INSTALL(
     FILES ${CMAKE_CURRENT_BINARY_DIR}/libmirisdr.pc
-    DESTINATION lib${LIB_SUFFIX}/pkgconfig
+    DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig
 )
 
 ########################################################################
@@ -191,3 +219,4 @@ INSTALL(
 ########################################################################
 MESSAGE(STATUS "Building for version: ${VERSION} / ${LIBVER}")
 MESSAGE(STATUS "Using install prefix: ${CMAKE_INSTALL_PREFIX}")
+MESSAGE(STATUS "Installing libraries to: ${CMAKE_INSTALL_LIBDIR}")

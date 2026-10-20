@@ -138,12 +138,14 @@ With a fixed IF (see the `if_freq` setting) that IF takes any rate in its span:
 
 The span stops at 4 times the IF, or 2 times with one converter, because above that the tuner's filter leaves nothing to see. A rate outside the span gives its nearest end, and the module logs which.
 
+With `if_freq` fixed at `0` there is no low IF: the module lists and takes only the zero IF rates, from 1.3 Msps up.
+
 The module logs a warning when a rate clocks the receiver's converters past 15 MHz, which is above 7.5 Msps (15 Msps with the decimation bypass). Their effective resolution drops there, gradually. It also notes when the USB format keeps fewer than 14 bits a sample, and suggests the 1620 kHz IF when 2048 kHz is set.
 
 
 <h3>Bandwidth</h3>
 
-The bandwidths are the tuner's filters. A request picks the narrowest filter that is at least as wide as asked, or the widest if none is. The module remembers what you asked for, so a change of IF takes the nearest filter the new IF has.
+The bandwidths are the tuner's filters. A request picks the narrowest filter that is at least as wide as asked, or the widest if none is. The module remembers what you asked for, for each channel, so a change of IF takes the nearest filter the new IF has.
 
 Asking for 0, the default, lets the library choose:
 
@@ -181,7 +183,7 @@ The ranges the module reports are the most each stage has in any band, because p
   - `CS16`: complex int16 with full scale 32768.
   - `CS8`: complex int8 with full scale 128.
 
-With `baseband` off and one converter at a low IF, the samples are real instead, as `S16` or `F32`.
+With `baseband` off and one converter at a low IF, the samples are real instead, as `S16` or `F32`. The same goes for direct sampling on the RSPdx-R2 with `baseband` off, which uses converter I alone. The stream follows the tune there, so tuning into or out of direct sampling switches between real and complex samples. Read `getStreamFormats()` after tuning. A stream set up in the other kind gets the real samples as I with Q at 0, or only the I part of complex ones.
 
 
 <h3>Settings</h3>
@@ -192,7 +194,7 @@ Programs show these as device settings. With SoapySDR's API they are `writeSetti
 |---|---|---|---|
 | `if_freq` | `auto`, `0`, `450000`, `1620000`, `2048000` | `auto` | The tuner IF. `auto` uses zero IF from 1.3 Msps up and a low IF below, never 2048 kHz. The others fix the IF. |
 | `if_in_use` | read only | | The IF in force, in Hz, 0 for zero IF: what `auto` picked. |
-| `converters` | `both`, `I`, `Q` | `both` | With a low IF, use both converters or only one. |
+| `converters` | `both`, `I`, `Q` | `both` | With a low IF, use both converters or only one. Two channels always use both. |
 | `baseband` | `true`, `false` | `true` | Put the frequency you set at the centre of the stream, at any IF. |
 | `format` | `AUTO`, `252_S16`, `336_S16`, `384_S16`, `504_S16`, `504_S8` | `AUTO` | How samples cross the USB. `AUTO` picks the most bits that fit. |
 | `transfer` | `ISOC`, `ISOC1`, `ISOC2`, `BULK` | `ISOC` on Linux, `BULK` on Windows | The USB transfer type. |
@@ -206,11 +208,13 @@ Programs show these as device settings. With SoapySDR's API they are `writeSetti
 | `port_tie` | `true`, `false` | `false` | RSPduo only. Ties the two 50 ohm ports together, so both channels hear both, as from one antenna. It works at HF, 50 to 200 MHz and 600 to 900 MHz, and much less at 300 to 433 MHz and in L band. |
 | `direct_sampling` | `OFF`, `ON`, `AUTO` | `AUTO` | RSPdx-R2 only. Sample the antenna directly instead of through the tuner: `ON` whenever the frequency is 2 MHz or below, `AUTO` only where the whole band (the frequency plus half the rate) fits under 2 MHz. Otherwise the tuner is used as usual. `true` and `false` work as `ON` and `OFF`. The gain is then only the LNA, about 37 dB, on from a total of 19 dB. |
 
-A setting the receiver cannot do is refused and logged. The receiver keeps what it had. That includes a `format`, `transfer` or `decimation_bypass` that the current rate does not fit, for example the bypass at 2 Msps (it starts at 2.6) or `ISOC1` at 8 Msps: the module does not move the rate for a setting.
+A setting the receiver cannot do is refused and logged. The receiver keeps what it had, and the setting reads back as before. That includes a `format`, `transfer` or `decimation_bypass` that the current rate does not fit, for example the bypass at 2 Msps (it starts at 2.6) or `ISOC1` at 8 Msps: the module does not move the rate for a setting.
+
+Values are not case sensitive: `True`, `ON`, `yes` and `1` all turn a setting on, anything else turns it off, and `i` picks converter I. An `if_freq`, `converters` or `direct_sampling` value that is not listed is refused.
 
 <h4>DC offset</h4>
 
-With `baseband` on, the library takes the DC offset off in software: by default at a low IF, where it lies outside the band, and not at zero IF, where it sits at the band's centre. `setDCOffsetMode()` turns it on or off at every IF, and `getDCOffsetMode()` says whether it is on now. At zero IF it also removes a signal right at the centre frequency. Programs such as GQRX can do their own DC removal instead.
+With `baseband` on, the library takes the DC offset off in software: by default at a low IF and under direct sampling, where it lies outside the band, and not at zero IF, where it sits at the band's centre. `setDCOffsetMode()` turns it on or off at every IF, and `getDCOffsetMode()` says whether it is on now. At zero IF it also removes a signal right at the centre frequency. Programs such as GQRX can do their own DC removal instead.
 
 <h4>More about the IF settings</h4>
 
@@ -218,7 +222,7 @@ With `baseband` on, the library takes the DC offset off in software: by default 
   - **A low IF** keeps the LO and DC away from the band and has the narrow filters. The tuner rejects the other side of its LO by about 37 dB. A strong signal at the other side can leak into the stream that much weaker.
   - **Both converters** cost very little CPU. This is the best choice in most cases.
   - **One converter** (`I` or `Q`) halves the USB data and keeps 14 bits at the highest low IF rates. It needs more CPU and halves the rates on offer. The image rejection stays the same, because it comes from the tuner.
-  - **`baseband` off** gives the samples as they come from the receiver, as older versions did. The tuner's LO is then at the centre, and with a low IF the band you want lies one IF below it. Use this only if your program does its own IF handling.
+  - **`baseband` off** gives the samples as they come from the receiver, as older versions did. The tuner's LO is then at the centre, and with a low IF the band you want lies one IF below it. Under direct sampling there is no LO: the frequency reads as you set it, and it lies that far above 0 Hz in the samples. Use this only if your program does its own IF handling.
 
 <h4>How much CPU</h4>
 
@@ -260,8 +264,10 @@ These are SoapySDR log messages at the info level. `SoapySDRUtil` and most progr
 
 These go in the arguments of `setupStream()`:
 
-  - `buffers`: how many USB buffers the module holds for the program. The default is 256. More buffers ride out longer pauses in the consumer.
-  - `transfers`: USB transfers in flight. 0, the default, uses the library's choice.
+  - `buffers`: how many USB buffers the module holds for the program, from 4 to 65536. The default is 256. More buffers ride out longer pauses in the consumer.
+  - `transfers`: USB transfers in flight, from 0 to 1024. 0, the default, uses the library's choice.
+
+A value that is not a whole number in its range makes `setupStream()` throw, as do channels or a format the module does not have. The receiver then keeps what it had. There is one stream at a time: close it with `closeStream()` before setting up another.
 
 
 <h3>Time stamps and lost samples</h3>
@@ -321,7 +327,7 @@ Build it with `g++ example.cpp -lSoapySDR`. At 256000 samples a second the modul
 
 <h3>Two channels</h3>
 
-The RSPduo reports two channels, one for each tuner. Channel 0 is the tuner on the 50 ohm input marked tuner 1, channel 1 the one marked tuner 2. Frequency, gain, bandwidth and the other per channel calls act on their own tuner. The device settings (`if_freq`, the notches and the rest) act on channel 0, except `biastee`, which powers channel 1's port, and `port_tie` and `ref_out`, which are the board's. Each channel has its own pads, the `ATT` gain (`setGain(SOAPY_SDR_RX, 1, "ATT", -13)`), and its own notches, the channel settings `fm_notch`, `mw_notch` and `dab_notch`.
+The RSPduo reports two channels, one for each tuner. Channel 0 is the tuner on the 50 ohm input marked tuner 1, channel 1 the one marked tuner 2. Frequency, gain, bandwidth and the other per channel calls act on their own tuner. Of the device settings, `if_freq`, `converters` and `baseband` act on each tuner streamed, and the USB ones (`format`, `transfer`, `decimation_bypass`, `gap_fill`) on the stream. The device notches are channel 0's. `biastee` powers channel 1's port, and `port_tie` and `ref_out` are the board's. Each channel has its own pads, the `ATT` gain (`setGain(SOAPY_SDR_RX, 1, "ATT", -13)`), and its own notches, the channel settings `fm_notch`, `mw_notch` and `dab_notch`.
 
 A channel not streamed gets no filter path, so an antenna on its port leaks less into the other, and its tuner rests in standby until it is streamed. With both streamed, the ports are 44 to 63 dB apart up to 250 MHz and at 600 MHz, but only 23 to 30 dB at 300 to 433 MHz and 14 to 24 dB at 1.5 to 1.8 GHz.
 

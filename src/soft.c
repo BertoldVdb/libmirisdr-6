@@ -218,6 +218,20 @@ static hw_switch_freq_plan_t *hw_switch_freq_plan[5] = {
 
 /* The board's plan, for the input in p->antenna. Both mirisdr_open_ex() and
    mirisdr_set_hw_flavour() refuse other values */
+/* the most the board's amplifier gives, in the 50 ohm plan */
+static int mirisdr_board_amp_max (mirisdr_dev_t *p)
+{
+    const int f = p->hw_flavour;
+    const hw_switch_freq_plan_t *plan =
+        hw_switch_freq_plan[(f >= MIRISDR_HW_DEFAULT && f <= MIRISDR_HW_RSPDUO) ? f : MIRISDR_HW_DEFAULT];
+    int i, most = 0;
+
+    for (i = 0; plan[i].mode >= 0; i++)
+        if (plan[i].amp_db > most) most = plan[i].amp_db;
+
+    return most;
+}
+
 static const hw_switch_freq_plan_t *mirisdr_plan_of (mirisdr_dev_t *p)
 {
     int f = (int) p->hw_flavour;
@@ -239,11 +253,6 @@ static const hw_switch_freq_plan_t *mirisdr_plan_row_at (mirisdr_dev_t *p, uint3
     return &plan[i - 1];
 }
 
-static const hw_switch_freq_plan_t *mirisdr_plan_row (mirisdr_dev_t *p)
-{
-    return mirisdr_plan_row_at(p, p->freq);
-}
-
 /* Where the plan ends: tuning past it is refused by mirisdr_tune() */
 static uint32_t mirisdr_plan_end (mirisdr_dev_t *p)
 {
@@ -257,15 +266,17 @@ static uint32_t mirisdr_plan_end (mirisdr_dev_t *p)
 
 /* The tuner's row follows the LO. The front end's filter follows the received
    frequency, which a low IF or an offset moves a little from it, as long as both rows
-   use the same tuner input: otherwise the path to that input wins. */
-static uint16_t mirisdr_frontend_word (mirisdr_dev_t *p, const hw_switch_freq_plan_t *row, uint32_t rx)
+   use the same tuner input: otherwise the path to that input wins. Returns the row whose
+   front end it is, and so whose amplifier */
+static const hw_switch_freq_plan_t *mirisdr_frontend_row (mirisdr_dev_t *p, const hw_switch_freq_plan_t *row,
+                                                          uint32_t rx)
 {
     const hw_switch_freq_plan_t *r = mirisdr_plan_row_at(p, rx);
 
     if ((r->mode == row->mode) && (r->am_port == row->am_port) &&
-        (r->upconvert_mixer_on == row->upconvert_mixer_on)) return r->expander;
+        (r->upconvert_mixer_on == row->upconvert_mixer_on)) return r;
 
-    return row->expander;
+    return row;
 }
 
 /* The tuner's IF filters, Hz, by bandwidth index */
@@ -281,6 +292,7 @@ typedef struct mirisdr_tune_words
     uint8_t dc_n, gap;
     uint8_t fits;               /* N fits its 6 bits: past ~3.07 GHz it would wrap */
     uint16_t expander;
+    uint8_t amp_db;             /* the board's amplifier on the front end's path */
     const hw_switch_freq_plan_t *row;
 } mirisdr_tune_words_t;
 
@@ -289,10 +301,11 @@ static void mirisdr_tune_words (mirisdr_dev_t *p, uint32_t lo, uint32_t rx, int 
 {
     uint32_t reg0 = 0, reg2 = 0, reg5 = 0, reg3 = 0, regd = 0, xsel;
     uint64_t n, thresh, frac, lo_div = 0, fvco = 0, rfvco = 0, offset = 0, afc = 0, a, b, c, flo, synth;
-    const hw_switch_freq_plan_t *row = mirisdr_plan_row_at(p, lo);
+    const hw_switch_freq_plan_t *row = mirisdr_plan_row_at(p, lo), *fe = mirisdr_frontend_row(p, row, rx);
 
     w->row = row;
-    w->expander = mirisdr_frontend_word(p, row, rx);
+    w->expander = fe->expander;
+    w->amp_db = fe->amp_db;
 
     /* the 500 kHz low pass only where it cuts nothing the 2 MHz one passes */
     if ((p->hw_flavour == MIRISDR_HW_RSPDXR2) && (w->expander == DXR2_LPF2) &&
@@ -607,7 +620,8 @@ static void mirisdr_filter_learn (mirisdr_dev_t *p, const hw_switch_freq_plan_t 
         mirisdr_tuner_asleep(p)) return;
     if ((p->tuner_reg[0] & (7UL << 17)) != mirisdr_xtalsel(p) << 17) return;
 
-    if (mirisdr_get_tuner_status(p, 0, &st) == 0) p->filter_cal = st.filter;
+    /* the tuner being tuned, which need not be the primary: no select around it */
+    if (mirisdr_tuner_status_of(p, &st) == 0) p->filter_cal = st.filter;
 }
 
 /* Datasheet table 19: the synthesizer frequency that calibrates the L-band LNA to centre */
@@ -829,6 +843,8 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
     int adjust = flags & MIRISDR_TUNE_ADJUST, i, hiz, ant;
     mirisdr_gain_config_t g;
     int64_t lo;
+    /* the single setters adjust, whatever the tune they start from asked */
+    const int strict = c->strict && !adjust;
 
     pl->cfg = *c;
 
@@ -853,7 +869,7 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
 
         if (i == (int) (sizeof mirisdr_bw_hz / sizeof mirisdr_bw_hz[0]))
         {
-            if (c->strict)
+            if (strict)
             {
                 mirisdr_refuse(p, "unsupported bandwidth: %u Hz\n", c->bandwidth);
                 return -1;
@@ -865,7 +881,7 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
     }
 
     /* not with this IF: the nearest it has, as above, unless strict */
-    if (!adjust && !c->strict && !(mirisdr_if_bws[pl->ifm] & (1 << pl->bw)))
+    if (!adjust && !strict && !(mirisdr_if_bws[pl->ifm] & (1 << pl->bw)))
         pl->bw = mirisdr_bw_snap(pl->ifm, c->bandwidth);
 
     if (!(mirisdr_if_bws[pl->ifm] & (1 << pl->bw)))
@@ -937,7 +953,7 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
 
     if (c->synth_thresh > 4095)
     {
-        if (c->strict)
+        if (strict)
         {
             mirisdr_refuse(p, "unsupported synthesizer threshold: %u\n", c->synth_thresh);
             return -1;
@@ -997,7 +1013,7 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
     }
 
     if ((c->gain.mode < MIRISDR_GAIN_KEEP) || (c->gain.mode > MIRISDR_GAIN_STAGES) ||
-        (c->strict && (c->gain.mode == MIRISDR_GAIN_TOTAL) && (c->gain.total < 0)))
+        (strict && (c->gain.mode == MIRISDR_GAIN_TOTAL) && (c->gain.total < 0)))
     {
         mirisdr_refuse(p, "unsupported gain: mode %d, %d dB\n", c->gain.mode, c->gain.total);
         return -1;
@@ -1043,19 +1059,25 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
        tuner takes the rest (no LNA on its AM inputs) */
     g = c->gain;
     pl->ds_lna = p->ds_lna;
-    if (pl->ds && (g.mode == MIRISDR_GAIN_STAGES))
+    /* The tuner's LNA is on none of the AM inputs direct sampling tunes, so its stage keeps
+       the value, for the tune that leaves direct sampling */
+    if (pl->ds && (g.mode == MIRISDR_GAIN_STAGES)) pl->ds_lna = g.lna ? 1 : 0;
+    else if (pl->ds && (g.mode == MIRISDR_GAIN_TOTAL))
     {
-        pl->ds_lna = g.lna ? 1 : 0;
-        g.lna = 0;
+        if (strict && (g.total != 0) && (g.total != MIRISDR_DS_LNA_DB))
+        {
+            mirisdr_refuse(p, "unsupported gain %d dB under direct sampling: 0 or %d\n", g.total, MIRISDR_DS_LNA_DB);
+            return -1;
+        }
+        pl->ds_lna = g.total >= (MIRISDR_DS_LNA_DB + 1) / 2;
     }
-    else if (pl->ds && (g.mode == MIRISDR_GAIN_TOTAL)) pl->ds_lna = g.total >= (MIRISDR_DS_LNA_DB + 1) / 2;
 
     /* the gain in that band, the board's amplifier on this path */
     mirisdr_gr_get(p, &pl->gr);
-    pl->gr.amp_db = pl->ds ? 0 : pl->w.row->amp_db;
+    pl->gr.amp_db = pl->ds ? 0 : pl->w.amp_db;
     if (g.mode == MIRISDR_GAIN_STAGES)
     {
-        if (mirisdr_gr_of_stages(pl->w.band, &g, &pl->gr, c->strict) < 0)
+        if (mirisdr_gr_of_stages(pl->w.band, &g, &pl->gr, strict) < 0)
         {
             mirisdr_refuse(p, "unsupported gain stages for the band: lna %d mixer %d mixbuffer %d baseband %d"
                     " amp_bypass %d\n", c->gain.lna, c->gain.mixer, c->gain.mixbuffer, c->gain.baseband,
@@ -1065,7 +1087,7 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
     }
     else if (c->gain.mode == MIRISDR_GAIN_TOTAL)
     {
-        if (c->strict && !pl->ds && (c->gain.total > mirisdr_max_gain_of(pl->w.band) + pl->gr.amp_db))
+        if (strict && !pl->ds && (c->gain.total > mirisdr_max_gain_of(pl->w.band) + pl->gr.amp_db))
         {
             mirisdr_refuse(p, "unsupported gain %d dB: the band reaches %d\n", c->gain.total,
                            mirisdr_max_gain_of(pl->w.band) + pl->gr.amp_db);
@@ -1078,7 +1100,7 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
     else mirisdr_split_of(pl->w.band, p->gain, &pl->gr);
 
     /* the pads, the Hi-Z has none */
-    pl->att = mirisdr_attenuator_snap(p->hw_flavour, c->frontend.attenuator, c->strict);
+    pl->att = mirisdr_attenuator_snap(p->hw_flavour, c->frontend.attenuator, strict);
     if (pl->att < 0)
     {
         mirisdr_refuse(p, "unsupported attenuator %d dB: the RSPduo and RSP1B take 0, 6, 13 or 19, the RSPdx-R2 0 to 36 in"
@@ -1087,7 +1109,7 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
     }
     if (hiz && pl->att)
     {
-        if (c->strict)
+        if (strict)
         {
             mirisdr_refuse(p, "unsupported attenuator %d dB on the Hi-Z input, which has no pads\n", c->frontend.attenuator);
             return -1;
@@ -1172,17 +1194,25 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
 {
     mirisdr_tune_plan_t pl;
     mirisdr_stream_plan_t spl;
-    int r, restream = 0, streaming = 0, nco = 0;
+    int r, restream = 0, streaming = 0, nco = 0, held = 0;
 
     if (!p || !c) return -1;
     if (mirisdr_tune_plan(p, c, flags, &pl) < 0) return -1;
 
     /* a stream following the tune changes kind or converter with it, in one restart; a
-       baseband one its rate too, to the nearest the new IF has. Only a tuner it takes */
+       baseband one its rate too, to the nearest the new IF has. Only a tuner it takes.
+       Under the transfers' lock, as a setting of the stream (mirisdr_stream_pause) */
     if ((p->stream.follow_tune || p->stream.baseband) && (mirisdr_stream_tuners(p) & (1 << p->tuner_cur)))
     {
+        mirisdr_xfer_lock(p);
+        held = 1;
+
         if (mirisdr_stream_plan(p, &p->stream, ((flags & MIRISDR_TUNE_ADJUST) || p->stream.baseband) ?
-                                MIRISDR_STREAM_ADJUST : 0, pl.siq, pl.sif, pl.ds_edge, &spl) < 0) return -1;
+                                MIRISDR_STREAM_ADJUST : 0, pl.siq, pl.sif, pl.ds_edge, &spl) < 0)
+        {
+            mirisdr_xfer_unlock(p);
+            return -1;
+        }
 
         /* direct sampling moves its IF with every tune: the NCO alone follows it */
         restream = (spl.format != (int) p->format) || (spl.swap != p->swap_iq) || (spl.rate != p->rate) ||
@@ -1191,7 +1221,11 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
                    (spl.bb_ds != p->bb_ds) || ((spl.bb_if != p->bb_if) && !spl.bb_ds) ||
                    (spl.bb_if2 != p->bb_if2);
         nco = !restream && (spl.bb_if != p->bb_if);
-        if (restream && ((streaming = mirisdr_stream_pause(p)) < 0)) return -1;
+        if (restream && ((streaming = mirisdr_stream_pause(p)) < 0))
+        {
+            mirisdr_xfer_unlock(p);
+            return -1;
+        }
     }
 
     mirisdr_filter_learn(p, pl.w.row);
@@ -1232,7 +1266,8 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
     mirisdr_gr_set(p, &pl.gr);
     if (c->gain.mode == MIRISDR_GAIN_TOTAL)
     {
-        p->gain = c->gain.total;
+        /* below the least, as the stages are: -1 would read as the automatic gain */
+        p->gain = (c->gain.total < 0) ? 0 : c->gain.total;
         p->gain_stages_set = 0;
     }
     else if (c->gain.mode == MIRISDR_GAIN_STAGES)
@@ -1247,10 +1282,15 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
 
     if (restream)
     {
-        mirisdr_stream_regs(p, &spl);
-        if (streaming && (mirisdr_stream_resume(p) < 0)) r = -1;
+        if (mirisdr_stream_regs(p, &spl) < 0)
+        {
+            if (streaming) mirisdr_async_fail(p);
+            r = -1;
+        }
+        else if (streaming && (mirisdr_stream_resume(p) < 0)) r = -1;
     }
     else if (nco) mirisdr_bb_move(p, spl.bb_if);
+    if (held) mirisdr_xfer_unlock(p);
 
     if (res)
     {
@@ -1566,14 +1606,19 @@ int mirisdr_set_bandwidth(mirisdr_dev_t *p, uint32_t bw)
     if (bw <= 7000000) b = MIRISDR_BW_7MHZ;
     if (bw <= 6000000) b = MIRISDR_BW_6MHZ;
     if (bw <= 5000000) b = MIRISDR_BW_5MHZ;
-    if (bw <= 1536000)
-    {
-        b = MIRISDR_BW_1536KHZ;
-        if (p->rate >= 5000000) c.if_freq = 1620000;
-    }
-    if (bw <= 600000) { b = MIRISDR_BW_600KHZ; c.if_freq = 450000; }
+    if (bw <= 1536000) b = MIRISDR_BW_1536KHZ;
+    if (bw <= 600000) b = MIRISDR_BW_600KHZ;
     if (bw <= 300000) b = MIRISDR_BW_300KHZ;
     if (bw <= 200000) b = MIRISDR_BW_200KHZ;
+
+    /* the IF in force when it has the filter, otherwise one that has: 450 kHz for the
+       narrow ones, zero for the wide ones, and for 1.536 MHz 1620 kHz at the high rates */
+    if (!(mirisdr_if_bws[p->if_freq] & (1 << b)))
+    {
+        if (b <= MIRISDR_BW_600KHZ) c.if_freq = 450000;
+        else if ((b == MIRISDR_BW_1536KHZ) && (p->rate >= 5000000)) c.if_freq = 1620000;
+        else c.if_freq = 0;
+    }
 
     c.bandwidth = mirisdr_bw_hz[b];
 
@@ -1705,11 +1750,12 @@ int mirisdr_get_frontend_caps (mirisdr_dev_t *p, int tuner, mirisdr_frontend_cap
     /* the amplifier: the 50 ohm plan's rows that have one */
     plan = hw_switch_freq_plan[(f >= MIRISDR_HW_DEFAULT && f <= MIRISDR_HW_RSPDUO) ? f : MIRISDR_HW_DEFAULT];
     for (i = 0; plan[i].mode >= 0; i++)
-    {
-        if (!plan[i].amp_db) continue;
-        if (!caps->amp_bypass_hz) caps->amp_bypass_hz = plan[i].low_khz * 1000u;
-        if (plan[i].amp_db > caps->amp_max_db) caps->amp_max_db = plan[i].amp_db;
-    }
+        if (plan[i].amp_db)
+        {
+            caps->amp_bypass_hz = plan[i].low_khz * 1000u;
+            break;
+        }
+    caps->amp_max_db = mirisdr_board_amp_max(p);
 
     caps->attenuator_count = mirisdr_attenuator_list(f, caps->attenuator);
     caps->flags = mirisdr_frontend_flags(f);

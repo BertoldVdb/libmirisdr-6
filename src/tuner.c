@@ -70,19 +70,25 @@ static void mirisdr_tuner_save (mirisdr_dev_t *p)
     memcpy(t->tuner_reg, p->tuner_reg, sizeof t->tuner_reg);
 }
 
-/* tuner n into the device's fields, the one there saved first */
-static void mirisdr_tuner_select (mirisdr_dev_t *p, int n)
+/* tuner n's context into the device's fields, nothing saved */
+static void mirisdr_tuner_load (mirisdr_dev_t *p, int n)
 {
     mirisdr_tuner_ctx_t *t = &p->tctx[n];
-
-    mirisdr_tuner_save(p);
-    if (n == p->tuner_cur) return;
 
 #define MIRISDR_TUNER_LOAD(f) p->f = t->f;
     MIRISDR_TUNER_CTX(MIRISDR_TUNER_LOAD)
 #undef MIRISDR_TUNER_LOAD
     memcpy(p->tuner_reg, t->tuner_reg, sizeof p->tuner_reg);
     p->tuner_cur = n;
+}
+
+/* tuner n into the device's fields, the one there saved first */
+static void mirisdr_tuner_select (mirisdr_dev_t *p, int n)
+{
+    mirisdr_tuner_save(p);
+    if (n == p->tuner_cur) return;
+
+    mirisdr_tuner_load(p, n);
 }
 
 /* a fresh device: every tuner as the defaults left the first */
