@@ -40,11 +40,13 @@ typedef enum
     MIRISDR_HW_AUTO = -1,       /* open config only: by VID:PID, else MIRISDR_HW_DEFAULT; under
                                    our own ids (16d0:158c) a serial starting "B-" is an RSP1B,
                                    "C-" an RSPdx-R2, "D-" an RSPduo */
-    MIRISDR_HW_DEFAULT,
-    MIRISDR_HW_SDRPLAY,
+    MIRISDR_HW_DEFAULT,         /* plain boards, the RSP1 */
+    MIRISDR_HW_SDRPLAY,         /* the original libmirisdr's SDRplay plan, its board not known */
     MIRISDR_HW_RSP1B,           /* SDRplay RSP1B */
     MIRISDR_HW_RSPDXR2,         /* SDRplay RSPdx-R2 */
     MIRISDR_HW_RSPDUO,          /* SDRplay RSPduo */
+    MIRISDR_HW_MIRICSTV,        /* the Mirics TV reference design, TV sticks such as the Hauppauge
+                                   WinTV 133559LF: VHF, band III and band IV/V only */
 } mirisdr_hw_flavour_t;
 
 typedef enum
@@ -646,6 +648,7 @@ MIRISDR_API int mirisdr_get_frontend_flags (mirisdr_dev_t *p);          /* extra
  * RSPdx-R2's 31 dB at most at 1.5 GHz), and the result reports their steps' dB.
  * mirisdr_tune_check() says what a tune would get. -1 for a tuner the board does not have */
 #define MIRISDR_ATTENUATOR_MAX  16
+#define MIRISDR_RANGE_MAX       4
 
 typedef struct mirisdr_frontend_caps
 {
@@ -661,6 +664,9 @@ typedef struct mirisdr_frontend_caps
 	int      attenuator[MIRISDR_ATTENUATOR_MAX]; /* dB, from 0 up */
 	uint32_t flags;             /* MIRISDR_FRONTEND_* the board has */
 	uint32_t raw_parts;         /* MIRISDR_FRONTEND_RAW_* the board has */
+	int      range_count;       /* the stretches a tune takes, on the 50 ohm input */
+	uint32_t range[MIRISDR_RANGE_MAX][2]; /* Hz, each from the first up to the second, that
+	                               one not included. Around them the board has no input */
 	uint32_t reserved[MIRISDR_RESERVED];
 } mirisdr_frontend_caps_t;
 

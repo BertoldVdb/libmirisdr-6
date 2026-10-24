@@ -29,30 +29,30 @@
 //GPIO2 - Broadcast FM notch
 
 static hw_switch_freq_plan_t hw_switch_freq_plan_default[] = {
-        {0,       MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf780, 0, 0, 0},
-        {12000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xff80, 0, 0, 0},
-        {30000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf280, 0, 0, 0},
-        {55000,   MIRISDR_MODE_VHF, 0, 0, 32, 0xf380, 0, 0, 0},
-        {108000,  MIRISDR_MODE_B3,  0, 0, 16, 0xfa80, 0, 0, 0},
-        {250000,  MIRISDR_MODE_B3,  0, 0, 16, 0xf680, 0, 0, 0},
-        {255000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf680, 6, 0, 0},
-        {280000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf680, 7, 0, 0},
-        {420000,  MIRISDR_MODE_B45, 0, 0, 4,  0xf380, 0, 0, 0},
-        {960000,  MIRISDR_MODE_BL,  0, 0, 2,  0xfa80, 0, 0, 0},
-        {2400000, -1, 0, 0, 0, 0x0000, 0, 0, 0},
+        {0,       MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf780, 0, 0, 0, 0},
+        {12000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xff80, 0, 0, 0, 0},
+        {30000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf280, 0, 0, 0, 0},
+        {55000,   MIRISDR_MODE_VHF, 0, 0, 32, 0xf380, 0, 0, 0, 0},
+        {108000,  MIRISDR_MODE_B3,  0, 0, 16, 0xfa80, 0, 0, 0, 0},
+        {250000,  MIRISDR_MODE_B3,  0, 0, 16, 0xf680, 0, 0, 0, 0},
+        {255000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf680, 6, 0, 0, 0},
+        {280000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf680, 7, 0, 0, 0},
+        {420000,  MIRISDR_MODE_B45, 0, 0, 4,  0xf380, 0, 0, 0, 0},
+        {960000,  MIRISDR_MODE_BL,  0, 0, 2,  0xfa80, 0, 0, 0, 0},
+        {2400000, -1, 0, 0, 0, 0x0000, 0, 0, 0, 0},
 };
 
 static hw_switch_freq_plan_t hw_switch_freq_plan_sdrplay[] = {
-        {0,       MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf580, 0, 0, 0},
-        {12000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf580, 0, 0, 0},
-        {30000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf580, 0, 0, 0},
-        {50000,   MIRISDR_MODE_VHF, 0, 0, 32, 0xf180, 0, 0, 0},
-        {112000,  MIRISDR_MODE_B3,  0, 0, 16, 0xf580, 0, 0, 0},
-        {250000,  MIRISDR_MODE_B3,  0, 0, 16, 0xf480, 0, 0, 0},
-        {261000,  6              ,  0, 0, 8,  0xf480, 0, 0, 0},
-        {404000,  MIRISDR_MODE_B45, 0, 0, 4,  0xf580, 0, 0, 0},
-        {1000000, MIRISDR_MODE_BL,  0, 0, 2,  0xf580, 0, 0, 0},
-        {2400000, -1, 0, 0, 0, 0x0000, 0, 0, 0},
+        {0,       MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf580, 0, 0, 0, 0},
+        {12000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf580, 0, 0, 0, 0},
+        {30000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xf580, 0, 0, 0, 0},
+        {50000,   MIRISDR_MODE_VHF, 0, 0, 32, 0xf180, 0, 0, 0, 0},
+        {112000,  MIRISDR_MODE_B3,  0, 0, 16, 0xf580, 0, 0, 0, 0},
+        {250000,  MIRISDR_MODE_B3,  0, 0, 16, 0xf480, 0, 0, 0, 0},
+        {261000,  6              ,  0, 0, 8,  0xf480, 0, 0, 0, 0},
+        {404000,  MIRISDR_MODE_B45, 0, 0, 4,  0xf580, 0, 0, 0, 0},
+        {1000000, MIRISDR_MODE_BL,  0, 0, 2,  0xf580, 0, 0, 0, 0},
+        {2400000, -1, 0, 0, 0, 0x0000, 0, 0, 0, 0},
 };
 
 /* RSP1B: the default plan's tuner modes, register 8 holding GPIO_1 and GPIO_3 high with
@@ -72,7 +72,7 @@ static hw_switch_freq_plan_t hw_switch_freq_plan_sdrplay[] = {
    0.7-0.8 dB at 30 MHz, 7 at 33, 11-12 at 36, 15-16 at 40, 19-20 at 45, 22-23 at 50, 24 at
    54, the receiver's floor not rising with it. Rows by the gain in each stretch */
 #define RSP1B_30_60_ROW(khz, db) \
-        {khz,     MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_30_60, db}
+        {khz,     MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_30_60, db, 0}
 #define RSP1B_30_60_ROWS \
         RSP1B_30_60_ROW(30000, 2), RSP1B_30_60_ROW(32000, 7), RSP1B_30_60_ROW(35000, 11), \
         RSP1B_30_60_ROW(38000, 15), RSP1B_30_60_ROW(42000, 19), RSP1B_30_60_ROW(47000, 23)
@@ -89,21 +89,21 @@ static hw_switch_freq_plan_t hw_switch_freq_plan_sdrplay[] = {
 #define RSP1B_AMP_L     19
 
 static hw_switch_freq_plan_t hw_switch_freq_plan_rsp1b[] = {
-        {0,       MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_LPF2, 0},
-        {2000,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_2_12, 0},
-        {12000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_12_30, 0},
+        {0,       MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_LPF2, 0, 0},
+        {2000,    MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_2_12, 0, 0},
+        {12000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_12_30, 0, 0},
         RSP1B_30_60_ROWS,
-        {55000,   MIRISDR_MODE_VHF, 0, 0, 32, 0xea80, 0, RSP1B_VHF_B45, RSP1B_AMP_VHF},
-        {108000,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1B_B3_L, RSP1B_AMP_B3},
-        {250000,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1B_B3_L, RSP1B_AMP_B3},
-        {255000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 6, RSP1B_250_300, RSP1B_AMP_UHF},
-        {280000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1B_250_300, RSP1B_AMP_UHF},
-        {300000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1B_300_380, RSP1B_AMP_UHF},
+        {55000,   MIRISDR_MODE_VHF, 0, 0, 32, 0xea80, 0, RSP1B_VHF_B45, RSP1B_AMP_VHF, 0},
+        {108000,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1B_B3_L, RSP1B_AMP_B3, 0},
+        {250000,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1B_B3_L, RSP1B_AMP_B3, 0},
+        {255000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 6, RSP1B_250_300, RSP1B_AMP_UHF, 0},
+        {280000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1B_250_300, RSP1B_AMP_UHF, 0},
+        {300000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1B_300_380, RSP1B_AMP_UHF, 0},
         {RSP1B_380_420_KHZ, MIRISDR_MODE_AM, MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1B_380_420,
-         RSP1B_AMP_UHF},
-        {420000,  MIRISDR_MODE_B45, 0, 0, 4,  0xea80, 0, RSP1B_VHF_B45, RSP1B_AMP_B45},
-        {960000,  MIRISDR_MODE_BL,  0, 0, 2,  0xea80, 0, RSP1B_B3_L, RSP1B_AMP_L},
-        {2400000, -1, 0, 0, 0, 0x0000, 0, 0, 0},
+         RSP1B_AMP_UHF, 0},
+        {420000,  MIRISDR_MODE_B45, 0, 0, 4,  0xea80, 0, RSP1B_VHF_B45, RSP1B_AMP_B45, 0},
+        {960000,  MIRISDR_MODE_BL,  0, 0, 2,  0xea80, 0, RSP1B_B3_L, RSP1B_AMP_L, 0},
+        {2400000, -1, 0, 0, 0, 0x0000, 0, 0, 0, 0},
 };
 
 /* RSPdx-R2: the RSP1B's plan with its own HF codes. The antenna bits (A3 A2) stay
@@ -131,21 +131,21 @@ static hw_switch_freq_plan_t hw_switch_freq_plan_rsp1b[] = {
                                    at 360 (2026-10-17) */
 
 static hw_switch_freq_plan_t hw_switch_freq_plan_rspdxr2[] = {
-        {0,       MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, DXR2_LPF2, 0},
-        {DXR2_2_12_KHZ, MIRISDR_MODE_AM, MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_2_12, 0},
-        {13000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_12_30, 0},
+        {0,       MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, DXR2_LPF2, 0, 0},
+        {DXR2_2_12_KHZ, MIRISDR_MODE_AM, MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_2_12, 0, 0},
+        {13000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_12_30, 0, 0},
         RSP1B_30_60_ROWS,
-        {55000,   MIRISDR_MODE_VHF, 0, 0, 32, 0xea80, 0, RSP1B_VHF_B45, DXR2_AMP_VHF},
-        {108000,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1B_B3_L, DXR2_AMP_B3},
-        {250000,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1B_B3_L, DXR2_AMP_B3},
-        {255000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 6, RSP1B_250_300, DXR2_AMP_UHF},
-        {280000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1B_250_300, DXR2_AMP_UHF},
-        {300000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1B_300_380, DXR2_AMP_UHF},
+        {55000,   MIRISDR_MODE_VHF, 0, 0, 32, 0xea80, 0, RSP1B_VHF_B45, DXR2_AMP_VHF, 0},
+        {108000,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1B_B3_L, DXR2_AMP_B3, 0},
+        {250000,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1B_B3_L, DXR2_AMP_B3, 0},
+        {255000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 6, RSP1B_250_300, DXR2_AMP_UHF, 0},
+        {280000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1B_250_300, DXR2_AMP_UHF, 0},
+        {300000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1B_300_380, DXR2_AMP_UHF, 0},
         {DXR2_380_420_KHZ, MIRISDR_MODE_AM, MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1B_380_420,
-         DXR2_AMP_UHF},
-        {420000,  MIRISDR_MODE_B45, 0, 0, 4,  0xea80, 0, RSP1B_VHF_B45, DXR2_AMP_B45},
-        {960000,  MIRISDR_MODE_BL,  0, 0, 2,  0xea80, 0, RSP1B_B3_L, DXR2_AMP_L},
-        {2400000, -1, 0, 0, 0, 0x0000, 0, 0, 0},
+         DXR2_AMP_UHF, 0},
+        {420000,  MIRISDR_MODE_B45, 0, 0, 4,  0xea80, 0, RSP1B_VHF_B45, DXR2_AMP_B45, 0},
+        {960000,  MIRISDR_MODE_BL,  0, 0, 2,  0xea80, 0, RSP1B_B3_L, DXR2_AMP_L, 0},
+        {2400000, -1, 0, 0, 0, 0x0000, 0, 0, 0, 0},
 };
 
 /* RSPduo (sdrplay.c): the filter in tuner 1's pins of the first expander, B1-B5, and tuner 0
@@ -179,20 +179,53 @@ static hw_switch_freq_plan_t hw_switch_freq_plan_rspdxr2[] = {
 #define DUO_AMP_L       17
 
 static hw_switch_freq_plan_t hw_switch_freq_plan_rspduo[] = {
-        {0,       MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, DUO_LPF2, 0},
-        {DUO_2_12_KHZ, MIRISDR_MODE_AM, MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, DUO_2_12, 0},
-        {12000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, DUO_12_30, 0},
-        {30000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, DUO_30_60, 0},
-        {55000,   MIRISDR_MODE_VHF, 0, 0, 32, 0xea80, 0, DUO_VHF_UHF, DUO_AMP_VHF},
-        {108000,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, DUO_B3, DUO_AMP_B3},
-        {255000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 6, DUO_250_300, DUO_AMP_UHF},
-        {280000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, DUO_250_300, DUO_AMP_UHF},
-        {300000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, DUO_300_380, DUO_AMP_UHF},
+        {0,       MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, DUO_LPF2, 0, 0},
+        {DUO_2_12_KHZ, MIRISDR_MODE_AM, MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, DUO_2_12, 0, 0},
+        {12000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, DUO_12_30, 0, 0},
+        {30000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, DUO_30_60, 0, 0},
+        {55000,   MIRISDR_MODE_VHF, 0, 0, 32, 0xea80, 0, DUO_VHF_UHF, DUO_AMP_VHF, 0},
+        {108000,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, DUO_B3, DUO_AMP_B3, 0},
+        {255000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 6, DUO_250_300, DUO_AMP_UHF, 0},
+        {280000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, DUO_250_300, DUO_AMP_UHF, 0},
+        {300000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, DUO_300_380, DUO_AMP_UHF, 0},
         {DUO_380_420_KHZ, MIRISDR_MODE_AM, MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, DUO_380_420,
-         DUO_AMP_UHF},
-        {420000,  MIRISDR_MODE_B45, 0, 0, 4,  0xea80, 0, DUO_VHF_UHF, DUO_AMP_B45},
-        {960000,  MIRISDR_MODE_BL,  0, 0, 2,  0xea80, 0, DUO_B3, DUO_AMP_L},
-        {2400000, -1, 0, 0, 0, 0x0000, 0, 0, 0},
+         DUO_AMP_UHF, 0},
+        {420000,  MIRISDR_MODE_B45, 0, 0, 4,  0xea80, 0, DUO_VHF_UHF, DUO_AMP_B45, 0},
+        {960000,  MIRISDR_MODE_BL,  0, 0, 2,  0xea80, 0, DUO_B3, DUO_AMP_L, 0},
+        {2400000, -1, 0, 0, 0, 0x0000, 0, 0, 0, 0},
+};
+
+/* The Mirics TV reference design, which TV sticks such as the Hauppauge WinTV 133559LF follow:
+   the tuner's VHF, band III and band IV/V inputs only, the AM ports and L band not connected
+   (2026-10-21). The GPIOs switch nothing in the RF path. GPIO_1 is the EEPROM's chip select,
+   held high. GPIO_0 (its MISO), GPIO_2 (its size strap) and GPIO_3 (the IR receiver) are
+   inputs. Each band reaches as far as the VCO goes: the WinTV received
+   50 MHz up on VHF, up to 261 MHz on band III and 400 to 1040 MHz on band IV/V, another part
+   up to 265 and from 416 MHz. Nothing else takes the outer edges, so the rows leave room for
+   parts whose VCO goes further, to 1440 and 4400 MHz. The WinTV's VCO was asked for 1408 to
+   4480 MHz without harm.
+   Between band III and band IV/V two undocumented /8 modes take over. VHF, band III and band
+   IV/V together from 258 to 336 MHz, 4 to 8 dB below band III, image rejection 28 to 56 dB,
+   twice the frequency only 5 to 10 dB down. It does not work at 339 to 395 MHz, so VHF and band
+   III from there, 12 to 18 dB below the bands, image rejection 17 to 25 dB (35 to 40 in the
+   bands), on another part only from 300 MHz. The three again below band IV/V, 10 dB below it,
+   image rejection 15 to 18 dB. Near their ends the bands are tried first and give way where
+   their VCO search pins. Band III's search pins at 252 to 257 MHz, before that mode starts,
+   so its edge row starts at 258. On the RSPduo's two tuners VHF and band III together end at
+   386 to 388 MHz and the three work from 375 and 385, so band IV/V's edge row starts at 386.
+   The other part is silent there up to 395 (2026-10-23) */
+#define MIRICSTV_GPIO 0x2280
+
+static hw_switch_freq_plan_t hw_switch_freq_plan_miricstv[] = {
+        {0,       MIRISDR_MODE_NONE, 0, 0, 0, MIRICSTV_GPIO, 0, 0, 0, 0},
+        {45000,   MIRISDR_MODE_VHF, 0, 0, 32, MIRICSTV_GPIO, 0, 0, 0, 0},
+        {108000,  MIRISDR_MODE_B3,  0, 0, 16, MIRICSTV_GPIO, 0, 0, 0, 0},
+        {258000,  MIRISDR_MODE_B3,  0, 0, 16, MIRICSTV_GPIO, 0, 0, 0, MIRISDR_EDGE_HIGH | MIRISDR_MODE_VHF_B3_B45},
+        {275000,  MIRISDR_MODE_VHF_B3_B45, 0, 0, 8, MIRICSTV_GPIO, 0, 0, 0, 0},
+        {336000,  MIRISDR_MODE_VHF_B3, 0, 0, 8, MIRICSTV_GPIO, 0, 0, 0, 0},
+        {386000,  MIRISDR_MODE_B45, 0, 0, 4,  MIRICSTV_GPIO, 0, 0, 0, MIRISDR_EDGE_LOW | MIRISDR_MODE_VHF_B3_B45},
+        {450000,  MIRISDR_MODE_B45, 0, 0, 4,  MIRICSTV_GPIO, 0, 0, 0, 0},
+        {1100000, -1, 0, 0, 0, 0x0000, 0, 0, 0, 0},
 };
 
 /* RSPduo tuner 0 on the Hi-Z input: the tuner's AM input 1, past the filters (whose words,
@@ -202,18 +235,19 @@ static hw_switch_freq_plan_t hw_switch_freq_plan_rspduo[] = {
 #define DUO_HIZ_END_MHZ 30
 
 static hw_switch_freq_plan_t hw_switch_freq_plan_rspduo_hiz[] = {
-        {0,       MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT1, 16, 0xea80, 0, DUO_LPF2, 0},
-        {DUO_2_12_KHZ, MIRISDR_MODE_AM, MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT1, 16, 0xea80, 0, DUO_2_12, 0},
-        {12000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT1, 16, 0xea80, 0, DUO_12_30, 0},
-        {DUO_HIZ_END_MHZ * 1000, -1, 0, 0, 0, 0x0000, 0, 0, 0},
+        {0,       MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT1, 16, 0xea80, 0, DUO_LPF2, 0, 0},
+        {DUO_2_12_KHZ, MIRISDR_MODE_AM, MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT1, 16, 0xea80, 0, DUO_2_12, 0, 0},
+        {12000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT1, 16, 0xea80, 0, DUO_12_30, 0, 0},
+        {DUO_HIZ_END_MHZ * 1000, -1, 0, 0, 0, 0x0000, 0, 0, 0, 0},
 };
 
-static hw_switch_freq_plan_t *hw_switch_freq_plan[5] = {
+static hw_switch_freq_plan_t *hw_switch_freq_plan[6] = {
         hw_switch_freq_plan_default,
         hw_switch_freq_plan_sdrplay,
         hw_switch_freq_plan_rsp1b,
         hw_switch_freq_plan_rspdxr2,
-        hw_switch_freq_plan_rspduo
+        hw_switch_freq_plan_rspduo,
+        hw_switch_freq_plan_miricstv
 };
 
 /* The board's plan, for the input in p->antenna. Both mirisdr_open_ex() and
@@ -223,7 +257,7 @@ static int mirisdr_board_amp_max (mirisdr_dev_t *p)
 {
     const int f = p->hw_flavour;
     const hw_switch_freq_plan_t *plan =
-        hw_switch_freq_plan[(f >= MIRISDR_HW_DEFAULT && f <= MIRISDR_HW_RSPDUO) ? f : MIRISDR_HW_DEFAULT];
+        hw_switch_freq_plan[(f >= MIRISDR_HW_DEFAULT && f <= MIRISDR_HW_MIRICSTV) ? f : MIRISDR_HW_DEFAULT];
     int i, most = 0;
 
     for (i = 0; plan[i].mode >= 0; i++)
@@ -239,7 +273,13 @@ static const hw_switch_freq_plan_t *mirisdr_plan_of (mirisdr_dev_t *p)
     if ((f == MIRISDR_HW_RSPDUO) && !p->tuner_cur && (p->antenna == MIRISDR_ANTENNA_HIZ))
         return hw_switch_freq_plan_rspduo_hiz;
 
-    return hw_switch_freq_plan[(f >= MIRISDR_HW_DEFAULT && f <= MIRISDR_HW_RSPDUO) ? f : MIRISDR_HW_DEFAULT];
+    return hw_switch_freq_plan[(f >= MIRISDR_HW_DEFAULT && f <= MIRISDR_HW_MIRICSTV) ? f : MIRISDR_HW_DEFAULT];
+}
+
+/* Register 8 before the first tune: the GPIOs as the plan's first row has them */
+static uint32_t mirisdr_reg8_open (mirisdr_dev_t *p)
+{
+    return mirisdr_plan_of(p)[0].band_select_word;
 }
 
 /* The row a frequency falls in */
@@ -251,6 +291,25 @@ static const hw_switch_freq_plan_t *mirisdr_plan_row_at (mirisdr_dev_t *p, uint3
     while ((uint64_t) freq >= 1000ULL * plan[i].low_khz && plan[i].mode >= 0) i++;
 
     return &plan[i - 1];
+}
+
+/* An edge row's fallback where its VCO search pinned at that end, as last seen at this LO: the
+   plan's first row in the mode it names. While a tune tries the band itself (edge_try), the row */
+static const hw_switch_freq_plan_t *mirisdr_edge_row (mirisdr_dev_t *p, const hw_switch_freq_plan_t *row, uint32_t lo)
+{
+    const hw_switch_freq_plan_t *plan = mirisdr_plan_of(p);
+    int i, pinned;
+
+    if (!row->edge || p->edge_try) return row;
+
+    pinned = (row->edge & MIRISDR_EDGE_HIGH) ? (p->edge_pin[0] && lo >= p->edge_pin[0]) :
+                                               (p->edge_pin[1] && lo <= p->edge_pin[1]);
+    if (!pinned) return row;
+
+    for (i = 0; plan[i].mode >= 0; i++)
+        if (plan[i].mode == MIRISDR_EDGE_MODE(row->edge)) return &plan[i];
+
+    return row;
 }
 
 /* Where the plan ends: tuning past it is refused by mirisdr_tune() */
@@ -301,7 +360,7 @@ static void mirisdr_tune_words (mirisdr_dev_t *p, uint32_t lo, uint32_t rx, int 
 {
     uint32_t reg0 = 0, reg2 = 0, reg5 = 0, reg3 = 0, regd = 0, xsel;
     uint64_t n, thresh, frac, lo_div = 0, fvco = 0, rfvco = 0, offset = 0, afc = 0, a, b, c, flo, synth;
-    const hw_switch_freq_plan_t *row = mirisdr_plan_row_at(p, lo), *fe = mirisdr_frontend_row(p, row, rx);
+    const hw_switch_freq_plan_t *row = mirisdr_edge_row(p, mirisdr_plan_row_at(p, lo), lo), *fe = mirisdr_frontend_row(p, row, rx);
 
     w->row = row;
     w->expander = fe->expander;
@@ -329,7 +388,7 @@ static void mirisdr_tune_words (mirisdr_dev_t *p, uint32_t lo, uint32_t rx, int 
         lo_div = row->lo_div;
 
         if (row->mode == MIRISDR_MODE_VHF) w->band = MIRISDR_BAND_VHF;
-        /* the RSP1's 261-404 MHz row sets the VHF bit with it */
+        /* the SDRplay plan's 261-404 MHz row sets the VHF bit with it */
         else if (row->mode & MIRISDR_MODE_B3) w->band = MIRISDR_BAND_3;
         else if (row->mode == MIRISDR_MODE_B45) w->band = MIRISDR_BAND_45;
         else w->band = MIRISDR_BAND_L;
@@ -987,6 +1046,12 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
         return -1;
     }
 
+    if (c->frontend.bias && (p->hw_flavour == MIRISDR_HW_MIRICSTV))
+    {
+        mirisdr_refuse(p, "unsupported bias-T: the Mirics TV design has none, its GPIO_3 is the IR receiver\n");
+        return -1;
+    }
+
     if (c->frontend.flags & ~mirisdr_frontend_flags(p->hw_flavour))
     {
         mirisdr_refuse(p, "unsupported front end flags 0x%x (this board has 0x%x)\n",
@@ -1037,6 +1102,15 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
     {
         p->antenna = ant;
         mirisdr_refuse(p, "cannot tune the LO to %lld Hz\n", (long long) lo);
+        return -1;
+    }
+
+    /* no tuner input there: forcing a band in would take its VCO far out of range, which
+       can leave it pinned until the MSi2500 restarts */
+    if (mirisdr_plan_row_at(p, (uint32_t) lo)->mode == MIRISDR_MODE_NONE)
+    {
+        p->antenna = ant;
+        mirisdr_refuse(p, "no tuner input on this board for the LO at %lld Hz\n", (long long) lo);
         return -1;
     }
 
@@ -1189,8 +1263,64 @@ static int mirisdr_bb_path_of (mirisdr_dev_t *p)
     return (mirisdr_stream_tuners(p) & (1 << p->tuner_cur)) ? p->bb_path : MIRISDR_BASEBAND_OFF;
 }
 
+static int mirisdr_tune_apply_once (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, int flags,
+                                    mirisdr_tune_result_t *res);
+
+/* how long the VCO search takes to read back after a tune: 0.27 ms still read the band
+   before, 0.4 ms the new one */
+#define MIRISDR_EDGE_US         1000
+
+/* A tune in an edge row tries the band itself, and where its VCO search pinned at that end
+   goes out again in the mode the row names. What it found is kept for the tune checks and
+   scan lists. Held VCO codes, a resting tuner and a device without hardware leave it to them */
 static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, int flags,
                                mirisdr_tune_result_t *res)
+{
+    const hw_switch_freq_plan_t *row;
+    mirisdr_tuner_status_t st;
+    mirisdr_tune_plan_t pl;
+    int r, pinned;
+
+    if (!p || !c) return -1;
+
+    /* the row without fallback, and whether this tune can ask the tuner */
+    p->edge_try = 1;
+    r = mirisdr_tune_plan(p, c, flags, &pl);
+    p->edge_try = 0;
+    if (r < 0) return mirisdr_tune_apply_once(p, c, flags, res);
+    row = pl.w.row;
+
+    if (!row->edge || !p->dh || p->external_tuner || mirisdr_tuner_rests(p, pl.ds) || c->override.hold_vco)
+        return mirisdr_tune_apply_once(p, c, flags, res);
+
+    p->edge_try = 1;
+    r = mirisdr_tune_apply_once(p, c, flags, res);
+    p->edge_try = 0;
+    if (r < 0) return r;
+
+    usleep(MIRISDR_EDGE_US);
+    if (mirisdr_tuner_status_of(p, &st) < 0) return 0;
+
+    pinned = (row->edge & MIRISDR_EDGE_HIGH) ? ((st.flags & MIRISDR_TUNER_AT_HIGH_LIMIT) != 0) :
+                                               ((st.flags & MIRISDR_TUNER_AT_LOW_LIMIT) != 0);
+
+    /* the pin point as last seen: moved here when it pinned nearer the band, past here when not */
+    if (row->edge & MIRISDR_EDGE_HIGH)
+    {
+        if (pinned && (!p->edge_pin[0] || pl.lo < p->edge_pin[0])) p->edge_pin[0] = pl.lo;
+        if (!pinned && p->edge_pin[0] && pl.lo >= p->edge_pin[0]) p->edge_pin[0] = pl.lo + 1;
+    }
+    else
+    {
+        if (pinned && pl.lo > p->edge_pin[1]) p->edge_pin[1] = pl.lo;
+        if (!pinned && pl.lo <= p->edge_pin[1]) p->edge_pin[1] = pl.lo - 1;
+    }
+
+    return pinned ? mirisdr_tune_apply_once(p, c, flags, res) : 0;
+}
+
+static int mirisdr_tune_apply_once (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, int flags,
+                                    mirisdr_tune_result_t *res)
 {
     mirisdr_tune_plan_t pl;
     mirisdr_stream_plan_t spl;
@@ -1345,6 +1475,8 @@ static void mirisdr_tuner_defaults (mirisdr_dev_t *p)
     p->dc_track = 0x1f;
     p->dc_period = 0x800;
     p->filter_cal = -1;
+    p->edge_pin[0] = p->edge_pin[1] = 0;
+    p->edge_try = 0;
 }
 
 /* the stored tune again, for what changes the front end or the stream's view of it */
@@ -1748,13 +1880,31 @@ int mirisdr_get_frontend_caps (mirisdr_dev_t *p, int tuner, mirisdr_frontend_cap
     caps->direct_sampling = f == MIRISDR_HW_RSPDXR2;
 
     /* the amplifier: the 50 ohm plan's rows that have one */
-    plan = hw_switch_freq_plan[(f >= MIRISDR_HW_DEFAULT && f <= MIRISDR_HW_RSPDUO) ? f : MIRISDR_HW_DEFAULT];
+    plan = hw_switch_freq_plan[(f >= MIRISDR_HW_DEFAULT && f <= MIRISDR_HW_MIRICSTV) ? f : MIRISDR_HW_DEFAULT];
     for (i = 0; plan[i].mode >= 0; i++)
         if (plan[i].amp_db)
         {
             caps->amp_bypass_hz = plan[i].low_khz * 1000u;
             break;
         }
+
+    /* the rows with an input, joined where they meet, each up to the next row without one */
+    for (i = 0; plan[i].mode >= 0; i++)
+    {
+        int n = caps->range_count;
+
+        if (plan[i].mode == MIRISDR_MODE_NONE)
+        {
+            if (n && !caps->range[n - 1][1]) caps->range[n - 1][1] = plan[i].low_khz * 1000u;
+        }
+        else if ((!n || caps->range[n - 1][1]) && (n < MIRISDR_RANGE_MAX))
+        {
+            caps->range[n][0] = plan[i].low_khz * 1000u;
+            caps->range_count++;
+        }
+    }
+    if (caps->range_count && !caps->range[caps->range_count - 1][1])
+        caps->range[caps->range_count - 1][1] = plan[i].low_khz * 1000u;
     caps->amp_max_db = mirisdr_board_amp_max(p);
 
     caps->attenuator_count = mirisdr_attenuator_list(f, caps->attenuator);

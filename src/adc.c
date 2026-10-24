@@ -15,17 +15,18 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+static uint32_t mirisdr_reg8_open (mirisdr_dev_t *p);
+
 int mirisdr_adc_init (mirisdr_dev_t *p) {
     if (!p) goto failed;
 
-    /* initialisation, fixed values */
-    p->reg8 = 0x006080;                   /* kernel driver */
+    /* initialisation, fixed values (the kernel driver's). The GPIOs as the board's plan has
+       them, not the kernel driver's words, which drive all four pins */
+    p->reg8 = mirisdr_reg8_open(p);
     update_reg_8(p);
     mirisdr_write_reg(p, 0x05, 0x00000c);
     mirisdr_write_reg(p, 0x00, 0x000200);
     mirisdr_write_reg(p, 0x02, 0x004801);
-    p->reg8 = 0x00f380;                   /* kernel driver */
-    update_reg_8(p);
 
     return 0;
 

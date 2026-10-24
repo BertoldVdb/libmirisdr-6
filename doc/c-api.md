@@ -106,7 +106,7 @@ The fields you are most likely to use:
 With both `serial` and `usb_port`, the receiver with that serial is taken, in whatever port. When none has it, the receiver in `usb_port` is taken, but only if it reports no serial, as one running from its ROM after a power cycle. One that reports another serial is not.
 
 Avoid opening based on an index: a receiver plugged in or out shifts the index of the others. With `serial` or `usb_port`, the receiver is matched in the same device list it is opened from, so another one cannot take its place. `mirisdr_get_index_by_serial()` followed by `mirisdr_open()` leaves a moment for that to happen. While the firmware loads, the receiver reboots and is opened again by its USB port, whichever way it was chosen.
-  - `hw_flavour`: the kind of board. `MIRISDR_HW_AUTO`, the default, tells from the USB ids. Other values are `MIRISDR_HW_DEFAULT`, `MIRISDR_HW_SDRPLAY`, `MIRISDR_HW_RSP1B`, `MIRISDR_HW_RSPDXR2` and `MIRISDR_HW_RSPDUO`. A wrong value can switch things the board does not have, such as a bias-T.
+  - `hw_flavour`: the kind of board. `MIRISDR_HW_AUTO`, the default, tells from the USB ids. Other values are `MIRISDR_HW_DEFAULT` (plain boards and the RSP1), `MIRISDR_HW_SDRPLAY` (the original libmirisdr's SDRplay plan, for a board that is not known), `MIRISDR_HW_RSP1B`, `MIRISDR_HW_RSPDXR2`, `MIRISDR_HW_RSPDUO` and `MIRISDR_HW_MIRICSTV` (the Mirics TV reference design, which TV sticks such as the Hauppauge WinTV 133559LF, the AverMedia A859, the IO-DATA GV-TV100 and the Logitec LDT-1S310U/J follow). A wrong value can switch things the board does not have, such as a bias-T.
   - `firmware`, `firmware_path` and `keep_running`: the library loads its own firmware into the receiver by default, and replaces a different one that is running. Give another image, or set `keep_running` to use what runs.
 
 `mirisdr_close()` stops any stream and frees everything. It also puts the tuners in standby and switches off the bias-T and the front end's amplifiers, pads and notches. On the RSPduo it takes the ports apart.
@@ -131,7 +131,7 @@ The second argument is the tuner, from 0. `mirisdr_get_tuner_count()` says how m
 
 <h4>The tune config</h4>
 
-  - `frequency`: the frequency to receive, in Hz.
+  - `frequency`: the frequency to receive, in Hz. Most boards take it up to 2400 MHz. `mirisdr_get_frontend_caps()` lists the frequency ranges supported by the board.
   - `if_freq`: 0 for zero IF, or a low IF of 450000, 1620000 or 2048000.
   - `bandwidth`: the tuner's filter in Hz. 0 lets the library pick. At zero IF it takes the narrowest filter at least as wide as the sample rate, up to 8 MHz, and changes it when the rate changes. For example 2.048 Msps gets 5 MHz and 10 Msps gets 8 MHz. With a low IF it takes the widest the IF has. The filters are listed below.
   - `low_if_auto`: with a low IF, put the LO one IF above `frequency`, so `frequency` is what the tuner passes. Without it the LO sits at `frequency`.
@@ -186,7 +186,7 @@ The older `mirisdr_set_center_freq()` sets the LO directly. It switches `low_if_
 
 A notch, an antenna, pads or direct sampling on a board without them is refused. A pad value between steps is taken to the nearest, or refused with `strict`. The config keeps what you asked for, and the tune result reports what is in force.
 
-`mirisdr_get_frontend_caps()` says what a tuner's front end has, so a program can offer only that: the notches, the antennas and which is a Hi-Z input, the bias-T, direct sampling, the amplifier (from which frequency, and its gain in its best band), the pad values, the flags and the raw parts. It does not change while the device is open. What depends on the frequency comes with a tune result, and `mirisdr_tune_check()` says what a given tune would get.
+`mirisdr_get_frontend_caps()` says what a tuner's front end has, so a program can offer only that: the notches, the antennas and which is a Hi-Z input, the bias-T, direct sampling, the amplifier (from which frequency, and its gain in its best band), the pad values, the flags, the raw parts and the stretches of frequency a tune takes (`range`, `range_count` of them, each from the first value up to the second). It does not change while the device is open. What depends on the frequency comes with a tune result, and `mirisdr_tune_check()` says what a given tune would get.
 
 ```c
 mirisdr_frontend_caps_t caps;

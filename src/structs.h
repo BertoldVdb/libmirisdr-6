@@ -237,6 +237,10 @@ struct mirisdr_dev {
     uint32_t            tuner_ovr13;    /* override bits added to the register 13 data */
     uint32_t            tuner_ovr14;    /* register 14 data, the override bits */
     int                 filter_cal;     /* IF filter code under the real crystal's XTALSEL, -1 unknown */
+    uint32_t            edge_pin[2];    /* LO Hz where a plan row's VCO search pinned: [0] the lowest at its
+                                           high end, [1] the highest at its low end, 0 none seen. What a
+                                           tune check or a scan list takes, without the hardware to ask */
+    int                 edge_try;       /* a tune is trying an edge row's own band: no fallback */
     uint8_t             tuner_gap;      /* tuned with another crystal's XTALSEL: hold filter_cal */
     uint8_t             dc_n;           /* DC calibration divider N of the XTALSEL tuned, 0 before */
     uint16_t            exp_iodir[2];   /* SDRplay expanders' direction words sent, 0 bits pulled low */

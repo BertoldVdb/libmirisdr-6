@@ -23,10 +23,10 @@ static mirisdr_device_t mirisdr_devices[] = {
     { 0x1df7, 0x3060, "SDRplay RSPdx-R2", "SDRPlay", "RSPdxR2", MIRISDR_HW_RSPDXR2},
     { 0x1df7, 0x3020, "SDRplay RSPduo", "SDRPlay", "RSPduo", MIRISDR_HW_RSPDUO},
     { 0x16d0, 0x158c, "BertoldVdb MSi2500 Acquisition Board", "BertoldVdb", "MSI2500-PPS", MIRISDR_HW_DEFAULT},
-    { 0x2040, 0xd300, "Hauppauge WinTV 133559 LF", "Hauppauge", "WinTV 133559 LF", MIRISDR_HW_DEFAULT},
-    { 0x07ca, 0x8591, "AverMedia A859 Pure DVBT", "AverTV", "A859 Pure DVBT", MIRISDR_HW_DEFAULT},
-    { 0x04bb, 0x0537, "IO-DATA GV-TV100 stick", "IO-DATA", "GV-TV100", MIRISDR_HW_DEFAULT},
-    { 0x0511, 0x0037, "Logitec LDT-1S310U/J", "Logitec", "LDT-1S310U/J", MIRISDR_HW_DEFAULT}
+    { 0x2040, 0xd300, "Hauppauge WinTV 133559 LF", "Hauppauge", "WinTV 133559 LF", MIRISDR_HW_MIRICSTV},
+    { 0x07ca, 0x8591, "AverMedia A859 Pure DVBT", "AverTV", "A859 Pure DVBT", MIRISDR_HW_MIRICSTV},
+    { 0x04bb, 0x0537, "IO-DATA GV-TV100 stick", "IO-DATA", "GV-TV100", MIRISDR_HW_MIRICSTV},
+    { 0x0511, 0x0037, "Logitec LDT-1S310U/J", "Logitec", "LDT-1S310U/J", MIRISDR_HW_MIRICSTV}
 };
 
 static mirisdr_device_t *mirisdr_device_get (uint16_t vid, uint16_t pid) {

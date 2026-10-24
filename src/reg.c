@@ -239,12 +239,19 @@ failed:
     return -1;
 }
 
+static int update_reg_8 (mirisdr_dev_t *p);
+
 /* Send a tuner register unless the tuner already holds it: 1 sent, 0 skipped, -1 failed */
 static int mirisdr_tuner_write (mirisdr_dev_t *p, uint8_t reg, uint32_t data, int force)
 {
     uint32_t w = (data << 4) | (reg & 15);
 
     if (!force && ((p->tuner_valid >> (reg & 15)) & 1) && (p->tuner_reg[reg & 15] == w)) return 0;
+
+    /* an EEPROM shares the tuner's lines, its chip select on GPIO_1. I2C and serial transfers
+       end with the pins released, so the library's word goes back before any clock. Early in
+       the open there is no word yet, and the pins stay as the part had them */
+    if (!p->reg8_valid && p->reg8 && (update_reg_8(p) < 0)) return -1;
 
     return (mirisdr_write_reg(p, 0x09, w) < 0) ? -1 : 1;
 }

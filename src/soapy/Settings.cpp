@@ -256,7 +256,9 @@ void SoapyMiriSDR::probeRanges(void)
     mirisdr_get_tune(dev, tunerSel, &tc, NULL);
     tc.gain.mode = MIRISDR_GAIN_KEEP;
 
-    for (freqMin = 1000; freqMin < 100e6; freqMin *= 2)
+    /* from where the board's first stretch starts, the Mirics TV design's at 45 MHz */
+    freqMin = std::max(1000.0, (double) caps[tunerSel < 2 ? tunerSel : 0].range[0][0]);
+    for (; freqMin < 100e6; freqMin *= 2)
     {
         tc.frequency = (uint32_t) freqMin;
         if (mirisdr_tune_check(dev, tunerSel, &tc, NULL) == 0) break;
@@ -503,11 +505,12 @@ std::string SoapyMiriSDR::getHardwareKey(void) const
 {
     switch (flavour)
     {
-    case MIRISDR_HW_RSP1B:   return "RSP1B";
-    case MIRISDR_HW_RSPDXR2: return "RSPdxR2";
-    case MIRISDR_HW_RSPDUO:  return "RSPduo";
-    case MIRISDR_HW_SDRPLAY: return "SDRplay";
-    default:                 return "MSi2500";
+    case MIRISDR_HW_RSP1B:    return "RSP1B";
+    case MIRISDR_HW_RSPDXR2:  return "RSPdxR2";
+    case MIRISDR_HW_RSPDUO:   return "RSPduo";
+    case MIRISDR_HW_MIRICSTV: return "MiricsTV";
+    case MIRISDR_HW_SDRPLAY:  return "SDRplay";
+    default:                  return "MSi2500";
     }
 }
 
@@ -961,7 +964,18 @@ SoapySDR::RangeList SoapyMiriSDR::getFrequencyRange(const int direction, const s
                                                     const std::string &name) const
 {
     SOAPY_MIRISDR_CHANNEL(channel);
-    return { SoapySDR::Range(freqMin, freqMax) };
+    const mirisdr_frontend_caps_t &c = caps[channel < 2 ? channel : 0];
+    SoapySDR::RangeList list;
+
+    /* the board's stretches, within what the input in use takes (the RSPduo's Hi-Z ends at 30 MHz) */
+    for (int i = 0; i < c.range_count; i++)
+    {
+        double lo = std::max(freqMin, (double) c.range[i][0]), hi = std::min(freqMax, (double) c.range[i][1] - 1);
+        if (lo <= hi) list.push_back(SoapySDR::Range(lo, hi));
+    }
+    if (list.empty()) list.push_back(SoapySDR::Range(freqMin, freqMax));
+
+    return list;
 }
 
 /*******************************************************************

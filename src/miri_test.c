@@ -2042,10 +2042,23 @@ static tres_t t_call_gate (void)
 /* tuner, gain, gpio                                                   */
 /* ------------------------------------------------------------------ */
 
+/* A frequency the board takes, by its caps: the Mirics TV design has stretches without an input */
+static int board_takes (uint32_t hz)
+{
+    mirisdr_frontend_caps_t c;
+    int i;
+
+    if (mirisdr_get_frontend_caps(dev, 0, &c) < 0) return 0;
+    for (i = 0; i < c.range_count; i++)
+        if ((hz >= c.range[i][0]) && (hz < c.range[i][1])) return 1;
+
+    return 0;
+}
+
 static tres_t t_tuning (void)
 {
     static const uint32_t freqs[] = { 1000000, 40000000, 144000000, 450000000, 900000000 };
-    unsigned i;
+    unsigned i, n = 0;
 
     pump_stop();
 
@@ -2053,6 +2066,8 @@ static tres_t t_tuning (void)
     {
         uint32_t got;
 
+        if (!board_takes(freqs[i])) continue;
+        n++;
         if (mirisdr_set_center_freq(dev, freqs[i]) < 0) { say("%u Hz refused", freqs[i]); return T_FAIL; }
 
         got = mirisdr_get_center_freq(dev);
@@ -2064,7 +2079,7 @@ static tres_t t_tuning (void)
 
     mirisdr_set_center_freq(dev, 144000000);
 
-    say("five frequencies from 1 MHz to 900 MHz set and read back");
+    say("%u of five frequencies from 1 MHz to 900 MHz set and read back, the board taking those", n);
 
     return T_PASS;
 }
@@ -2074,12 +2089,13 @@ static tres_t t_tuner_status (void)
     static const uint32_t freqs[] = { 100000000, 200000000, 350000000, 500000000, 1500000000 };
     mirisdr_tuner_status_t st[3];
     uint32_t first = 0;
-    unsigned i, k, moved = 0;
+    unsigned i, k, moved = 0, seen = 0;
 
     pump_stop();
 
     for (i = 0; i < sizeof freqs / sizeof freqs[0]; i++)
     {
+        if (!board_takes(freqs[i])) continue;
         if (mirisdr_set_center_freq(dev, freqs[i]) < 0) { say("%u Hz refused", freqs[i]); return T_FAIL; }
         usleep(20000);
 
@@ -2099,7 +2115,7 @@ static tres_t t_tuner_status (void)
         { say("%u Hz: reads differ, %08x %08x %08x", freqs[i], st[0].raw, st[1].raw, st[2].raw); return T_FAIL; }
 
         /* the VCO fields, bits 25:18 and 13:9 */
-        if (!i) first = st[0].raw & 0x03FC3E00;
+        if (!seen++) first = st[0].raw & 0x03FC3E00;
         else if ((st[0].raw & 0x03FC3E00) != first) moved++;
     }
 
@@ -2109,7 +2125,7 @@ static tres_t t_tuner_status (void)
        the clock gate, reads the same calibration whatever the frequency */
     if (!moved) { say("the VCO codes never change with the frequency: the tuner is not responding"); return T_FAIL; }
 
-    say("five frequencies read back, one VCO range each, stable, codes follow the tuning");
+    say("the frequencies the board takes of five read back, one VCO range each, stable, codes follow the tuning");
 
     return T_PASS;
 }
@@ -4739,6 +4755,7 @@ static tres_t t_plan_caps (void)
         { MIRISDR_HW_RSPDXR2, 0, 7, 0x7, -1, 1, 1, 30000000, 25, 13, 36, 0, 0x3 },
         { MIRISDR_HW_RSPDUO,  0, 7, 0x3, MIRISDR_ANTENNA_HIZ, 0, 0, 55000000, 25, 4, 19, MIRISDR_FRONTEND_PORT_TIE | MIRISDR_FRONTEND_REF_OUT, 0x7 },
         { MIRISDR_HW_RSPDUO,  1, 7, 0x1, -1, 1, 0, 55000000, 25, 4, 19, MIRISDR_FRONTEND_PORT_TIE | MIRISDR_FRONTEND_REF_OUT, 0x7 },
+        { MIRISDR_HW_MIRICSTV,   0, 0, 0x1, -1, 0, 0, 0, 0, 1, 0, 0, 0x1 },
     };
     mirisdr_dev_t *n;
     mirisdr_frontend_caps_t c;
@@ -4767,8 +4784,73 @@ static tres_t t_plan_caps (void)
     mirisdr_set_hw_flavour(n, MIRISDR_HW_RSPDXR2);
     if (mirisdr_get_frontend_caps(n, 1, &c) == 0) { plan_bad++; say("caps of the RSPdx-R2's tuner 1"); }
 
+    /* the stretches a tune takes: the whole plan, the Mirics TV design's from 45 MHz */
+    mirisdr_set_hw_flavour(n, MIRISDR_HW_RSPDUO);
+    if (mirisdr_get_frontend_caps(n, 0, &c) < 0 || c.range_count != 1 || c.range[0][0] != 0 || c.range[0][1] != 2400000000u)
+    { plan_bad++; say("RSPduo ranges: %d, %u to %u", c.range_count, c.range[0][0], c.range[0][1]); }
+    mirisdr_set_hw_flavour(n, MIRISDR_HW_MIRICSTV);
+    if (mirisdr_get_frontend_caps(n, 0, &c) < 0 || c.range_count != 1 || c.range[0][0] != 45000000 || c.range[0][1] != 1100000000)
+    { plan_bad++; say("Mirics TV ranges: %d, %u to %u", c.range_count, c.range[0][0], c.range[0][1]); }
+
     mirisdr_close(n);
-    if (!plan_bad) say("notches, antennas, bias-T, direct sampling, amplifier, pads, flags and raw parts for each board and tuner");
+    if (!plan_bad) say("notches, antennas, bias-T, direct sampling, amplifier, pads, flags, raw parts and ranges for each board and tuner");
+    return plan_bad ? T_FAIL : T_PASS;
+}
+
+/* The Mirics TV design: 45 to 1100 MHz, refused below (a band forced there pins the VCO), the
+ * single setters too. VHF, band III, the undocumented /8 modes between band III and band IV/V,
+ * band IV/V. GPIO_1, the EEPROM's chip select, is held high. GPIO_3, the IR receiver's,
+ * stays an input, so there is no bias-T */
+static tres_t t_plan_miricstv (void)
+{
+    static const struct { uint32_t hz; int ok; } want[] = {
+        { 1000000, 0 }, { 44999999, 0 }, { 45000000, 1 }, { 100000000, 1 }, { 258000000, 1 }, { 275000000, 1 },
+        { 300000000, 1 }, { 336000000, 1 }, { 385000000, 1 }, { 386000000, 1 }, { 1099999999, 1 }, { 1100000000, 0 },
+    };
+    mirisdr_dev_t *n;
+    mirisdr_tune_config_t c;
+    mirisdr_tune_result_t r;
+    unsigned i;
+
+    plan_bad = 0;
+
+    if (mirisdr_open_null(&n, "252_S16") < 0) { say("no null device"); return T_FAIL; }
+
+    mirisdr_tune_config_default(&c);
+    if (mirisdr_set_hw_flavour(n, MIRISDR_HW_MIRICSTV) < 0 || mirisdr_get_hw_flavour(n) != MIRISDR_HW_MIRICSTV)
+    { plan_bad++; say("to the Mirics TV design refused"); }
+
+    for (i = 0; i < sizeof want / sizeof want[0]; i++)
+    {
+        char what[48];
+
+        c.frequency = want[i].hz;
+        snprintf(what, sizeof what, "Mirics TV, %u Hz", want[i].hz);
+        plan_tune(n, what, &c, want[i].ok, &r);
+    }
+
+    /* the LO decides: at a low IF 44 MHz has it in VHF */
+    c.frequency = 44000000; c.if_freq = 2048000; c.low_if_auto = 1;
+    plan_tune(n, "Mirics TV, 44 MHz with the LO 2.048 MHz above", &c, 1, &r);
+    c.frequency = 42000000;
+    plan_tune(n, "Mirics TV, 42 MHz with the LO 2.048 MHz above", &c, 0, &r);
+    c.if_freq = 0; c.low_if_auto = 0;
+
+    /* between band III and band IV/V: the /8 modes, reported as band III */
+    c.frequency = 300000000;
+    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.band != MIRISDR_BAND_3) { plan_bad++; say("Mirics TV, 300 MHz: band %d", r.band); }
+
+    c.frequency = 100000000;
+    if (mirisdr_tune(n, 0, &c, &r) < 0) { plan_bad++; say("Mirics TV, 100 MHz refused"); }
+    plan_raw_want("Mirics TV", &r, MIRISDR_FRONTEND_RAW_GPIO, 0x2, 0x2, 0, 0);
+    if (mirisdr_set_center_freq(n, 40000000) == 0 || mirisdr_get_center_freq(n) != 100000000)
+    { plan_bad++; say("set_center_freq to 40 MHz: now %u Hz", mirisdr_get_center_freq(n)); }
+    c.frontend.bias = 1;
+    plan_tune(n, "Mirics TV, the bias-T", &c, 0, &r);
+    if (mirisdr_set_bias(n, 1) == 0) { plan_bad++; say("set_bias taken"); }
+
+    mirisdr_close(n);
+    if (!plan_bad) say("45-1100 MHz taken, the gap between band III and band IV/V on the /8 modes, refused below (the single setters too), GPIO_1 held high, the rest inputs, no bias-T");
     return plan_bad ? T_FAIL : T_PASS;
 }
 
@@ -5333,12 +5415,14 @@ static tres_t t_scan_learn (void)
     static const uint32_t f[] = { 100000000, 433000000, 1300000000 };
     mirisdr_tune_config_t c;
     mirisdr_tuner_status_t st;
-    unsigned i;
+    unsigned i, seen = 0;
 
     pump_stop();
 
     for (i = 0; i < sizeof f / sizeof f[0]; i++)
     {
+        if (!board_takes(f[i])) continue;
+        seen++;
         mirisdr_tune_config_default(&c);
         c.frequency = f[i];
         if (mirisdr_tune_learn(dev, 0, &c) < 0) { say("%u Hz: could not learn", f[i]); return T_FAIL; }
@@ -5362,7 +5446,7 @@ static tres_t t_scan_learn (void)
     mirisdr_set_tuner_override(dev, 0, NULL);
     mirisdr_set_center_freq(dev, 100000000);
 
-    say("three bands learned and replayed to the same codes");
+    say("%u bands learned and replayed to the same codes", seen);
 
     return T_PASS;
 }
@@ -5399,8 +5483,12 @@ static tres_t t_scan_run (void)
     sc.rate = 8000000;
     if (mirisdr_set_stream(dev, &sc, NULL) < 0) { say("8 Msps bulk refused"); return T_FAIL; }
 
-    /* 52 MHz to 1948 MHz in 8 MHz hops, L band learned */
+    /* 52 MHz to 1948 MHz in 8 MHz hops, those the board takes, L band learned */
     nh = scan_hops(h, 300, 52000000, 1948000000, 8000000, 6);
+    for (k = learned = 0; k < nh; k++)
+        if (board_takes(h[k].frequency)) h[learned++] = h[k];
+    nh = learned;
+    learned = 0;
     for (k = 0; k < nh; k++)
     {
         if (mirisdr_tune_check(dev, 0, &h[k], &r) < 0) { say("%u Hz refused", h[k].frequency); return T_FAIL; }
@@ -6613,12 +6701,12 @@ static tres_t t_reg_tune (void)
     REG_CHECK(r.gain.total == (r.gain.lna ? 24 : 0) + (r.gain.mixer ? 19 : 0) + r.gain.baseband,
               "VHF stages do not add up to %d", r.gain.total);
 
-    /* the RSP1's 261-404 MHz row is band III, not L */
+    /* the SDRplay plan's 261-404 MHz row is band III, not L */
     mirisdr_set_hw_flavour(n, MIRISDR_HW_SDRPLAY);
     c.frequency = 300000000;
     c.gain.total = 110;
-    REG_CHECK(mirisdr_tune(n, 0, &c, &r) == 0, "300 MHz on the RSP1 refused");
-    REG_CHECK(r.band == MIRISDR_BAND_3 && r.gain.total == 102, "300 MHz on the RSP1: band %d, %d dB", r.band, r.gain.total);
+    REG_CHECK(mirisdr_tune(n, 0, &c, &r) == 0, "300 MHz on the SDRplay plan refused");
+    REG_CHECK(r.band == MIRISDR_BAND_3 && r.gain.total == 102, "300 MHz on the SDRplay plan: band %d, %d dB", r.band, r.gain.total);
     mirisdr_set_hw_flavour(n, MIRISDR_HW_DEFAULT);
 
     /* the single setters go past the plan, but not where the synthesizer's N wraps */
@@ -6663,7 +6751,7 @@ static tres_t t_reg_tune (void)
 
     mirisdr_close(n);
 
-    if (!reg_bad) say("refused gain kept, MIXBUF 0 at VHF, the RSP1 at 300 MHz, LO past 3.07 GHz refused, "
+    if (!reg_bad) say("refused gain kept, MIXBUF 0 at VHF, the SDRplay plan at 300 MHz, LO past 3.07 GHz refused, "
                       "notch cleared, setters and checks agree");
     return reg_bad ? T_FAIL : T_PASS;
 }
@@ -7067,6 +7155,7 @@ static const struct {
     { "plan",     "frontend with the tune",     t_plan_frontend       },
     { "plan",     "RSPdx-R2 front end",         t_plan_dxr2           },
     { "plan",     "front end caps",             t_plan_caps           },
+    { "plan",     "Mirics TV plan",             t_plan_miricstv       },
     { "plan",     "raw front end words",        t_plan_raw            },
     { "plan",     "reserved room to grow",      t_plan_reserved       },
     { "plan",     "automatic filter",           t_plan_bw_auto        },

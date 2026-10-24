@@ -604,8 +604,8 @@ static void mirisdr_flavour_clean (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_fla
         p->tune.frontend.notch = 0;
     }
 
-    /* the RSPduo's bias-T is tuner 1's */
-    if ((hw_flavour == MIRISDR_HW_RSPDUO) && !p->tuner_cur)
+    /* the RSPduo's bias-T is tuner 1's, and the Mirics TV design has none */
+    if (((hw_flavour == MIRISDR_HW_RSPDUO) && !p->tuner_cur) || (hw_flavour == MIRISDR_HW_MIRICSTV))
     {
         p->bias = 0;
         p->tune.frontend.bias = 0;
@@ -636,7 +636,7 @@ int mirisdr_set_hw_flavour (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_flavour) {
 
     if (!p) goto failed;
 
-    if (hw_flavour < MIRISDR_HW_DEFAULT || hw_flavour > MIRISDR_HW_RSPDUO) goto failed;
+    if (hw_flavour < MIRISDR_HW_DEFAULT || hw_flavour > MIRISDR_HW_MIRICSTV) goto failed;
 
     /* the board it is already: nothing to clean, and nothing to tune again */
     if (hw_flavour == p->hw_flavour) return 0;

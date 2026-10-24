@@ -83,7 +83,11 @@ static int probe(Dev *d, soapy_say_t say, soapy_say_t note)
     { say("channels wrong: %zu", d->getNumChannels(SOAPY_SDR_RX)); bad++; }
     if (!has(f, SOAPY_SDR_CS16) || !has(f, SOAPY_SDR_CF32) || !has(f, SOAPY_SDR_CS8)) { say("formats missing"); bad++; }
     if (d->getNativeStreamFormat(SOAPY_SDR_RX, 0, full) != SOAPY_SDR_CF32 || full != 1.0) { say("native format not CF32 in baseband"); bad++; }
-    if (fr.empty() || fr[0].minimum() > 1e6 || fr[0].maximum() < 2e9) { say("frequency range wrong"); bad++; }
+    /* the Mirics TV design takes 45 to 1100 MHz, everything else from HF to past 2 GHz */
+    if (d->getHardwareKey() == "MiricsTV" ?
+        (fr.size() != 1 || fr[0].minimum() != 45e6 || fr[0].maximum() > 1100e6 || fr[0].maximum() < 1e9) :
+        (fr.empty() || fr[0].minimum() > 1e6 || fr[0].maximum() < 2e9))
+    { say("frequency range wrong: %zu, %.0f to %.0f Hz", fr.size(), fr.empty() ? 0 : fr[0].minimum(), fr.empty() ? 0 : fr[0].maximum()); bad++; }
     /* one span: a low IF's from a few ksps, zero IF's up to the top */
     if (rr.size() != 1 || rr[0].minimum() > 10e3 || rr[0].maximum() < 8e6)
     { say("rate range wrong: %zu spans, %.0f to %.0f", rr.size(), rr.empty() ? 0 : rr[0].minimum(),
@@ -139,13 +143,17 @@ static int probe(Dev *d, soapy_say_t say, soapy_say_t note)
     d->setGain(SOAPY_SDR_RX, 0, "MIXBUF", 24);
     if (d->getGain(SOAPY_SDR_RX, 0, "MIXBUF") != 0) { say("MIXBUF at VHF gave %.0f", d->getGain(SOAPY_SDR_RX, 0, "MIXBUF")); bad++; }
 
-    /* HF goes through AM2, with a 24 dB mixbuffer, set with the ranges read at VHF */
-    d->setFrequency(SOAPY_SDR_RX, 0, 10e6);
-    if (d->getGainRange(SOAPY_SDR_RX, 0, "MIXBUF").maximum() != 24 || d->getGainRange(SOAPY_SDR_RX, 0, "LNA").maximum() != lnaMax)
-    { say("HF gain ranges wrong"); bad++; }
-    d->setGain(SOAPY_SDR_RX, 0, "MIXBUF", 24);
-    if (d->getGain(SOAPY_SDR_RX, 0, "MIXBUF") != 24) { say("MIXBUF 24 at HF gave %.0f", d->getGain(SOAPY_SDR_RX, 0, "MIXBUF")); bad++; }
-    d->setGain(SOAPY_SDR_RX, 0, "MIXBUF", 0);
+    /* HF goes through AM2, with a 24 dB mixbuffer, set with the ranges read at VHF. The
+       Mirics TV design has no HF */
+    if (hw != "MiricsTV")
+    {
+        d->setFrequency(SOAPY_SDR_RX, 0, 10e6);
+        if (d->getGainRange(SOAPY_SDR_RX, 0, "MIXBUF").maximum() != 24 || d->getGainRange(SOAPY_SDR_RX, 0, "LNA").maximum() != lnaMax)
+        { say("HF gain ranges wrong"); bad++; }
+        d->setGain(SOAPY_SDR_RX, 0, "MIXBUF", 24);
+        if (d->getGain(SOAPY_SDR_RX, 0, "MIXBUF") != 24) { say("MIXBUF 24 at HF gave %.0f", d->getGain(SOAPY_SDR_RX, 0, "MIXBUF")); bad++; }
+        d->setGain(SOAPY_SDR_RX, 0, "MIXBUF", 0);
+    }
 
     /* a total, then one stage: the others stay */
     d->setFrequency(SOAPY_SDR_RX, 0, 100e6);
@@ -557,7 +565,8 @@ static int bandRanges(Dev *d, soapy_say_t say, soapy_say_t note)
         d->getGainRange(SOAPY_SDR_RX, 0, "BB").maximum() != 59)
     { say("VHF gain ranges wrong, total %.0f", d->getGainRange(SOAPY_SDR_RX, 0).maximum()); bad++; }
 
-    /* HF goes through AM2: a 24 dB mixbuffer and no LNA gain */
+    /* HF goes through AM2: a 24 dB mixbuffer and no LNA gain. The Mirics TV design has no HF */
+    if (d->getHardwareKey() == "MiricsTV") return bad ? SOAPY_T_FAIL : SOAPY_T_PASS;
     d->setFrequency(SOAPY_SDR_RX, 0, 10e6);
     if (d->getGainRange(SOAPY_SDR_RX, 0, "MIXBUF").maximum() != 24 || d->getGainRange(SOAPY_SDR_RX, 0, "LNA").maximum() != 0 ||
         d->getGainRange(SOAPY_SDR_RX, 0, "AMP").maximum() != 0)

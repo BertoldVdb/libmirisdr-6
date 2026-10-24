@@ -7,33 +7,6 @@ This is another flavour of libmirisdr, started from the original libmirisdr-2 by
 
 This library is an API compatible drop-in replacement for libmirisdr-5, it only adds extra functions providing additional functionality.
 
-<h2>Documentation</h2>
-
-  - [Using the receivers with SoapySDR](doc/soapysdr.md): for SDR++, GQRX, CubicSDR, GNU Radio and other programs. Sample rates, filters, gain, settings and the device string.
-  - [The C API](doc/c-api.md): for your own programs. Opening, tuning, streaming, baseband output, time stamps and scanning.
-  - [The firmware](https://github.com/BertoldVdb/msi2500-pps): the source of the firmware the library loads into the receiver.
-
-
-<h2>Building</h2>
-
-    mkdir build
-    cd build
-    cmake ..
-    make
-    sudo make install
-
-The SoapySDR module is built too when the SoapySDR development files are installed. To use the receivers without root, copy `mirisdr.rules` to `/etc/udev/rules.d/`.
-
-<h3>The kernel's own drivers</h3>
-
-Linux has its own drivers for these chips, `msi2500` and `msi001`. They take the original RSP1 and a Hauppauge TV stick (USB ids `1df7:2500` and `2040:d300`) as a radio device, `/dev/swradio0`. The RSP1A and later receivers have other ids, which these drivers do not take. On Linux libmirisdr detaches the kernel driver when it opens such a receiver and gives it back when it closes it (build with `-DDETACH_KERNEL_DRIVER=OFF` to leave it alone). Two drivers taking turns on one receiver is fragile, so it is better to keep the kernel's away altogether:
-
-    printf 'blacklist msi2500\nblacklist msi001\n' | sudo tee /etc/modprobe.d/blacklist-msi.conf
-    sudo modprobe -r msi2500 msi001
-
-The first line keeps the drivers from loading from the next boot on, the second unloads them now.
-
-
 <h2>What is new in this version</h2>
 
 <h3>For users</h3>
@@ -62,3 +35,30 @@ The first line keeps the drivers from loading from the next boot on, the second 
 
   - `miri_test` checks the receiver and the library for many known problems.
   - `miri_eeprom` reads, writes and backs up the EEPROM. It can also put the firmware there, with a USB id and serial of your choice. See the SoapySDR guide before you do this.
+  
+<h2>Documentation</h2>
+
+  - [Using the receivers with SoapySDR](doc/soapysdr.md): for SDR++, GQRX, CubicSDR, GNU Radio and other programs. Sample rates, filters, gain, settings and the device string.
+  - [The C API](doc/c-api.md): for your own programs. Opening, tuning, streaming, baseband output, time stamps and scanning.
+  - [The firmware](https://github.com/BertoldVdb/msi2500-pps): the source of the firmware the library loads into the receiver.
+  
+<h2>Building</h2>
+
+    mkdir build
+    cd build
+    cmake ..
+    make
+    sudo make install
+
+The SoapySDR module is built too when the SoapySDR development files are installed. To use the receivers without root, copy `mirisdr.rules` to `/etc/udev/rules.d/`.
+
+<h3>The kernel's own drivers</h3>
+
+Linux has its own drivers for these chips, `msi2500` and `msi001`. They USB ids `1df7:2500` and `2040:d300` as a radio device, `/dev/swradio0`. The RSP1A and later receivers have other ids, which these drivers do not take. On Linux libmirisdr detaches the kernel driver when it opens such a receiver and gives it back when it closes it (build with `-DDETACH_KERNEL_DRIVER=OFF` to leave it alone). Two drivers taking turns on one receiver is fragile, so it is better to keep the kernel's away altogether:
+
+    printf 'blacklist msi2500\nblacklist msi001\n' | sudo tee /etc/modprobe.d/blacklist-msi.conf
+    sudo modprobe -r msi2500 msi001
+
+The first line keeps the drivers from loading from the next boot on, the second unloads them now.
+
+

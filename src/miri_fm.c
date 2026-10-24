@@ -206,11 +206,12 @@ void usage(void)
 		"\t[-s sample_rate (default: 24k)]\n"
 		"\t[-d device_index (default: 0)]\n"
 		"\t[-T board (default: from the USB IDs)]\n"
-		"\t    0:       a plain MSi2500/MSi001 board\n"
-		"\t    1:       SDRplay RSP1\n"
+		"\t    0:       a plain MSi2500/MSi001 board, or SDRplay RSP1\n"
+		"\t    1:       the original libmirisdr's SDRplay plan (its board is not known)\n"
 		"\t    2:       SDRplay RSP1B\n"
 		"\t    3:       SDRplay RSPdx-R2\n"
 		"\t    4:       SDRplay RSPduo\n"
+		"\t    5:       a TV stick on the Mirics TV reference design\n"
 		"\t[-g total tuner gain in 10 dB units: 4.5 is 45 dB, taken to the nearest the band has\n"
 		"\t    (default: the library's, 43 dB)]\n"
 		"\t[-m sample format (default: auto]\n"
@@ -1242,9 +1243,9 @@ int main(int argc, char **argv)
 			break;
         case 'T':
             intval = atoi(optarg);
-            if ((intval < 0) || (intval > MIRISDR_HW_RSPDUO))
+            if ((intval < 0) || (intval > MIRISDR_HW_MIRICSTV))
             {
-                fprintf(stderr, "-T takes 0 to %d.\n", MIRISDR_HW_RSPDUO);
+                fprintf(stderr, "-T takes 0 to %d.\n", MIRISDR_HW_MIRICSTV);
                 exit(1);
             }
             hw_flavour = (mirisdr_hw_flavour_t) intval;

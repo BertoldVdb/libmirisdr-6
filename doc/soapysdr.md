@@ -92,7 +92,7 @@ After replugging the USB VID:PID will change, which may require retriggering ude
 
 <h3>Frequency</h3>
 
-The module reports a range of 1 kHz to 2400 MHz, which is what the library accepts. The frequency you set is at 0 Hz in the samples, at every IF. You never need to add or subtract an IF yourself.
+The module reports a range of 1 kHz to 2400 MHz, which is what the library accepts. TV sticks on the Mirics TV reference design, such as the Hauppauge WinTV 133559LF, report 45 to 1100 MHz, as they have no input outside it. The frequency you set is at 0 Hz in the samples, at every IF. You never need to add or subtract an IF yourself.
 
 There is one tuning element, called `RF`, and one antenna, called `RX`. The RSPdx-R2 has three antennas instead, `A`, `B` and `C`, with `A` the default. The RSPduo's channel 0 also has `Hi-Z`, its Hi-Z input, below 30 MHz.
 
@@ -171,7 +171,7 @@ The stages can also be set one by one:
   - `AMP`: RSP1B, RSPdx-R2 and RSPduo. 0 or the full gain of the amplifier before the tuner in the band tuned, up to about 25 dB: from 30 MHz on the RSP1B and RSPdx-R2, from 55 MHz on the RSPduo (not on its Hi-Z). A total turns it on first, and bypasses it only below its own gain.
   - `LNA`: 0 or its full gain, which is 24 dB on most bands, 7 dB in band IV/V and about 4 dB in L band. The AM inputs have none.
   - `MIX`: 0 or 19 dB.
-  - `MIXBUF`: only where the receiver uses an AM input: below 55 MHz, and from 255 to 420 MHz through the up-converter (on the RSP1 below 50 MHz only). 0 or 24 dB on AM input 2, which the 50 ohm ports use, and 0, 6, 12 or 18 dB on AM input 1, which only the RSPduo's Hi-Z uses.
+  - `MIXBUF`: only where the receiver uses an AM input: below 55 MHz, and from 255 to 420 MHz through the up-converter (on the SDRplay plan, board 1, below 50 MHz only). 0 or 24 dB on AM input 2, which the 50 ohm ports use, and 0, 6, 12 or 18 dB on AM input 1, which only the RSPduo's Hi-Z uses.
   - `BB`: 0 to 59 dB.
 
 The ranges the module reports are the most each stage has in any band, because programs such as GQRX read them only once, when the device opens. A value the band you are tuned to cannot take gives the nearest one it can, and a stage the band does not have stays at 0. For ranges that follow the band, add `gain_ranges=band` to the device string. On the RSPduo's channel 0 `MIXBUF` steps by 6: the Hi-Z takes 0, 6, 12 and 18, the 50 ohm port 0 and 24. The RSPdx-R2's `LNA` reaches 37 dB with its direct sampling amplifier, and 24 dB on the tuner. There is no automatic gain control.
