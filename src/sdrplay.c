@@ -15,8 +15,8 @@
 
 /*
  * SDRplay front ends: the filters, notches and bias-T sit on SPI I/O expanders on the
- * MSi2500's SPI master (0x0B-0x0D), and some models carry two. The RSP1B, RSPdx-R2 and
- * RSPduo are mapped, and the RSP1B and RSPdx-R2 share the expander's wiring and most of its pins.
+ * MSi2500's SPI master (0x0B-0x0D), and some models carry two. The RSP1B, RSPdx-R2, RSPduo
+ * and RSP2 are mapped, and the RSP1B and RSPdx-R2 share the expander's wiring and most of its pins.
  *
  * One MCP23S18, chip select GPIO_3, MISO GPIO_0. GPIO_1 is the EEPROM's chip select.
  * The tuner takes words only with GPIO_1 and GPIO_3 high. The master pulls GPIO_1 low
@@ -108,6 +108,41 @@
  *     bank: flat -6..-8 dBFS from 0.1 to 12 MHz, ~8 dB less above
  *   A5 B0: the amplifiers' supplies, tuner 0's and tuner 1's, on when low (MOSFET
  *     switches, traced by the user). Released, the amplifier path loses ~20 dB
+ *
+ * RSP2, 2026-10-25 on a remote bench (a BG7TBL WB-SG2 generator): one MCP23S18, chip select
+ * GPIO_3 and MISO GPIO_0 as on the RSP1B, but GPIO_2 is its RESET (active low). With GPIO_2
+ * low it ignores SPI and every pin is released, and it comes back at its power-on state, so
+ * register 8 keeps GPIO_2 high and an EEPROM access (which drives it low) is followed by the
+ * whole word again (eeprom.c). After the antenna switch an amplifier that is always on, then
+ * the broadcast notch, a step attenuator and an SP8T to the tuner:
+ *
+ *   A0 A1 A2: the SP3T antenna switch's control lines, one to be active at a time: A0 port A's
+ *     and A1 port B's, active released, A2 port C's, active low (inverted), port C an RC
+ *     oscillator on the board near 9.35 MHz (it wanders, harmonics 13-20 dB down), its enable
+ *     most likely on A2 too. Port A alone: A1 low. Port B alone: A0 low. Port C alone: all
+ *     three low (port A 54-99 dB down, the oscillator -26.5 dBFS at gain off). Two active put
+ *     the ports in parallel, each about 6 dB down: nothing low joins A and B (the open one a
+ *     stub, 11-18 dB dips at 280-400 MHz), A2 low alone all three. A0 and A1 low with A2
+ *     released leaves none active, 50-70 dB of isolation
+ *   A5 A4 A3: the SP8T (1 released). 000 12 MHz low pass, 100 12-30, 010 30-60, 110
+ *     250-300, 001 300-380, 101 380-420 to AM2, 011 the VHF and B45 inputs, 111 the B3 and
+ *     L inputs. 000 and 100 cross at 11-12 MHz, 110 and 001 at about 315 MHz, 001 and 101 at
+ *     about 410 MHz
+ *   B6 B7: PIN diodes, B6 around the broadcast notch, B7 through it: FM 30-41 dB at 80-100
+ *     MHz, MW 31-44 dB at 0.7-1.6 MHz, 8-12 dB off elsewhere above 30 MHz. Both released
+ *     25-40 dB of isolation above 30 MHz
+ *   B2 B3 B4 B5: the attenuator, a resistor network always in the path (about 5 dB, flat
+ *     from 1 to 250 MHz) that B2 low shorts. B3 low adds a shunt: about 11 dB, with B4 15,
+ *     with B5 20 (B4 and B5 only with B3, both about 1 dB more than B5), through the
+ *     library's words at 10 and 100 MHz. A sweep from 1 to 250 MHz read 1-4 dB less on the
+ *     deeper steps, and 2-5 dB less at 1 MHz
+ *   A6: the reference output, on when low (+57 dB at 24 MHz with it looped to port A)
+ *   B0: the bias-T on port B, low (by meter)
+ *   A7, B1: read low while released, so they switch nothing
+ *
+ * The Hi-Z input goes to the tuner's AM input 1 through a fixed low pass of about 30 MHz (3
+ * dB near 26 MHz, 10 near 40), past the expander: no pin moves it. On it the library turns the
+ * 50 ohm ports off (no switch line active).
  */
 
 #define EXP_WRITE               0x40    /* MCP23S18 opcode, no address pins */
@@ -129,6 +164,55 @@
 #define RSP1B_PAD               10      /* B2-B4: the RSP1B's, about 6, 13 and 19 dB, one at a time */
 
 static int mirisdr_duo_pad (int db);
+
+/* RSP2 (see above) */
+#define RSP2_PORT_B             (1u << 0)   /* A0: port A's line, low for port B alone */
+#define RSP2_PORT_A             (1u << 1)   /* A1: port B's line, low for port A alone */
+#define RSP2_PORT_TEST          (1u << 2)   /* A2: the test oscillator's port, active low */
+#define RSP2_REF_OUT            (1u << 6)   /* A6 */
+#define RSP2_BIAS               (1u << 8)   /* B0, port B's */
+#define RSP2_ATT_BYPASS         (1u << 10)  /* B2, low in the plan's words */
+#define RSP2_ATT_IN             (1u << 11)  /* B3 */
+#define RSP2_ATT_15             (1u << 12)  /* B4, with B3 */
+#define RSP2_ATT_20             (1u << 13)  /* B5, with B3 */
+#define RSP2_NOTCH_AROUND       (1u << 14)  /* B6, low in the plan's words */
+#define RSP2_NOTCH_THROUGH      (1u << 15)  /* B7 */
+#define RSP2_GPIO               0xEE80      /* register 8: GPIO_1..3 high outputs (GPIO_2 the expander's
+                                               RESET), GPIO_0 an input (MISO) */
+
+/* The RSP2's attenuator steps, dB, by their index */
+static const uint8_t mirisdr_rsp2_att_db[5] = { 0, 5, 11, 15, 20 };
+
+static int mirisdr_rsp2_att (int db)
+{
+    int k;
+
+    for (k = 0; k < 5; k++) if (mirisdr_rsp2_att_db[k] == db) return k;
+
+    return -1;
+}
+
+static uint16_t mirisdr_rsp2_word (uint16_t w, int notch, int bias, int antenna, int att)
+{
+    int k = mirisdr_rsp2_att(att);
+
+    if (notch & (MIRISDR_NOTCH_FM | MIRISDR_NOTCH_MW)) w = (uint16_t) ((w | RSP2_NOTCH_AROUND) & ~RSP2_NOTCH_THROUGH);
+    if (bias) w &= (uint16_t) ~RSP2_BIAS;
+
+    /* the Hi-Z (C) is the tuner's own input: the switch's lines all inactive (A0 A1 low, A2
+       released), so the 50 ohm ports are off and leak less into it */
+    if (antenna == MIRISDR_ANTENNA_B) w &= (uint16_t) ~RSP2_PORT_B;
+    else if (antenna == MIRISDR_ANTENNA_C) w &= (uint16_t) ~(RSP2_PORT_A | RSP2_PORT_B);
+    else if (antenna == MIRISDR_ANTENNA_TEST) w &= (uint16_t) ~(RSP2_PORT_A | RSP2_PORT_B | RSP2_PORT_TEST);
+    else w &= (uint16_t) ~RSP2_PORT_A;
+
+    if (k > 0) w |= RSP2_ATT_BYPASS;
+    if (k > 1) w &= (uint16_t) ~RSP2_ATT_IN;
+    if (k == 3) w &= (uint16_t) ~RSP2_ATT_15;
+    if (k == 4) w &= (uint16_t) ~RSP2_ATT_20;
+
+    return w;
+}
 #define SDRPLAY_A4              (1u << 4)
 #define SDRPLAY_A3              (1u << 3)
 #define SDRPLAY_A2              (1u << 2)
@@ -154,6 +238,7 @@ static uint16_t mirisdr_sdrplay_word (int flavour, uint16_t word, int notch, int
     uint16_t w = word;
 
     if (!w || (flavour == MIRISDR_HW_RSPDUO)) return w;
+    if (flavour == MIRISDR_HW_RSP2) return mirisdr_rsp2_word(w, notch, bias, antenna, att);
 
     if (notch & (MIRISDR_NOTCH_FM | MIRISDR_NOTCH_MW)) w &= (uint16_t) ~SDRPLAY_A4;
     if (notch & MIRISDR_NOTCH_DAB) w &= (uint16_t) ~SDRPLAY_A6;
@@ -299,7 +384,8 @@ static int mirisdr_sdrplay_xfer (mirisdr_dev_t *p, uint32_t idle, int chip, uint
    changed */
 static int mirisdr_sdrplay_send (mirisdr_dev_t *p, int chip, uint16_t w)
 {
-    uint32_t idle = (p->reg8_valid ? p->reg8_sent : 0xEA80) | SDRPLAY_G3_OUT | SDRPLAY_G3;
+    uint32_t idle = (p->reg8_valid ? p->reg8_sent : (p->hw_flavour == MIRISDR_HW_RSP2) ? RSP2_GPIO : 0xEA80) |
+                    SDRPLAY_G3_OUT | SDRPLAY_G3;
     int bit = 1 << chip, first = !(p->exp_valid & bit), stale = p->exp_stale & bit, r = 0;
 
     if (!first && !stale && (p->exp_iodir[chip] == w)) return 0;
@@ -329,13 +415,21 @@ static int mirisdr_sdrplay_send (mirisdr_dev_t *p, int chip, uint16_t w)
 
 /* At close: the bias-T, the amplifiers, pads and notches off, and on the RSPduo the ports
    apart (its second chip all released). The rest of the word as it was, all released when
-   it is not known. The next open sets the expanders up again */
+   it is not known. The next open sets the expanders up again. On the RSP2 the reference
+   output and the test oscillator off too, and the notch and attenuator bypassed */
 static int mirisdr_sdrplay_off (mirisdr_dev_t *p)
 {
     int chip = (p->hw_flavour == MIRISDR_HW_RSPDUO) ? 1 : 0;
     uint16_t off = chip ? 0xFFFF : (SDRPLAY_A1 | SDRPLAY_A4 | SDRPLAY_A5 | SDRPLAY_A6 | (0xFu << DXR2_PAD));
+    uint16_t w = (p->exp_valid & (1 << chip)) ? p->exp_iodir[chip] : 0xFFFF;
 
     if (!MIRISDR_HW_EXPANDER(p->hw_flavour)) return 0;
 
-    return mirisdr_sdrplay_send(p, chip, ((p->exp_valid & (1 << chip)) ? p->exp_iodir[chip] : 0xFFFF) | off);
+    if (p->hw_flavour == MIRISDR_HW_RSP2)
+    {
+        w |= RSP2_REF_OUT | RSP2_BIAS | RSP2_PORT_TEST | RSP2_ATT_IN | RSP2_ATT_15 | RSP2_ATT_20 | RSP2_NOTCH_THROUGH;
+        return mirisdr_sdrplay_send(p, 0, (uint16_t) (w & ~(RSP2_ATT_BYPASS | RSP2_NOTCH_AROUND)));
+    }
+
+    return mirisdr_sdrplay_send(p, chip, w | off);
 }

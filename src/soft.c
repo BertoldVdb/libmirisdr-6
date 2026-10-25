@@ -241,14 +241,76 @@ static hw_switch_freq_plan_t hw_switch_freq_plan_rspduo_hiz[] = {
         {DUO_HIZ_END_MHZ * 1000, -1, 0, 0, 0, 0x0000, 0, 0, 0, 0},
 };
 
-static hw_switch_freq_plan_t *hw_switch_freq_plan[6] = {
+/* RSP2 (sdrplay.c): the SP8T's position (A5 A4 A3), the attenuator bypassed (B2 low) and the
+   way around the broadcast notch (B6 low), register 8 with GPIO_2 high. The antenna lines (A0
+   A1 A2) stay released here, sdrplay.c pulls them for the port. Measured on port A, 2026-10-25:
+   each of these the best of the eight positions in its stretch. The amplifier is always on, so
+   none is counted */
+#define RSP2_LPF12      0xBBC7  /* 000: the 12 MHz low pass */
+#define RSP2_12_30      0xBBE7  /* 100 */
+#define RSP2_30_60      0xBBD7  /* 010 */
+#define RSP2_VHF_B45    0xBBDF  /* 011: the VHF and B45 inputs */
+#define RSP2_B3_L       0xBBFF  /* 111: the B3 and L inputs */
+#define RSP2_250_300    0xBBF7  /* 110 */
+#define RSP2_300_380    0xBBCF  /* 001 */
+#define RSP2_380_420    0xBBEF  /* 101 */
+#define RSP2_300_380_KHZ 315000 /* 110 still beats 001 by 3-4 dB at 308-310 MHz (2026-10-25) */
+#define RSP2_380_420_KHZ 410000 /* 001 and 101 cross at about 410 MHz */
+
+static hw_switch_freq_plan_t hw_switch_freq_plan_rsp2[] = {
+        {0,       MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, RSP2_GPIO, 0, RSP2_LPF12, 0, 0},
+        {12000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, RSP2_GPIO, 0, RSP2_12_30, 0, 0},
+        {30000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, RSP2_GPIO, 0, RSP2_30_60, 0, 0},
+        {55000,   MIRISDR_MODE_VHF, 0, 0, 32, RSP2_GPIO, 0, RSP2_VHF_B45, 0, 0},
+        {108000,  MIRISDR_MODE_B3,  0, 0, 16, RSP2_GPIO, 0, RSP2_B3_L, 0, 0},
+        {255000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, RSP2_GPIO, 6, RSP2_250_300, 0, 0},
+        {280000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, RSP2_GPIO, 7, RSP2_250_300, 0, 0},
+        {RSP2_300_380_KHZ, MIRISDR_MODE_AM, MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, RSP2_GPIO, 7, RSP2_300_380, 0, 0},
+        {RSP2_380_420_KHZ, MIRISDR_MODE_AM, MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, RSP2_GPIO, 7, RSP2_380_420, 0, 0},
+        {420000,  MIRISDR_MODE_B45, 0, 0, 4,  RSP2_GPIO, 0, RSP2_VHF_B45, 0, 0},
+        {960000,  MIRISDR_MODE_BL,  0, 0, 2,  RSP2_GPIO, 0, RSP2_B3_L, 0, 0},
+        {2400000, -1, 0, 0, 0, 0x0000, 0, 0, 0, 0},
+};
+
+/* RSP2 on the Hi-Z input: the tuner's AM input 1, past the expander (its words as the 50 ohm
+   plan's). Flat -27 to -28 dBFS from 0.3 to 20 MHz at gain off, 3 dB down near 26 MHz
+   (2026-10-25). It ends as the RSPduo's */
+static hw_switch_freq_plan_t hw_switch_freq_plan_rsp2_hiz[] = {
+        {0,       MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT1, 16, RSP2_GPIO, 0, RSP2_LPF12, 0, 0},
+        {12000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT1, 16, RSP2_GPIO, 0, RSP2_12_30, 0, 0},
+        {DUO_HIZ_END_MHZ * 1000, -1, 0, 0, 0, 0x0000, 0, 0, 0, 0},
+};
+
+static hw_switch_freq_plan_t *hw_switch_freq_plan[7] = {
         hw_switch_freq_plan_default,
         hw_switch_freq_plan_sdrplay,
         hw_switch_freq_plan_rsp1b,
         hw_switch_freq_plan_rspdxr2,
         hw_switch_freq_plan_rspduo,
-        hw_switch_freq_plan_miricstv
+        hw_switch_freq_plan_miricstv,
+        hw_switch_freq_plan_rsp2
 };
+
+/* The antenna that is a board's Hi-Z input on this tuner, -1 none */
+static int mirisdr_hiz_antenna (int flavour, int tuner)
+{
+    if ((flavour == MIRISDR_HW_RSPDUO) && !tuner) return MIRISDR_ANTENNA_HIZ;
+    if (flavour == MIRISDR_HW_RSP2) return MIRISDR_ANTENNA_C;
+
+    return -1;
+}
+
+/* The antennas a board has on this tuner, bit n MIRISDR_ANTENNA_n */
+static uint32_t mirisdr_antennas_of (int flavour, int tuner)
+{
+    uint32_t a = 1u << MIRISDR_ANTENNA_A;
+
+    if (flavour == MIRISDR_HW_RSPDXR2) a |= (1u << MIRISDR_ANTENNA_B) | (1u << MIRISDR_ANTENNA_C);
+    if (flavour == MIRISDR_HW_RSP2) a |= (1u << MIRISDR_ANTENNA_B) | (1u << MIRISDR_ANTENNA_C) | (1u << MIRISDR_ANTENNA_TEST);
+    if (mirisdr_hiz_antenna(flavour, tuner) >= 0) a |= 1u << mirisdr_hiz_antenna(flavour, tuner);
+
+    return a;
+}
 
 /* The board's plan, for the input in p->antenna. Both mirisdr_open_ex() and
    mirisdr_set_hw_flavour() refuse other values */
@@ -257,7 +319,7 @@ static int mirisdr_board_amp_max (mirisdr_dev_t *p)
 {
     const int f = p->hw_flavour;
     const hw_switch_freq_plan_t *plan =
-        hw_switch_freq_plan[(f >= MIRISDR_HW_DEFAULT && f <= MIRISDR_HW_MIRICSTV) ? f : MIRISDR_HW_DEFAULT];
+        hw_switch_freq_plan[(f >= MIRISDR_HW_DEFAULT && f <= MIRISDR_HW_RSP2) ? f : MIRISDR_HW_DEFAULT];
     int i, most = 0;
 
     for (i = 0; plan[i].mode >= 0; i++)
@@ -270,10 +332,10 @@ static const hw_switch_freq_plan_t *mirisdr_plan_of (mirisdr_dev_t *p)
 {
     int f = (int) p->hw_flavour;
 
-    if ((f == MIRISDR_HW_RSPDUO) && !p->tuner_cur && (p->antenna == MIRISDR_ANTENNA_HIZ))
-        return hw_switch_freq_plan_rspduo_hiz;
+    if (p->antenna == mirisdr_hiz_antenna(f, p->tuner_cur))
+        return (f == MIRISDR_HW_RSP2) ? hw_switch_freq_plan_rsp2_hiz : hw_switch_freq_plan_rspduo_hiz;
 
-    return hw_switch_freq_plan[(f >= MIRISDR_HW_DEFAULT && f <= MIRISDR_HW_MIRICSTV) ? f : MIRISDR_HW_DEFAULT];
+    return hw_switch_freq_plan[(f >= MIRISDR_HW_DEFAULT && f <= MIRISDR_HW_RSP2) ? f : MIRISDR_HW_DEFAULT];
 }
 
 /* Register 8 before the first tune: the GPIOs as the plan's first row has them */
@@ -546,7 +608,8 @@ static int mirisdr_attenuator_list (int flavour, int *v)
 
     for (db = 0; db <= 36; db++)
         if ((flavour == MIRISDR_HW_RSPDUO || flavour == MIRISDR_HW_RSP1B) ? (mirisdr_duo_pad(db) >= 0) :
-            (flavour == MIRISDR_HW_RSPDXR2) ? (mirisdr_dxr2_pads(db) >= 0) : !db)
+            (flavour == MIRISDR_HW_RSPDXR2) ? (mirisdr_dxr2_pads(db) >= 0) :
+            (flavour == MIRISDR_HW_RSP2) ? (mirisdr_rsp2_att(db) >= 0) : !db)
         {
             if (v) v[n] = db;
             n++;
@@ -582,7 +645,8 @@ static int mirisdr_attenuator_snap (int flavour, int db, int strict)
 /* The flags of the front end a board has, MIRISDR_FRONTEND_* */
 static uint32_t mirisdr_frontend_flags (int flavour)
 {
-    return (flavour == MIRISDR_HW_RSPDUO) ? (MIRISDR_FRONTEND_PORT_TIE | MIRISDR_FRONTEND_REF_OUT) : 0;
+    return (flavour == MIRISDR_HW_RSPDUO) ? (MIRISDR_FRONTEND_PORT_TIE | MIRISDR_FRONTEND_REF_OUT) :
+           (flavour == MIRISDR_HW_RSP2) ? MIRISDR_FRONTEND_REF_OUT : 0;
 }
 
 /* how long the synthesizer gets to start when the tuner wakes, before its band search */
@@ -853,6 +917,8 @@ static void mirisdr_frontend_words (mirisdr_dev_t *p, const mirisdr_tune_config_
         pl->fe.expander[0] = mirisdr_sdrplay_word(p->hw_flavour, pl->w.expander, c->frontend.notch, c->frontend.bias,
                                                   c->frontend.antenna, pl->ds, pl->ds_lna,
                                                   pl->gr.amp_db && pl->gr.amp, pl->att);
+    if ((p->hw_flavour == MIRISDR_HW_RSP2) && (c->frontend.flags & MIRISDR_FRONTEND_REF_OUT))
+        pl->fe.expander[0] &= (uint16_t) ~RSP2_REF_OUT;
     /* RSPduo: the filters of the tuners the stream takes, this one's and the other's (of
        its tune in force, if any), each through its amplifier (path and supply) unless
        bypassed. A chain not streamed gets no path and its amplifier no supply, which keeps
@@ -1033,10 +1099,11 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
     }
 
     if ((c->frontend.notch & ~(MIRISDR_NOTCH_FM | MIRISDR_NOTCH_DAB | MIRISDR_NOTCH_MW)) ||
-        (c->frontend.notch && !MIRISDR_HW_EXPANDER(p->hw_flavour)))
+        (c->frontend.notch && !MIRISDR_HW_EXPANDER(p->hw_flavour)) ||
+        ((c->frontend.notch & MIRISDR_NOTCH_DAB) && (p->hw_flavour == MIRISDR_HW_RSP2)))
     {
-        mirisdr_refuse(p, "unsupported notch 0x%x: the notches are on the RSP1B, RSPdx-R2 and RSPduo only\n",
-                       c->frontend.notch);
+        mirisdr_refuse(p, "unsupported notch 0x%x: the notches are on the RSP1B, RSPdx-R2, RSPduo and RSP2 only, "
+                       "and the RSP2 has no DAB notch\n", c->frontend.notch);
         return -1;
     }
 
@@ -1068,12 +1135,12 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
         return -1;
     }
 
-    hiz = (p->hw_flavour == MIRISDR_HW_RSPDUO) && !p->tuner_cur && (c->frontend.antenna == MIRISDR_ANTENNA_HIZ);
-    if ((c->frontend.antenna < MIRISDR_ANTENNA_A) || (c->frontend.antenna > MIRISDR_ANTENNA_C) ||
-        ((c->frontend.antenna != MIRISDR_ANTENNA_A) && (p->hw_flavour != MIRISDR_HW_RSPDXR2) && !hiz))
+    hiz = c->frontend.antenna == mirisdr_hiz_antenna(p->hw_flavour, p->tuner_cur);
+    if ((c->frontend.antenna < MIRISDR_ANTENNA_A) || (c->frontend.antenna > MIRISDR_ANTENNA_TEST) ||
+        !(mirisdr_antennas_of(p->hw_flavour, p->tuner_cur) & (1u << c->frontend.antenna)))
     {
-        mirisdr_refuse(p, "unsupported antenna %d: B and C are on the RSPdx-R2 only, and B (its Hi-Z) on the "
-                       "RSPduo's tuner 0\n", c->frontend.antenna);
+        mirisdr_refuse(p, "unsupported antenna %d: B and C are on the RSPdx-R2 and RSP2 (C its Hi-Z), B (its Hi-Z) "
+                       "on the RSPduo's tuner 0, TEST on the RSP2\n", c->frontend.antenna);
         return -1;
     }
 
@@ -1178,7 +1245,7 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
     if (pl->att < 0)
     {
         mirisdr_refuse(p, "unsupported attenuator %d dB: the RSPduo and RSP1B take 0, 6, 13 or 19, the RSPdx-R2 0 to 36 in"
-                       " 3 dB steps, other boards none\n", c->frontend.attenuator);
+                       " 3 dB steps, the RSP2 0, 5, 11, 15 or 20, other boards none\n", c->frontend.attenuator);
         return -1;
     }
     if (hiz && pl->att)
@@ -1866,21 +1933,16 @@ int mirisdr_get_frontend_caps (mirisdr_dev_t *p, int tuner, mirisdr_frontend_cap
     f = p->hw_flavour;
     memset(caps, 0, sizeof *caps);
     caps->notches = MIRISDR_HW_EXPANDER(f) ? (MIRISDR_NOTCH_FM | MIRISDR_NOTCH_DAB | MIRISDR_NOTCH_MW) : 0;
-    caps->antennas = 1u << MIRISDR_ANTENNA_A;
-    caps->antenna_hiz = -1;
-    if (f == MIRISDR_HW_RSPDXR2) caps->antennas |= (1u << MIRISDR_ANTENNA_B) | (1u << MIRISDR_ANTENNA_C);
-    if ((f == MIRISDR_HW_RSPDUO) && !tuner)
-    {
-        caps->antennas |= 1u << MIRISDR_ANTENNA_HIZ;
-        caps->antenna_hiz = MIRISDR_ANTENNA_HIZ;
-    }
+    if (f == MIRISDR_HW_RSP2) caps->notches &= ~MIRISDR_NOTCH_DAB;
+    caps->antennas = mirisdr_antennas_of(f, tuner);
+    caps->antenna_hiz = mirisdr_hiz_antenna(f, tuner);
     /* the RSPduo's bias-T powers tuner 1's port. Other boards take frontend.bias as
        libmirisdr did (GPIO_3), but no bias-T is known there */
     caps->bias = MIRISDR_HW_EXPANDER(f) && ((f != MIRISDR_HW_RSPDUO) || tuner);
     caps->direct_sampling = f == MIRISDR_HW_RSPDXR2;
 
     /* the amplifier: the 50 ohm plan's rows that have one */
-    plan = hw_switch_freq_plan[(f >= MIRISDR_HW_DEFAULT && f <= MIRISDR_HW_MIRICSTV) ? f : MIRISDR_HW_DEFAULT];
+    plan = hw_switch_freq_plan[(f >= MIRISDR_HW_DEFAULT && f <= MIRISDR_HW_RSP2) ? f : MIRISDR_HW_DEFAULT];
     for (i = 0; plan[i].mode >= 0; i++)
         if (plan[i].amp_db)
         {

@@ -39,7 +39,7 @@ typedef enum
 {
     MIRISDR_HW_AUTO = -1,       /* open config only: by VID:PID, else MIRISDR_HW_DEFAULT; under
                                    our own ids (16d0:158c) a serial starting "B-" is an RSP1B,
-                                   "C-" an RSPdx-R2, "D-" an RSPduo */
+                                   "C-" an RSPdx-R2, "D-" an RSPduo, "E-" an RSP2 */
     MIRISDR_HW_DEFAULT,         /* plain boards, the RSP1 */
     MIRISDR_HW_SDRPLAY,         /* the original libmirisdr's SDRplay plan, its board not known */
     MIRISDR_HW_RSP1B,           /* SDRplay RSP1B */
@@ -47,6 +47,7 @@ typedef enum
     MIRISDR_HW_RSPDUO,          /* SDRplay RSPduo */
     MIRISDR_HW_MIRICSTV,        /* the Mirics TV reference design, TV sticks such as the Hauppauge
                                    WinTV 133559LF: VHF, band III and band IV/V only */
+    MIRISDR_HW_RSP2,            /* SDRplay RSP2 and RSP2pro */
 } mirisdr_hw_flavour_t;
 
 typedef enum
@@ -431,7 +432,7 @@ typedef struct mirisdr_gain_config
 	int      mixbuffer;     /* dB, the AM ports only: 0, 6, 12 or 18 on AM1, 0 or 24 on AM2 */
 	int      baseband;      /* dB, 0-59 */
 	int      amp_bypass;    /* the board's amplifier before the tuner bypassed (RSP1B, RSPdx-R2
-	                           and RSPduo, where it is, see mirisdr_get_frontend_caps()). Its gain
+	                           and RSPduo, where it is (the RSP2's is always in), see mirisdr_get_frontend_caps()). Its gain
 	                           in the band is in the total, up to about 25 dB. 0 where there is
 	                           none */
 	uint32_t reserved[MIRISDR_RESERVED_NESTED];
@@ -445,7 +446,7 @@ typedef struct mirisdr_gain_config
  * the plan does not choose. A part the board does not have is refused. The tune result
  * reports the words in force, with fields naming every part the board has */
 #define MIRISDR_FRONTEND_RAW_GPIO   (1 << 0)    /* gpio_dir and gpio_level */
-#define MIRISDR_FRONTEND_RAW_EXP1   (1 << 1)    /* expander[0]: RSP1B, RSPdx-R2, the RSPduo's first */
+#define MIRISDR_FRONTEND_RAW_EXP1   (1 << 1)    /* expander[0]: RSP1B, RSPdx-R2, RSP2, the RSPduo's first */
 #define MIRISDR_FRONTEND_RAW_EXP2   (1 << 2)    /* expander[1]: the RSPduo's second */
 
 typedef struct mirisdr_frontend_raw
@@ -466,25 +467,27 @@ typedef struct mirisdr_frontend_raw
                                                    at 50-600 MHz, and the other tuner hears it within
                                                    5-10 dB at 50-200 and 600-900 MHz, much less at
                                                    300-433 MHz and in L band */
-#define MIRISDR_FRONTEND_REF_OUT    (1 << 1)    /* RSPduo: the board's 24 MHz out of its
-                                                   reference connector, for another board */
+#define MIRISDR_FRONTEND_REF_OUT    (1 << 1)    /* RSPduo and RSP2: the board's 24 MHz out of
+                                                   its reference connector, for another board */
 
 /* The front end before the tuner, part of a tune so it goes out with it. The tune
  * result reports what is in force. A part the board does not have (a notch, an antenna,
  * pads, a flag, direct sampling) is refused */
 typedef struct mirisdr_frontend_config
 {
-	int      bias;          /* bias-T: power on the antenna input (port B on the RSPdx-R2, on
-	                           the RSPduo the port marked tuner 2, tuner 1's) */
-	int      notch;         /* MIRISDR_NOTCH_*, RSP1B, RSPdx-R2 and RSPduo only */
-	int      antenna;       /* MIRISDR_ANTENNA_*, B and C on the RSPdx-R2, and the RSPduo's tuner 0
-	                           takes B, its Hi-Z input */
+	int      bias;          /* bias-T: power on the antenna input (port B on the RSPdx-R2 and RSP2,
+	                           on the RSPduo the port marked tuner 2, tuner 1's) */
+	int      notch;         /* MIRISDR_NOTCH_*, RSP1B, RSPdx-R2, RSPduo and RSP2 only (the RSP2 has no
+	                           DAB notch) */
+	int      antenna;       /* MIRISDR_ANTENNA_*, B and C on the RSPdx-R2, the RSPduo's tuner 0
+	                           takes B, its Hi-Z input, and the RSP2 B, C (its Hi-Z) and TEST */
 	int      direct_sampling; /* RSPdx-R2 only, MIRISDR_DS_*: when to sample the antenna directly,
 	                           see below. The result says whether it is in force (0 or 1) */
 	int      attenuator;    /* dB, pads before the tuner, apart from the gain's total. RSPduo
 	                           and RSP1B: 0, 6, 13 or 19, one pad at a time (the RSPduo's not on
 	                           the Hi-Z). RSPdx-R2: 0 to 36 in
-	                           3 dB steps, its pads in series (31 at most at 1.5 GHz).
+	                           3 dB steps, its pads in series (31 at most at 1.5 GHz). RSP2: 0,
+	                           5, 11, 15 or 20 (not on the Hi-Z).
 	                           mirisdr_get_frontend_caps() lists them */
 	uint32_t flags;         /* MIRISDR_FRONTEND_*, the board's switches, see above */
 	mirisdr_frontend_raw_t raw; /* words replacing the plan's, see above */
@@ -633,7 +636,7 @@ MIRISDR_API int mirisdr_get_baseband_gain (mirisdr_dev_t *p);           /* extra
    streams alone, and only tuner 1 has the bias-T */
 MIRISDR_API int mirisdr_set_bias (mirisdr_dev_t *p, int bias);          /* extra */
 MIRISDR_API int mirisdr_get_bias (mirisdr_dev_t *p);                    /* extra */
-/* The tune's frontend.attenuator, dB: RSP1B, RSPdx-R2 and RSPduo, see above */
+/* The tune's frontend.attenuator, dB: RSP1B, RSPdx-R2, RSPduo and RSP2, see above */
 MIRISDR_API int mirisdr_set_attenuator (mirisdr_dev_t *p, int db);      /* extra */
 MIRISDR_API int mirisdr_get_attenuator (mirisdr_dev_t *p);              /* extra */
 /* The tune's frontend.flags, MIRISDR_FRONTEND_*: the board's, see above */
@@ -672,7 +675,7 @@ typedef struct mirisdr_frontend_caps
 
 MIRISDR_API int mirisdr_get_frontend_caps (mirisdr_dev_t *p, int tuner, mirisdr_frontend_caps_t *caps); /* extra */
 
-/* The single setters for the tune's frontend. Switchable notch filters, RSP1B, RSPdx-R2 and RSPduo only,
+/* The single setters for the tune's frontend. Switchable notch filters, RSP1B, RSPdx-R2, RSPduo and RSP2 only,
  * enabling these filters can improve or reduce signal quality depending on your
  * specific scenario, so probably just have to try. */
 #define MIRISDR_NOTCH_FM        0x01    /* 85-100 MHz */
@@ -682,11 +685,14 @@ MIRISDR_API int mirisdr_set_notch (mirisdr_dev_t *p, int notches);      /* extra
 MIRISDR_API int mirisdr_get_notch (mirisdr_dev_t *p);                   /* extra */
 
 /* The antenna input. Other boards have only A, but for the RSPduo's Hi-Z input on tuner 0
-   (with the LO below 30 MHz) */
+   (B) and the RSP2's (C), with the LO below 30 MHz. mirisdr_get_frontend_caps() says which
+   a board has and which is its Hi-Z. TEST is the RSP2's internal test signal, an RC
+   oscillator near 9.35 MHz whose harmonics reach 2 GHz, through the whole front end */
 #define MIRISDR_ANTENNA_A       0
 #define MIRISDR_ANTENNA_B       1
 #define MIRISDR_ANTENNA_C       2
-#define MIRISDR_ANTENNA_HIZ     MIRISDR_ANTENNA_B
+#define MIRISDR_ANTENNA_TEST    3
+#define MIRISDR_ANTENNA_HIZ     MIRISDR_ANTENNA_B   /* the RSPduo's */
 MIRISDR_API int mirisdr_set_antenna (mirisdr_dev_t *p, int antenna);    /* extra */
 MIRISDR_API int mirisdr_get_antenna (mirisdr_dev_t *p);                 /* extra */
 
@@ -866,8 +872,8 @@ MIRISDR_API int mirisdr_get_pps (mirisdr_dev_t *p, mirisdr_pps_t *out); /* extra
 
 /* I2C master on GPIO_1 (SDA) and GPIO_2 (SCL). A read or write is at most 64 bytes
  * (the firmware's buffer). The result is 0, MIRISDR_I2C_NACK, or -1 for a USB failure.
- * Refused where the open config holds those pins as inputs, and on the RSP1B, RSPdx-R2
- * and RSPduo, whose front end uses them */
+ * Refused where the open config holds those pins as inputs, and on the RSP1B, RSPdx-R2,
+ * RSPduo and RSP2, whose front end uses them */
 #define MIRISDR_I2C_NO_STOP     0x01
 #define MIRISDR_I2C_REPEAT      0x02
 #define MIRISDR_I2C_NACK        1
@@ -878,7 +884,7 @@ MIRISDR_API int mirisdr_i2c_transfer (mirisdr_dev_t *p, uint8_t addr, const uint
 MIRISDR_API int mirisdr_i2c_recover (mirisdr_dev_t *p); /* extra */
 
 /* Send UART data via GPIO_2. Refused where the open config holds it as an input, and on
- * the RSP1B, RSPdx-R2 and RSPduo, whose front end uses it */
+ * the RSP1B, RSPdx-R2, RSPduo and RSP2, whose front end uses it */
 MIRISDR_API int mirisdr_uart_write (mirisdr_dev_t *p, uint32_t baud, const uint8_t *buf, int len); /* extra */
 
 /* The MSI2500 has a remote control receiver on GPIO3, this function allows to configure a

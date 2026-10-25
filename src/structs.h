@@ -376,7 +376,8 @@ struct mirisdr_dev {
 };
 
 /* The SDRplay boards with the front end on an SPI expander (sdrplay.c) */
-#define MIRISDR_HW_EXPANDER(f)  (((f) == MIRISDR_HW_RSP1B) || ((f) == MIRISDR_HW_RSPDXR2) || ((f) == MIRISDR_HW_RSPDUO))
+#define MIRISDR_HW_EXPANDER(f)  (((f) == MIRISDR_HW_RSP1B) || ((f) == MIRISDR_HW_RSPDXR2) || ((f) == MIRISDR_HW_RSPDUO) || \
+                                 ((f) == MIRISDR_HW_RSP2))
 
 #if defined(_WIN32)
 static void mirisdr_xfer_lock_init (mirisdr_dev_t *p)    { InitializeCriticalSection(&p->xfer_lock);

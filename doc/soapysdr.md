@@ -1,7 +1,7 @@
 Using libmirisdr receivers with SoapySDR
 ========================================
 
-The `mirisdr` SoapySDR module lets programs that use SoapySDR work with libmirisdr receivers. Examples are SDR++, CubicSDR, GQRX, GNU Radio and your own programs. It supports boards with the MSi2500 and MSi001 chips, such as the SDRplay RSP1, RSP1B, RSPdx-R2 and RSPduo.
+The `mirisdr` SoapySDR module lets programs that use SoapySDR work with libmirisdr receivers. Examples are SDR++, CubicSDR, GQRX, GNU Radio and your own programs. It supports boards with the MSi2500 and MSi001 chips, such as the SDRplay RSP1, RSP1B, RSP2, RSPdx-R2 and RSPduo.
 
 This guide explains how to install the module, how to pick it, and what each setting does.
 
@@ -84,6 +84,8 @@ The firmware shows up with libmirisdr-6's own USB ids, 16d0:158c. These ids do n
 
   - **RSPduo**: the same with `D-`.
 
+  - **RSP2**: the same with `E-`.
+
   - **Other boards**: any serial of up to 12 characters works. `random` makes one up.
 
         miri_eeprom writefw default -s random
@@ -94,7 +96,7 @@ After replugging the USB VID:PID will change, which may require retriggering ude
 
 The module reports a range of 1 kHz to 2400 MHz, which is what the library accepts. TV sticks on the Mirics TV reference design, such as the Hauppauge WinTV 133559LF, report 45 to 1100 MHz, as they have no input outside it. The frequency you set is at 0 Hz in the samples, at every IF. You never need to add or subtract an IF yourself.
 
-There is one tuning element, called `RF`, and one antenna, called `RX`. The RSPdx-R2 has three antennas instead, `A`, `B` and `C`, with `A` the default. The RSPduo's channel 0 also has `Hi-Z`, its Hi-Z input, below 30 MHz.
+There is one tuning element, called `RF`, and one antenna, called `RX`. The RSPdx-R2 has three antennas instead, `A`, `B` and `C`, with `A` the default. The RSP2 has `A`, `B`, `Hi-Z` (below 30 MHz) and `TEST`, the board's own test signal: an oscillator near 9.35 MHz with harmonics up to 2 GHz. The RSPduo's channel 0 also has `Hi-Z`, its Hi-Z input, below 30 MHz.
 
 
 <h3>Sample rates</h3>
@@ -167,14 +169,14 @@ Set the gain as one total, from 0 to 102 dB on most bands, plus the board's ampl
 
 The stages can also be set one by one:
 
-  - `ATT`: RSP1B, RSPdx-R2 and RSPduo. The pads before the tuner, against strong signals, as a negative gain: 0, -6, -13 or -19 dB on the RSP1B and RSPduo, and 0 to -36 dB in steps of 3 on the RSPdx-R2. Another value takes the nearest pad. In L band they attenuate less, and `ATT` reads back what they give there. The RSPduo's Hi-Z has none. `ATT` is not part of the total: the total is the gain of the receiver's own chain, and setting it leaves the pads as they are. So with pads in, the stages add up to more than the total.
+  - `ATT`: RSP1B, RSPdx-R2, RSPduo and RSP2. The pads before the tuner, against strong signals, as a negative gain: 0, -6, -13 or -19 dB on the RSP1B and RSPduo, 0 to -36 dB in steps of 3 on the RSPdx-R2, and 0, -5, -11, -15 or -20 dB on the RSP2. Another value takes the nearest pad. In L band they attenuate less, and `ATT` reads back what they give there. A Hi-Z input has none. `ATT` is not part of the total: the total is the gain of the receiver's own chain, and setting it leaves the pads as they are. So with pads in, the stages add up to more than the total.
   - `AMP`: RSP1B, RSPdx-R2 and RSPduo. 0 or the full gain of the amplifier before the tuner in the band tuned, up to about 25 dB: from 30 MHz on the RSP1B and RSPdx-R2, from 55 MHz on the RSPduo (not on its Hi-Z). A total turns it on first, and bypasses it only below its own gain.
   - `LNA`: 0 or its full gain, which is 24 dB on most bands, 7 dB in band IV/V and about 4 dB in L band. The AM inputs have none.
   - `MIX`: 0 or 19 dB.
-  - `MIXBUF`: only where the receiver uses an AM input: below 55 MHz, and from 255 to 420 MHz through the up-converter (on the SDRplay plan, board 1, below 50 MHz only). 0 or 24 dB on AM input 2, which the 50 ohm ports use, and 0, 6, 12 or 18 dB on AM input 1, which only the RSPduo's Hi-Z uses.
+  - `MIXBUF`: only where the receiver uses an AM input: below 55 MHz, and from 255 to 420 MHz through the up-converter (on the SDRplay plan, board 1, below 50 MHz only). 0 or 24 dB on AM input 2, which the 50 ohm ports use, and 0, 6, 12 or 18 dB on AM input 1, which only the Hi-Z inputs (the RSPduo's and the RSP2's) use.
   - `BB`: 0 to 59 dB.
 
-The ranges the module reports are the most each stage has in any band, because programs such as GQRX read them only once, when the device opens. A value the band you are tuned to cannot take gives the nearest one it can, and a stage the band does not have stays at 0. For ranges that follow the band, add `gain_ranges=band` to the device string. On the RSPduo's channel 0 `MIXBUF` steps by 6: the Hi-Z takes 0, 6, 12 and 18, the 50 ohm port 0 and 24. The RSPdx-R2's `LNA` reaches 37 dB with its direct sampling amplifier, and 24 dB on the tuner. There is no automatic gain control.
+The ranges the module reports are the most each stage has in any band, because programs such as GQRX read them only once, when the device opens. A value the band you are tuned to cannot take gives the nearest one it can, and a stage the band does not have stays at 0. For ranges that follow the band, add `gain_ranges=band` to the device string. On a channel with a Hi-Z input (the RSPduo's channel 0, the RSP2) `MIXBUF` steps by 6: the Hi-Z takes 0, 6, 12 and 18, the 50 ohm ports 0 and 24. The RSPdx-R2's `LNA` reaches 37 dB with its direct sampling amplifier, and 24 dB on the tuner. There is no automatic gain control.
 
 
 <h3>Sample formats</h3>
@@ -200,11 +202,11 @@ Programs show these as device settings. With SoapySDR's API they are `writeSetti
 | `transfer` | `ISOC`, `ISOC1`, `ISOC2`, `BULK` | `ISOC` on Linux, `BULK` on Windows | The USB transfer type. |
 | `decimation_bypass` | `AUTO`, `ON`, `OFF` | `AUTO` | Skip the receiver's own filter. `AUTO` does this above 14.5 Msps. |
 | `gap_fill` | `true`, `false` | `false` | Put zeros where samples were lost, for gaps of up to 16 USB packets. Always on with `baseband`, and then read back as `true`. |
-| `biastee` | `true`, `false` | `false` | RSP1B, RSPdx-R2 and RSPduo only. Power on the antenna input: port B on the RSPdx-R2, the port marked tuner 2 (channel 1) on the RSPduo. |
-| `fm_notch` | `true`, `false` | `false` | RSP1B, RSPdx-R2 and RSPduo only. Notch for FM broadcast (85 to 100 MHz). This is channel 0's. Each channel also has the notches as channel settings. |
-| `mw_notch` | `true`, `false` | `false` | RSP1B, RSPdx-R2 and RSPduo only. Notch for medium wave (0.4 to 1.6 MHz). |
+| `biastee` | `true`, `false` | `false` | RSP1B, RSPdx-R2, RSPduo and RSP2 only. Power on the antenna input: port B on the RSPdx-R2 and RSP2, the port marked tuner 2 (channel 1) on the RSPduo. |
+| `fm_notch` | `true`, `false` | `false` | RSP1B, RSPdx-R2, RSPduo and RSP2 only. Notch for FM broadcast (85 to 100 MHz). This is channel 0's. Each channel also has the notches as channel settings. |
+| `mw_notch` | `true`, `false` | `false` | RSP1B, RSPdx-R2, RSPduo and RSP2 only. Notch for medium wave (0.4 to 1.6 MHz). |
 | `dab_notch` | `true`, `false` | `false` | RSP1B, RSPdx-R2 and RSPduo only. Notch for DAB (165 to 230 MHz). |
-| `ref_out` | `true`, `false` | `false` | RSPduo only. The board's 24 MHz clock out of its reference connector, for another receiver. |
+| `ref_out` | `true`, `false` | `false` | RSPduo and RSP2 only. The board's 24 MHz clock out of its reference connector, for another receiver. |
 | `port_tie` | `true`, `false` | `false` | RSPduo only. Ties the two 50 ohm ports together, so both channels hear both, as from one antenna. It works at HF, 50 to 200 MHz and 600 to 900 MHz, and much less at 300 to 433 MHz and in L band. |
 | `direct_sampling` | `OFF`, `ON`, `AUTO` | `AUTO` | RSPdx-R2 only. Sample the antenna directly instead of through the tuner: `ON` whenever the frequency is 2 MHz or below, `AUTO` only where the whole band (the frequency plus half the rate) fits under 2 MHz. Otherwise the tuner is used as usual. `true` and `false` work as `ON` and `OFF`. The gain is then only the LNA, about 37 dB, on from a total of 19 dB. |
 

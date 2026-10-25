@@ -576,7 +576,7 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
 
     *out = NULL;
 
-    if ((cfg->hw_flavour < MIRISDR_HW_AUTO) || (cfg->hw_flavour > MIRISDR_HW_MIRICSTV))
+    if ((cfg->hw_flavour < MIRISDR_HW_AUTO) || (cfg->hw_flavour > MIRISDR_HW_RSP2))
     {
         fprintf(stderr, "libmirisdr: hw_flavour %d is not a board\n", cfg->hw_flavour);
         return -1;

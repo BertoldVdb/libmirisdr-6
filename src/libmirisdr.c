@@ -604,6 +604,13 @@ static void mirisdr_flavour_clean (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_fla
         p->tune.frontend.notch = 0;
     }
 
+    /* the RSP2 has no DAB notch */
+    if (hw_flavour == MIRISDR_HW_RSP2)
+    {
+        p->notch &= ~MIRISDR_NOTCH_DAB;
+        p->tune.frontend.notch &= ~MIRISDR_NOTCH_DAB;
+    }
+
     /* the RSPduo's bias-T is tuner 1's, and the Mirics TV design has none */
     if (((hw_flavour == MIRISDR_HW_RSPDUO) && !p->tuner_cur) || (hw_flavour == MIRISDR_HW_MIRICSTV))
     {
@@ -617,10 +624,17 @@ static void mirisdr_flavour_clean (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_fla
     p->tune.frontend.raw.fields &= mirisdr_frontend_parts(hw_flavour);
     p->tune.frontend.flags &= mirisdr_frontend_flags(hw_flavour);
 
-    if (hw_flavour != MIRISDR_HW_RSPDXR2)
+    /* the antenna only where the board has it as the same kind of input: A, and B on the
+       RSPdx-R2 and RSP2 (the RSP2's C is its Hi-Z, the RSPdx-R2's a 50 ohm port) */
+    if ((p->antenna != MIRISDR_ANTENNA_A) &&
+        !((p->antenna == MIRISDR_ANTENNA_B) && ((hw_flavour == MIRISDR_HW_RSPDXR2) || (hw_flavour == MIRISDR_HW_RSP2))))
     {
         p->antenna = MIRISDR_ANTENNA_A;
         p->tune.frontend.antenna = MIRISDR_ANTENNA_A;
+    }
+
+    if (hw_flavour != MIRISDR_HW_RSPDXR2)
+    {
         p->ds = 0;
         p->ds_edge = 0;
         p->tune.frontend.direct_sampling = 0;
@@ -636,7 +650,7 @@ int mirisdr_set_hw_flavour (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_flavour) {
 
     if (!p) goto failed;
 
-    if (hw_flavour < MIRISDR_HW_DEFAULT || hw_flavour > MIRISDR_HW_MIRICSTV) goto failed;
+    if (hw_flavour < MIRISDR_HW_DEFAULT || hw_flavour > MIRISDR_HW_RSP2) goto failed;
 
     /* the board it is already: nothing to clean, and nothing to tune again */
     if (hw_flavour == p->hw_flavour) return 0;

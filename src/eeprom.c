@@ -121,11 +121,21 @@ failed:
     return -1;
 }
 
+static int mirisdr_sdrplay_send (mirisdr_dev_t *p, int chip, uint16_t w);
+
 static void mirisdr_ee_end (mirisdr_dev_t *p)
 {
     mirisdr_write_reg(p, 0x0B, 0);
 
     update_reg_8(p);
+
+    /* the RSP2's GPIO_2 is its expander's RESET, which the access drove low: the whole word
+       again, as at the first tune */
+    if ((p->hw_flavour == MIRISDR_HW_RSP2) && (p->exp_valid & 1))
+    {
+        p->exp_valid &= ~1;
+        mirisdr_sdrplay_send(p, 0, p->exp_iodir[0]);
+    }
 }
 
 /* Attempt to drive the strap pin incorrectly to EEPROM configuration is skipped */

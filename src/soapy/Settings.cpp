@@ -509,6 +509,7 @@ std::string SoapyMiriSDR::getHardwareKey(void) const
     case MIRISDR_HW_RSPDXR2:  return "RSPdxR2";
     case MIRISDR_HW_RSPDUO:   return "RSPduo";
     case MIRISDR_HW_MIRICSTV: return "MiricsTV";
+    case MIRISDR_HW_RSP2:     return "RSP2";
     case MIRISDR_HW_SDRPLAY:  return "SDRplay";
     default:                  return "MSi2500";
     }
@@ -556,13 +557,15 @@ size_t SoapyMiriSDR::getNumChannels(const int direction) const
  * Antenna
  ******************************************************************/
 
-/* The channel's inputs as the library lists them: with a Hi-Z, "RX" and "Hi-Z" (the
-   RSPduo's channel 0), with several ports their letters (the RSPdx-R2's A, B and C),
-   otherwise the one "RX" */
+/* The channel's inputs as the library lists them: the Hi-Z "Hi-Z" and the RSP2's test
+   oscillator "TEST". With a second 50 ohm port the ports' letters (the RSPdx-R2's A, B and C,
+   the RSP2's A and B), otherwise the one "RX" (the RSPduo's channel 0 next to its Hi-Z) */
 static std::string antennaName(const mirisdr_frontend_caps_t &c, int a)
 {
-    if (c.antenna_hiz >= 0) return a == c.antenna_hiz ? "Hi-Z" : "RX";
-    if (c.antennas & ~(1u << MIRISDR_ANTENNA_A)) return std::string(1, (char) ('A' + a - MIRISDR_ANTENNA_A));
+    if (a == MIRISDR_ANTENNA_TEST) return "TEST";
+    if (a == c.antenna_hiz) return "Hi-Z";
+    if ((c.antennas & (1u << MIRISDR_ANTENNA_B)) && (c.antenna_hiz != MIRISDR_ANTENNA_B))
+        return std::string(1, (char) ('A' + a - MIRISDR_ANTENNA_A));
     return "RX";
 }
 
@@ -836,8 +839,8 @@ double SoapyMiriSDR::getGain(const int direction, const size_t channel, const st
 }
 
 /* The most each stage reaches in any band: the LNA below band IV/V, the mixbuffer on
-   AM2, which never run together. The mixbuffer is 0 or 24 dB on AM2. The RSPduo's Hi-Z
-   runs on AM1, which steps it by 6 up to 18, so a channel with a Hi-Z steps by 6. The board's
+   AM2, which never run together. The mixbuffer is 0 or 24 dB on AM2. The Hi-Z (the RSPduo's
+   and the RSP2's) runs on AM1, which steps it by 6 up to 18, so a channel with a Hi-Z steps by 6. The board's
    amplifier, its best band's, comes from the library */
 #define MAX_LNA                 24
 #define MAX_MIX                 19
@@ -967,7 +970,7 @@ SoapySDR::RangeList SoapyMiriSDR::getFrequencyRange(const int direction, const s
     const mirisdr_frontend_caps_t &c = caps[channel < 2 ? channel : 0];
     SoapySDR::RangeList list;
 
-    /* the board's stretches, within what the input in use takes (the RSPduo's Hi-Z ends at 30 MHz) */
+    /* the board's stretches, within what the input in use takes (the Hi-Z ends at 30 MHz) */
     for (int i = 0; i < c.range_count; i++)
     {
         double lo = std::max(freqMin, (double) c.range[i][0]), hi = std::min(freqMax, (double) c.range[i][1] - 1);
@@ -1247,7 +1250,7 @@ SoapySDR::ArgInfoList SoapyMiriSDR::getSettingInfo(void) const
         a = SoapySDR::ArgInfo();
         a.key = "biastee";
         a.name = "Bias-T";
-        a.description = flavour == MIRISDR_HW_RSPDXR2 ? "Power on antenna port B." :
+        a.description = (flavour == MIRISDR_HW_RSPDXR2 || flavour == MIRISDR_HW_RSP2) ? "Power on antenna port B." :
                         flavour == MIRISDR_HW_RSPDUO ? "Power on the port marked tuner 2 (channel 1)." : "Power on the antenna input.";
         a.type = SoapySDR::ArgInfo::BOOL;
         a.value = "false";

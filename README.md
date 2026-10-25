@@ -1,7 +1,7 @@
 LibMiriSDR-6
 ============
 
-A library and tools for receivers built on the Mirics MSi2500 and MSi001 chips, such as the SDRplay RSP1, RSP1B, RSPdx-R2 and RSPduo.
+A library and tools for receivers built on the Mirics MSi2500 and MSi001 chips, such as the SDRplay RSP1, RSP1B, RSP2, RSPdx-R2 and RSPduo.
 
 This is another flavour of libmirisdr, started from the original libmirisdr-2 by Miroslav Slugeň, with additions by Leif Åsbrink SM5BSZ in libmirisdr-3-bsz and by Edouard Griffiths (f4exb) in libmirisdr-4, and by Erik Bročko  in libmirisdr-5.
 
@@ -12,6 +12,7 @@ This library is an API compatible drop-in replacement for libmirisdr-5, it only 
 <h3>For users</h3>
 
   - **SDRplay RSP1B and RSPdx-R2 support.** Filters, notches, bias-T, the amplifier (in the gain) and pads, and the RSPdx-R2's three antenna inputs and direct sampling below 2 MHz.
+  - **SDRplay RSP2 support.** Filters, notches, bias-T, attenuator, the reference output, ports A and B, the Hi-Z input, and the board's test oscillator as an antenna.
   - **SDRplay RSPduo support.** Both tuners, alone or together (a low IF each, delivered as two labelled streams or two SoapySDR channels). Each tuner's filters, notches, amplifier (in the gain) and pads, the bias-T, the Hi-Z input, the tie that feeds both tuners from one port, and the reference output.
   - **A SoapySDR module.** Programs that use SoapySDR can use the receivers with `driver=mirisdr`. With `report=true` it logs what the receiver runs after each change: the rate, the IF, the NCO, direct sampling and more.
   - **Low sample rates.** Any rate down to about 3.5 ksps, through the tuner's low IF.

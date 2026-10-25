@@ -4743,6 +4743,104 @@ static tres_t t_plan_dxr2 (void)
     return plan_bad ? T_FAIL : T_PASS;
 }
 
+/* The RSP2: the SP8T's position for the band, B2 and B6 low (no attenuation, around the notch),
+ * GPIO_2 held high (the expander's RESET). A1 low port A, A0 low port B, all three antenna lines
+ * low the test oscillator, the Hi-Z on the tuner's AM input 1 below 30 MHz with the 50 ohm ports off.
+ * B0 the bias-T, B7 for B6 the broadcast notch (no DAB), A6 the reference output, the
+ * attenuator 0, 5, 11, 15 or 20 dB */
+static tres_t t_plan_rsp2 (void)
+{
+    static const struct { uint32_t hz; int ant, bias, notch, att; uint32_t flags; int word; } want[] = {
+        {   5000000, MIRISDR_ANTENNA_A, 0, 0, 0, 0, 0xBBC5 },    /* 12 MHz low pass */
+        {  11900000, MIRISDR_ANTENNA_A, 0, 0, 0, 0, 0xBBC5 },
+        {  12000000, MIRISDR_ANTENNA_A, 0, 0, 0, 0, 0xBBE5 },    /* 12-30 */
+        {  40000000, MIRISDR_ANTENNA_A, 0, 0, 0, 0, 0xBBD5 },    /* 30-60 */
+        { 100000000, MIRISDR_ANTENNA_A, 0, 0, 0, 0, 0xBBDD },    /* VHF */
+        { 150000000, MIRISDR_ANTENNA_A, 0, 0, 0, 0, 0xBBFD },    /* band III */
+        { 270000000, MIRISDR_ANTENNA_A, 0, 0, 0, 0, 0xBBF5 },    /* 250-300 */
+        { 314000000, MIRISDR_ANTENNA_A, 0, 0, 0, 0, 0xBBF5 },    /*   up to 315 MHz */
+        { 315000000, MIRISDR_ANTENNA_A, 0, 0, 0, 0, 0xBBCD },    /* 300-380 */
+        { 409000000, MIRISDR_ANTENNA_A, 0, 0, 0, 0, 0xBBCD },    /* 300-380, up to 410 MHz */
+        { 410000000, MIRISDR_ANTENNA_A, 0, 0, 0, 0, 0xBBED },    /* 380-420 */
+        { 600000000, MIRISDR_ANTENNA_A, 0, 0, 0, 0, 0xBBDD },    /* band IV/V */
+        {1400000000, MIRISDR_ANTENNA_A, 0, 0, 0, 0, 0xBBFD },    /* L band */
+        { 100000000, MIRISDR_ANTENNA_B, 0, 0, 0, 0, 0xBBDE },
+        { 100000000, MIRISDR_ANTENNA_TEST, 0, 0, 0, 0, 0xBBD8 },
+        {  10000000, MIRISDR_ANTENNA_C, 0, 0, 0, 0, 0xBBC4 },    /* the Hi-Z: the 50 ohm ports off */
+        { 100000000, MIRISDR_ANTENNA_B, 1, 0, 0, 0, 0xBADE },
+        { 100000000, MIRISDR_ANTENNA_A, 0, MIRISDR_NOTCH_FM, 0, 0, 0x7BDD },
+        {   1000000, MIRISDR_ANTENNA_A, 0, MIRISDR_NOTCH_MW, 0, 0, 0x7BC5 },
+        { 100000000, MIRISDR_ANTENNA_A, 0, 0, 5, 0, 0xBFDD },
+        { 100000000, MIRISDR_ANTENNA_A, 0, 0, 11, 0, 0xB7DD },
+        { 100000000, MIRISDR_ANTENNA_A, 0, 0, 15, 0, 0xA7DD },
+        { 100000000, MIRISDR_ANTENNA_A, 0, 0, 20, 0, 0x97DD },
+        { 100000000, MIRISDR_ANTENNA_A, 0, 0, 0, MIRISDR_FRONTEND_REF_OUT, 0xBB9D },
+    };
+    mirisdr_dev_t *n;
+    mirisdr_tune_config_t c;
+    mirisdr_tune_result_t r;
+    unsigned i;
+    int w;
+
+    plan_bad = 0;
+
+    if (mirisdr_open_null(&n, "252_S16") < 0) { say("no null device"); return T_FAIL; }
+
+    mirisdr_tune_config_default(&c);
+    c.frequency = 100000000; c.frontend.antenna = MIRISDR_ANTENNA_TEST;
+    plan_tune(n, "antenna TEST on a plain board", &c, 0, &r);
+    mirisdr_set_hw_flavour(n, MIRISDR_HW_RSPDXR2);
+    plan_tune(n, "antenna TEST on the RSPdx-R2", &c, 0, &r);
+    if (mirisdr_set_hw_flavour(n, MIRISDR_HW_RSP2) < 0 || mirisdr_get_hw_flavour(n) != MIRISDR_HW_RSP2)
+    { plan_bad++; say("to the RSP2 refused"); }
+
+    for (i = 0; i < sizeof want / sizeof want[0]; i++)
+    {
+        mirisdr_tune_config_default(&c);
+        c.frequency = want[i].hz;
+        c.frontend.antenna = want[i].ant;
+        c.frontend.bias = want[i].bias;
+        c.frontend.notch = want[i].notch;
+        c.frontend.attenuator = want[i].att;
+        c.frontend.flags = want[i].flags;
+        c.strict = 1;
+        w = plan_exp_word(n, &c);
+        if (w != want[i].word)
+        { plan_bad++; say("RSP2 %u Hz, antenna %d, bias %d, notch %x, %d dB, flags %x: word %04X, not %04X", want[i].hz, want[i].ant,
+                          want[i].bias, want[i].notch, want[i].att, want[i].flags, w, want[i].word); }
+    }
+
+    /* the Hi-Z on AM1 and only below 30 MHz, without the attenuator; no DAB notch; the
+       attenuator's steps strict, else the nearest; GPIO_2 high */
+    mirisdr_tune_config_default(&c);
+    c.frequency = 10000000; c.frontend.antenna = MIRISDR_ANTENNA_C;
+    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.band != MIRISDR_BAND_AM1) { plan_bad++; say("RSP2 Hi-Z at 10 MHz: band %d", r.band); }
+    c.frequency = 40000000;
+    plan_tune(n, "RSP2 Hi-Z at 40 MHz", &c, 0, &r);
+    c.frequency = 10000000; c.frontend.attenuator = 5; c.strict = 1;
+    plan_tune(n, "RSP2 Hi-Z with 5 dB, strict", &c, 0, &r);
+    mirisdr_tune_config_default(&c);
+    c.frequency = 200000000; c.frontend.notch = MIRISDR_NOTCH_DAB;
+    plan_tune(n, "RSP2 DAB notch", &c, 0, &r);
+    c.frontend.notch = 0; c.frontend.attenuator = 6; c.strict = 1;
+    plan_tune(n, "RSP2 6 dB, strict", &c, 0, &r);
+    c.strict = 0;
+    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.frontend.attenuator != 5) { plan_bad++; say("RSP2 6 dB snapped to %d", r.frontend.attenuator); }
+    c.frontend.attenuator = 0;
+    if (mirisdr_tune(n, 0, &c, &r) < 0) { plan_bad++; say("RSP2 at 200 MHz refused"); }
+    plan_raw_want("RSP2", &r, MIRISDR_FRONTEND_RAW_GPIO | MIRISDR_FRONTEND_RAW_EXP1, 0xE, 0xE, 0xBBFD, 0);
+
+    /* the Hi-Z (C) is not kept on another board: A there */
+    c.frequency = 10000000; c.frontend.antenna = MIRISDR_ANTENNA_C;
+    if (mirisdr_tune(n, 0, &c, &r) < 0 || mirisdr_get_antenna(n) != MIRISDR_ANTENNA_C) { plan_bad++; say("RSP2 Hi-Z not in force"); }
+    mirisdr_set_hw_flavour(n, MIRISDR_HW_RSPDXR2);
+    if (mirisdr_get_antenna(n) != MIRISDR_ANTENNA_A) { plan_bad++; say("RSP2 Hi-Z kept on the RSPdx-R2 as %d", mirisdr_get_antenna(n)); }
+
+    mirisdr_close(n);
+    if (!plan_bad) say("the plan's words from 5 MHz to 1.4 GHz, ports A, B, TEST and the Hi-Z, bias-T, notches, attenuator and reference output bits, GPIO_2 high");
+    return plan_bad ? T_FAIL : T_PASS;
+}
+
 /* What each board's front end has, as mirisdr_get_frontend_caps() lists it */
 static tres_t t_plan_caps (void)
 {
@@ -4756,6 +4854,7 @@ static tres_t t_plan_caps (void)
         { MIRISDR_HW_RSPDUO,  0, 7, 0x3, MIRISDR_ANTENNA_HIZ, 0, 0, 55000000, 25, 4, 19, MIRISDR_FRONTEND_PORT_TIE | MIRISDR_FRONTEND_REF_OUT, 0x7 },
         { MIRISDR_HW_RSPDUO,  1, 7, 0x1, -1, 1, 0, 55000000, 25, 4, 19, MIRISDR_FRONTEND_PORT_TIE | MIRISDR_FRONTEND_REF_OUT, 0x7 },
         { MIRISDR_HW_MIRICSTV,   0, 0, 0x1, -1, 0, 0, 0, 0, 1, 0, 0, 0x1 },
+        { MIRISDR_HW_RSP2,    0, 5, 0xF, MIRISDR_ANTENNA_C, 1, 0, 0, 0, 5, 20, MIRISDR_FRONTEND_REF_OUT, 0x3 },
     };
     mirisdr_dev_t *n;
     mirisdr_frontend_caps_t c;
@@ -7154,6 +7253,7 @@ static const struct {
     { "plan",     "stream following the tune",  t_plan_follow         },
     { "plan",     "frontend with the tune",     t_plan_frontend       },
     { "plan",     "RSPdx-R2 front end",         t_plan_dxr2           },
+    { "plan",     "RSP2 front end",             t_plan_rsp2           },
     { "plan",     "front end caps",             t_plan_caps           },
     { "plan",     "Mirics TV plan",             t_plan_miricstv       },
     { "plan",     "raw front end words",        t_plan_raw            },

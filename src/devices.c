@@ -18,7 +18,7 @@
 static mirisdr_device_t mirisdr_devices[] = {
     { 0x1df7, 0x2500, "Mirics MSi2500 default (e.g. VTX3D card, SDRplay RSP1)", "Mirics", "MSi2500", MIRISDR_HW_DEFAULT},
     { 0x1df7, 0x3000, "SDRplay RSP1A", "SDRPlay", "RSP1A", MIRISDR_HW_DEFAULT},
-    { 0x1df7, 0x3010, "SDRplay RSP2/RSP2pro", "SDRPlay", "RSP2", MIRISDR_HW_DEFAULT},
+    { 0x1df7, 0x3010, "SDRplay RSP2/RSP2pro", "SDRPlay", "RSP2", MIRISDR_HW_RSP2},
     { 0x1df7, 0x3050, "SDRplay RSP1B", "SDRPlay", "RSP1B", MIRISDR_HW_RSP1B},
     { 0x1df7, 0x3060, "SDRplay RSPdx-R2", "SDRPlay", "RSPdxR2", MIRISDR_HW_RSPDXR2},
     { 0x1df7, 0x3020, "SDRplay RSPduo", "SDRPlay", "RSPduo", MIRISDR_HW_RSPDUO},
@@ -47,7 +47,8 @@ int mirisdr_device_known (uint16_t vid, uint16_t pid) {
 #define MIRISDR_OWN_PID         0x158c
 #define MIRISDR_OWN_RSP1B       "B-"    /* our ids hide the board: an RSP1B serial starts so, */
 #define MIRISDR_OWN_RSPDXR2     "C-"    /* an RSPdx-R2's so, */
-#define MIRISDR_OWN_RSPDUO      "D-"    /* an RSPduo's so */
+#define MIRISDR_OWN_RSPDUO      "D-"    /* an RSPduo's so, */
+#define MIRISDR_OWN_RSP2        "E-"    /* an RSP2's so */
 
 /* the board behind an open handle, by its VID:PID, and under our own ids by the serial */
 static int mirisdr_flavour_of (libusb_device_handle *dh)
@@ -64,6 +65,7 @@ static int mirisdr_flavour_of (libusb_device_handle *dh)
         if (!memcmp(serial, MIRISDR_OWN_RSP1B, 2)) return MIRISDR_HW_RSP1B;
         if (!memcmp(serial, MIRISDR_OWN_RSPDXR2, 2)) return MIRISDR_HW_RSPDXR2;
         if (!memcmp(serial, MIRISDR_OWN_RSPDUO, 2)) return MIRISDR_HW_RSPDUO;
+        if (!memcmp(serial, MIRISDR_OWN_RSP2, 2)) return MIRISDR_HW_RSP2;
     }
 
     d = mirisdr_device_get(dd.idVendor, dd.idProduct);
