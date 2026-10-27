@@ -23,6 +23,9 @@ typedef struct mirisdr_device {
     const char          *manufacturer;
     const char          *product;
     int                 flavour;        /* mirisdr_hw_flavour_t picked by MIRISDR_HW_AUTO */
+    int                 self_powered;   /* the power the firmware declares: self powered, */
+    int                 max_ma;         /* and what it takes from VBUS, mA. Both 0 keeps the
+                                           image's own, bus powered at 500 mA */
 } mirisdr_device_t;
 
 /* the lock on the transfers, recursive: a stop holds it while it frees and allocates them

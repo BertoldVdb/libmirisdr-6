@@ -326,6 +326,7 @@ static const char *own_prefix (uint16_t vid, uint16_t pid)
     if (pid == 0x3060) return "C-";
     if (pid == 0x3020) return "D-";
     if (pid == 0x3010) return "E-";
+    if (pid == 0x3040) return "F-";
 
     return NULL;
 }
@@ -353,7 +354,7 @@ static int ee_serial (const uint8_t *ee, int ee_len, char *out, int len)
 static int patch (uint8_t *img, long len, long vid, long pid, const char *serial,
                   const uint8_t *ee, int ee_len)
 {
-    mirisdr_fw_patch_t p, has;
+    mirisdr_fw_patch_t p, has, board;
     uint16_t dvid, dpid;
     char now[256];
     const char *pre;
@@ -418,6 +419,19 @@ static int patch (uint8_t *img, long len, long vid, long pid, const char *serial
         p.fields|= MIRISDR_FW_PATCH_SERIAL;
     }
 
+    /* the board's power, whatever the ids, as the library gives it when it loads the image */
+    if (!mirisdr_fw_board(dev, &board) && (board.fields & MIRISDR_FW_PATCH_POWER))
+    {
+        if (mirisdr_fw_get(img, (uint32_t) len, &has) || !(has.fields & MIRISDR_FW_PATCH_POWER))
+            fprintf(stderr, "  note: the image has no place for the board's power, so it keeps its own\n");
+        else
+        {
+            p.fields|= MIRISDR_FW_PATCH_POWER;
+            p.self_powered = board.self_powered;
+            p.max_ma = board.max_ma;
+        }
+    }
+
     if (mirisdr_fw_patch(img, (uint32_t) len, &p) || mirisdr_fw_get(img, (uint32_t) len, &has))
     {
         fprintf(stderr, "the image could not be patched\n");
@@ -425,7 +439,10 @@ static int patch (uint8_t *img, long len, long vid, long pid, const char *serial
         return -1;
     }
 
-    printf("  the image will enumerate as %04x:%04x, serial \"%s\"\n", has.vid, has.pid, has.serial);
+    printf("  the image will enumerate as %04x:%04x, serial \"%s\"", has.vid, has.pid, has.serial);
+    if (has.fields & MIRISDR_FW_PATCH_POWER)
+        printf(", %s powered, %d mA from VBUS", has.self_powered ? "self" : "bus", has.max_ma);
+    printf("\n");
 
     /* under our own ids the library tells an SDRplay board by its serial's prefix */
     if ((has.vid == OWN_VID) && (has.pid == OWN_PID) && (pre = own_prefix(dvid, dpid))

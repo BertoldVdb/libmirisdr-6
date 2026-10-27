@@ -1,7 +1,7 @@
 LibMiriSDR-6
 ============
 
-A library and tools for receivers built on the Mirics MSi2500 and MSi001 chips, such as the SDRplay RSP1, RSP1B, RSP2, RSPdx-R2 and RSPduo.
+A library and tools for receivers built on the Mirics MSi2500 and MSi001 chips, such as the SDRplay RSP1, RSP1B, RSP2, RSPdx-R2, nRSP-ST and RSPduo.
 
 This is another flavour of libmirisdr, started from the original libmirisdr-2 by Miroslav Slugeň, with additions by Leif Åsbrink SM5BSZ in libmirisdr-3-bsz and by Edouard Griffiths (f4exb) in libmirisdr-4, and by Erik Bročko  in libmirisdr-5.
 
@@ -11,7 +11,7 @@ This library is an API compatible drop-in replacement for libmirisdr-5, it only 
 
 <h3>For users</h3>
 
-  - **SDRplay RSP1B and RSPdx-R2 support.** Filters, notches, bias-T, the amplifier (in the gain) and pads, and the RSPdx-R2's three antenna inputs and direct sampling below 2 MHz.
+  - **SDRplay RSP1B, RSPdx-R2 and nRSP-ST support.** Filters, notches, bias-T, the amplifier (in the gain) and pads, and the RSPdx-R2's three antenna inputs and direct sampling below 2 MHz.
   - **SDRplay RSP2 support.** Filters, notches, bias-T, attenuator, the reference output, ports A and B, the Hi-Z input, and the board's test oscillator as an antenna.
   - **SDRplay RSPduo support.** Both tuners, alone or together (a low IF each, delivered as two labelled streams or two SoapySDR channels). Each tuner's filters, notches, amplifier (in the gain) and pads, the bias-T, the Hi-Z input, the tie that feeds both tuners from one port, and the reference output.
   - **A SoapySDR module.** Programs that use SoapySDR can use the receivers with `driver=mirisdr`. With `report=true` it logs what the receiver runs after each change: the rate, the IF, the NCO, direct sampling and more.
@@ -35,12 +35,13 @@ This library is an API compatible drop-in replacement for libmirisdr-5, it only 
 <h3>Tools</h3>
 
   - `miri_test` checks the receiver and the library for many known problems.
-  - `miri_eeprom` reads, writes and backs up the EEPROM. It can also put the firmware there, with a USB id and serial of your choice. See the SoapySDR guide before you do this.
+  - `miri_eeprom` reads, writes and backs up the EEPROM. It can also put the firmware there, with a USB id and serial of your choice. See [Firmware in the EEPROM](doc/eeprom.md) before you do this.
   
 <h2>Documentation</h2>
 
   - [Using the receivers with SoapySDR](doc/soapysdr.md): for SDR++, GQRX, CubicSDR, GNU Radio and other programs. Sample rates, filters, gain, settings and the device string.
   - [The C API](doc/c-api.md): for your own programs. Opening, tuning, streaming, baseband output, time stamps and scanning.
+  - [Firmware in the EEPROM](doc/eeprom.md): a serial from the moment the receiver is plugged in. Backing up the EEPROM, writing the firmware and the serials of SDRplay boards.
   - [The firmware](https://github.com/BertoldVdb/msi2500-pps): the source of the firmware the library loads into the receiver.
   
 <h2>Building</h2>

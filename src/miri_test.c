@@ -4617,14 +4617,14 @@ static tres_t t_plan_dxr2 (void)
     if ((w = plan_exp_word(n, &c)) != 0x3DFB) { plan_bad++; say("401 kHz, 200 kHz wide: word %04X, not 3DFB", w); }
     c.if_freq = 0; c.bandwidth = 0;
 
-    /* HF: the 2 MHz low pass to 1.7 MHz, 2-12 up to 13 MHz, then 12-30, A5 released (no
-       amplifier there, port A's A2 low). At 344 and 345 MHz a total of 60 takes the
+    /* HF: the 2 MHz low pass to 1.7 MHz, 2-12 up to 12.5 MHz, then 12-30, A5 released (no
+       amplifier there, port A's A2 low). At 349 and 350 MHz a total of 60 takes the
        amplifier, A5 low */
     {
         static const struct { uint32_t hz; uint16_t word; } hf[] = {
-            { 1699000, 0x3DFB }, { 1700000, 0x3CFB }, { 12500000, 0x3CFB }, { 13000000, 0x3EFB }, { 17000000, 0x3EFB }, { 21000000, 0x3EFB },
+            { 1699000, 0x3DFB }, { 1700000, 0x3CFB }, { 12499000, 0x3CFB }, { 12500000, 0x3EFB }, { 17000000, 0x3EFB }, { 21000000, 0x3EFB },
             { 25900000, 0x3EFB }, { 29900000, 0x3EFB },
-            { 344000000, 0x3C5B }, { 345000000, 0x3E5B },          /* the 380-420 filter from 345 MHz */
+            { 349000000, 0x3C5B }, { 350000000, 0x3E5B },          /* the 380-420 filter from 350 MHz */
         };
         mirisdr_tune_config_default(&c);
         c.gain.mode = MIRISDR_GAIN_TOTAL; c.gain.total = 60;
@@ -7180,9 +7180,43 @@ static tres_t t_reg_fw_patch (void)
     pt.fields = 1u << 5;
     REG_CHECK(mirisdr_fw_patch(img, size, &pt) < 0, "an unknown field accepted");
 
+    /* the power: bus powered at 500 mA as built, self powered at 10 mA patched into both
+       configurations, more than 500 mA refused */
+    {
+        uint32_t hs, fs;
+
+        memset(&pt, 0, sizeof pt);
+        REG_CHECK((mirisdr_fw_get(img, size, &pt) == 0) && (pt.fields & MIRISDR_FW_PATCH_POWER)
+                  && !pt.self_powered && (pt.max_ma == 500), "the built image is not bus powered at 500 mA");
+        memset(&pt, 0, sizeof pt);
+        pt.fields = MIRISDR_FW_PATCH_POWER;
+        pt.self_powered = 1;
+        pt.max_ma = 10;
+        REG_CHECK(mirisdr_fw_patch(img, size, &pt) == 0, "self powered at 10 mA refused");
+        memset(&pt, 0, sizeof pt);
+        mirisdr_fw_get(img, size, &pt);
+        REG_CHECK(pt.self_powered && (pt.max_ma == 10), "self powered at 10 mA did not read back");
+        hs = img[MIRISDR_FW_BLOCK + 20] | ((uint32_t) img[MIRISDR_FW_BLOCK + 21] << 8);
+        fs = hs + (img[hs + 2] | ((uint32_t) img[hs + 3] << 8));
+        REG_CHECK((img[hs + 7] == 0xC0) && (img[hs + 8] == 5) && (img[fs + 7] == 0xC0) && (img[fs + 8] == 5),
+                  "both configurations not patched");
+        pt.fields = MIRISDR_FW_PATCH_POWER;
+        pt.max_ma = 502;
+        REG_CHECK(mirisdr_fw_patch(img, size, &pt) < 0, "502 mA accepted");
+
+        /* an image from before the block's length: no power to read or set */
+        img[MIRISDR_FW_BLOCK + 22] = 0;
+        memset(&pt, 0, sizeof pt);
+        mirisdr_fw_get(img, size, &pt);
+        REG_CHECK(!(pt.fields & MIRISDR_FW_PATCH_POWER), "power read from an image without the block's length");
+        pt.fields = MIRISDR_FW_PATCH_POWER;
+        pt.max_ma = 10;
+        REG_CHECK(mirisdr_fw_patch(img, size, &pt) < 0, "power set in an image without the block's length");
+    }
+
     free(img);
     free(orig);
-    if (!reg_bad) say("a patch is refused as a whole, unknown fields too");
+    if (!reg_bad) say("a patch is refused as a whole, unknown fields too; the power in both configurations, not in an older image");
     return reg_bad ? T_FAIL : T_PASS;
 }
 

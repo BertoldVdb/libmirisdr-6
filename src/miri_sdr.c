@@ -106,7 +106,7 @@ void usage(void)
 		"\t    0:       a plain MSi2500/MSi001 board, or SDRplay RSP1\n"
 		"\t    1:       the original libmirisdr's SDRplay plan (its board is not known)\n"
 		"\t    2:       SDRplay RSP1B\n"
-		"\t    3:       SDRplay RSPdx-R2\n"
+		"\t    3:       SDRplay RSPdx-R2 or nRSP-ST\n"
 		"\t    4:       SDRplay RSPduo\n"
 		"\t    5:       a TV stick on the Mirics TV reference design\n"
 		"\t    6:       SDRplay RSP2 or RSP2pro\n"

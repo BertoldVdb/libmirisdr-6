@@ -1,7 +1,7 @@
 Using libmirisdr receivers with SoapySDR
 ========================================
 
-The `mirisdr` SoapySDR module lets programs that use SoapySDR work with libmirisdr receivers. Examples are SDR++, CubicSDR, GQRX, GNU Radio and your own programs. It supports boards with the MSi2500 and MSi001 chips, such as the SDRplay RSP1, RSP1B, RSP2, RSPdx-R2 and RSPduo.
+The `mirisdr` SoapySDR module lets programs that use SoapySDR work with libmirisdr receivers. Examples are SDR++, CubicSDR, GQRX, GNU Radio and your own programs. It supports boards with the MSi2500 and MSi001 chips, such as the SDRplay RSP1, RSP1B, RSP2, RSPdx-R2, nRSP-ST and RSPduo. The nRSP-ST works as an RSPdx-R2.
 
 This guide explains how to install the module, how to pick it, and what each setting does.
 
@@ -64,33 +64,8 @@ After the first open the firmware keeps running until the receiver loses power. 
 
 Older versions listed the port as `serial=1:3`. That still finds the receiver, also once it reports its serial.
 
-To have a fixed serial from the moment it is plugged in, write the firmware into the receiver's EEPROM with a serial of its own. The receiver needs an EEPROM for this. Unplug it and plug it in again afterwards, so it starts from the new firmware. With more than one receiver plugged in, pick the one to write with `-d` and its index, for example `miri_eeprom -d 1 writefw ...`.
+To have a fixed serial from the moment it is plugged in, write the firmware into the receiver's EEPROM. [Firmware in the EEPROM](eeprom.md) explains how, and how to back up what is there first.
 
-**Make a backup of the EEPROM first.** Writing the firmware replaces the original data, and without the old contents you may not be able to easily go back to vendor software. Replug the receiver, so it runs from its ROM, and read the EEPROM before any program opens it:
-
-    miri_eeprom saferead backup.bin
-
-Keep `backup.bin` somewhere safe. `saferead` does no do anything with the receiver but dumping the EEPROM. To put the backup back later:
-
-    miri_eeprom write backup.bin
-
-The firmware shows up with libmirisdr-6's own USB ids, 16d0:158c. These ids do not say which board it is, so the library tells from the serial:
-
-  - **RSP1B**: the serial must be `B-` followed by the receiver's own 10 character SDRplay serial.
-
-        miri_eeprom writefw default -s B-1234567890
-
-  - **RSPdx-R2**: the same with `C-`.
-
-  - **RSPduo**: the same with `D-`.
-
-  - **RSP2**: the same with `E-`.
-
-  - **Other boards**: any serial of up to 12 characters works. `random` makes one up.
-
-        miri_eeprom writefw default -s random
-
-After replugging the USB VID:PID will change, which may require retriggering udev to get access to the device.
 
 <h3>Frequency</h3>
 
@@ -207,7 +182,7 @@ Programs show these as device settings. With SoapySDR's API they are `writeSetti
 | `mw_notch` | `true`, `false` | `false` | RSP1B, RSPdx-R2, RSPduo and RSP2 only. Notch for medium wave (0.4 to 1.6 MHz). |
 | `dab_notch` | `true`, `false` | `false` | RSP1B, RSPdx-R2 and RSPduo only. Notch for DAB (165 to 230 MHz). |
 | `ref_out` | `true`, `false` | `false` | RSPduo and RSP2 only. The board's 24 MHz clock out of its reference connector, for another receiver. |
-| `port_tie` | `true`, `false` | `false` | RSPduo only. Ties the two 50 ohm ports together, so both channels hear both, as from one antenna. It works at HF, 50 to 200 MHz and 600 to 900 MHz, and much less at 300 to 433 MHz and in L band. |
+| `port_tie` | `true`, `false` | `false` | RSPduo only. Ties the two 50 ohm ports together, so both channels hear both, as from one antenna. It works at HF, 50 to 200 MHz and 600 to 900 MHz, and much less at 300 to 433 MHz and in L band. Noise from the USB supply can reach both channels through it, strongest at HF. |
 | `direct_sampling` | `OFF`, `ON`, `AUTO` | `AUTO` | RSPdx-R2 only. Sample the antenna directly instead of through the tuner: `ON` whenever the frequency is 2 MHz or below, `AUTO` only where the whole band (the frequency plus half the rate) fits under 2 MHz. Otherwise the tuner is used as usual. `true` and `false` work as `ON` and `OFF`. The gain is then only the LNA, about 37 dB, on from a total of 19 dB. |
 
 A setting the receiver cannot do is refused and logged. The receiver keeps what it had, and the setting reads back as before. That includes a `format`, `transfer` or `decimation_bypass` that the current rate does not fit, for example the bypass at 2 Msps (it starts at 2.6) or `ISOC1` at 8 Msps: the module does not move the rate for a setting.

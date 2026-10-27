@@ -127,13 +127,16 @@ static hw_switch_freq_plan_t hw_switch_freq_plan_rsp1b[] = {
 #define DXR2_AMP_L      15
 #define DXR2_2_12_KHZ   1700    /* the 2-12 filter beats the 2 MHz low pass from 1.7 MHz: 1.4 dB at 1.85,
                                    6.2 at 1.99 (2026-10-17) */
-#define DXR2_380_420_KHZ 345000 /* the 380-420 filter beats the 300-380 one from 344 MHz, up to 1.4 dB
-                                   at 360 (2026-10-17) */
+#define DXR2_380_420_KHZ 350000 /* the 380-420 filter beats the 300-380 one from 344 MHz on the RSPdx-R2,
+                                   up to 1.4 dB at 360 (2026-10-17), from 357 MHz on the nRSP-ST, 2.1 dB
+                                   at 345 (2026-10-27). One unit each, so between the two */
+#define DXR2_12_30_KHZ  12500   /* the 12-30 filter beats the 2-12 one from 12.4 MHz on the RSPdx-R2 and
+                                   12.3 on the nRSP-ST: 1.8 and 1.1 dB at 12.75 (2026-10-27) */
 
 static hw_switch_freq_plan_t hw_switch_freq_plan_rspdxr2[] = {
         {0,       MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, DXR2_LPF2, 0, 0},
         {DXR2_2_12_KHZ, MIRISDR_MODE_AM, MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_2_12, 0, 0},
-        {13000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_12_30, 0, 0},
+        {DXR2_12_30_KHZ, MIRISDR_MODE_AM, MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1B_12_30, 0, 0},
         RSP1B_30_60_ROWS,
         {55000,   MIRISDR_MODE_VHF, 0, 0, 32, 0xea80, 0, RSP1B_VHF_B45, DXR2_AMP_VHF, 0},
         {108000,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1B_B3_L, DXR2_AMP_B3, 0},

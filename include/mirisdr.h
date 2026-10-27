@@ -39,7 +39,8 @@ typedef enum
 {
     MIRISDR_HW_AUTO = -1,       /* open config only: by VID:PID, else MIRISDR_HW_DEFAULT; under
                                    our own ids (16d0:158c) a serial starting "B-" is an RSP1B,
-                                   "C-" an RSPdx-R2, "D-" an RSPduo, "E-" an RSP2 */
+                                   "C-" an RSPdx-R2, "D-" an RSPduo, "E-" an RSP2,
+                                   "F-" an nRSP-ST (as an RSPdx-R2) */
     MIRISDR_HW_DEFAULT,         /* plain boards, the RSP1 */
     MIRISDR_HW_SDRPLAY,         /* the original libmirisdr's SDRplay plan, its board not known */
     MIRISDR_HW_RSP1B,           /* SDRplay RSP1B */
@@ -466,7 +467,9 @@ typedef struct mirisdr_frontend_raw
                                                    port's own chain loses 0-5 dB at HF, 3-10 dB
                                                    at 50-600 MHz, and the other tuner hears it within
                                                    5-10 dB at 50-200 and 600-900 MHz, much less at
-                                                   300-433 MHz and in L band */
+                                                   300-433 MHz and in L band. Its diodes' bias can
+                                                   bring noise from the USB supply in, strongest at
+                                                   HF (a comb every ~1.6 MHz from one laptop's) */
 #define MIRISDR_FRONTEND_REF_OUT    (1 << 1)    /* RSPduo and RSP2: the board's 24 MHz out of
                                                    its reference connector, for another board */
 
@@ -712,9 +715,11 @@ MIRISDR_API int mirisdr_get_gpio_inputs (mirisdr_dev_t *p); /* extra */
 
 /* mirisdr_fw_get() sets fields to what the image has, mirisdr_fw_patch() applies only
  * what is set. A serial is at most MIRISDR_FW_SERIAL_MAX characters. An empty one leaves
- * the image declaring none */
+ * the image declaring none. The power is in images from October 2026 on, which are bus
+ * powered at 500 mA as built */
 #define MIRISDR_FW_PATCH_IDS    (1u << 0)
 #define MIRISDR_FW_PATCH_SERIAL (1u << 1)
+#define MIRISDR_FW_PATCH_POWER  (1u << 2)
 
 typedef struct mirisdr_fw_patch
 {
@@ -722,11 +727,19 @@ typedef struct mirisdr_fw_patch
 	uint16_t       vid;
 	uint16_t       pid;
 	char           serial[MIRISDR_FW_SERIAL_MAX + 1];
+	int            self_powered;    /* MIRISDR_FW_PATCH_POWER: 1 self powered, 0 bus powered */
+	int            max_ma;          /* and what it takes from VBUS, 0 to 500 mA in 2 mA steps */
 	uint32_t reserved[MIRISDR_RESERVED_NESTED];
 } mirisdr_fw_patch_t;
 
 MIRISDR_API int mirisdr_fw_get (const uint8_t *image, uint32_t size, mirisdr_fw_patch_t *out); /* extra */
 MIRISDR_API int mirisdr_fw_patch (uint8_t *image, uint32_t size, const mirisdr_fw_patch_t *p); /* extra */
+
+/* What the board behind p needs in an image apart from its ids and serial: the power,
+ * MIRISDR_FW_PATCH_POWER, where the library knows the board's. fields 0 when the image's
+ * own will do.
+ * The library applies it when it loads its firmware, so a tool writing an image does too */
+MIRISDR_API int mirisdr_fw_board (mirisdr_dev_t *p, mirisdr_fw_patch_t *out); /* extra */
 
 /* Open a device with options, including the firmware it should be running.
  * The image comes from a buffer or from a path. The image can be patched

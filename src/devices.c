@@ -16,17 +16,18 @@
  */
 
 static mirisdr_device_t mirisdr_devices[] = {
-    { 0x1df7, 0x2500, "Mirics MSi2500 default (e.g. VTX3D card, SDRplay RSP1)", "Mirics", "MSi2500", MIRISDR_HW_DEFAULT},
-    { 0x1df7, 0x3000, "SDRplay RSP1A", "SDRPlay", "RSP1A", MIRISDR_HW_DEFAULT},
-    { 0x1df7, 0x3010, "SDRplay RSP2/RSP2pro", "SDRPlay", "RSP2", MIRISDR_HW_RSP2},
-    { 0x1df7, 0x3050, "SDRplay RSP1B", "SDRPlay", "RSP1B", MIRISDR_HW_RSP1B},
-    { 0x1df7, 0x3060, "SDRplay RSPdx-R2", "SDRPlay", "RSPdxR2", MIRISDR_HW_RSPDXR2},
-    { 0x1df7, 0x3020, "SDRplay RSPduo", "SDRPlay", "RSPduo", MIRISDR_HW_RSPDUO},
-    { 0x16d0, 0x158c, "BertoldVdb MSi2500 Acquisition Board", "BertoldVdb", "MSI2500-PPS", MIRISDR_HW_DEFAULT},
-    { 0x2040, 0xd300, "Hauppauge WinTV 133559 LF", "Hauppauge", "WinTV 133559 LF", MIRISDR_HW_MIRICSTV},
-    { 0x07ca, 0x8591, "AverMedia A859 Pure DVBT", "AverTV", "A859 Pure DVBT", MIRISDR_HW_MIRICSTV},
-    { 0x04bb, 0x0537, "IO-DATA GV-TV100 stick", "IO-DATA", "GV-TV100", MIRISDR_HW_MIRICSTV},
-    { 0x0511, 0x0037, "Logitec LDT-1S310U/J", "Logitec", "LDT-1S310U/J", MIRISDR_HW_MIRICSTV}
+    { 0x1df7, 0x2500, "Mirics MSi2500 default (e.g. VTX3D card, SDRplay RSP1)", "Mirics", "MSi2500", MIRISDR_HW_DEFAULT, 0, 0},
+    { 0x1df7, 0x3000, "SDRplay RSP1A", "SDRPlay", "RSP1A", MIRISDR_HW_DEFAULT, 0, 0},
+    { 0x1df7, 0x3010, "SDRplay RSP2/RSP2pro", "SDRPlay", "RSP2", MIRISDR_HW_RSP2, 0, 0},
+    { 0x1df7, 0x3050, "SDRplay RSP1B", "SDRPlay", "RSP1B", MIRISDR_HW_RSP1B, 0, 0},
+    { 0x1df7, 0x3060, "SDRplay RSPdx-R2", "SDRPlay", "RSPdxR2", MIRISDR_HW_RSPDXR2, 0, 0},
+    { 0x1df7, 0x3040, "SDRplay nRSP-ST", "SDRPlay", "nRSP-ST", MIRISDR_HW_RSPDXR2, 1, 10},
+    { 0x1df7, 0x3020, "SDRplay RSPduo", "SDRPlay", "RSPduo", MIRISDR_HW_RSPDUO, 0, 0},
+    { 0x16d0, 0x158c, "BertoldVdb MSi2500 Acquisition Board", "BertoldVdb", "MSI2500-PPS", MIRISDR_HW_DEFAULT, 0, 0},
+    { 0x2040, 0xd300, "Hauppauge WinTV 133559 LF", "Hauppauge", "WinTV 133559 LF", MIRISDR_HW_MIRICSTV, 0, 0},
+    { 0x07ca, 0x8591, "AverMedia A859 Pure DVBT", "AverTV", "A859 Pure DVBT", MIRISDR_HW_MIRICSTV, 0, 0},
+    { 0x04bb, 0x0537, "IO-DATA GV-TV100 stick", "IO-DATA", "GV-TV100", MIRISDR_HW_MIRICSTV, 0, 0},
+    { 0x0511, 0x0037, "Logitec LDT-1S310U/J", "Logitec", "LDT-1S310U/J", MIRISDR_HW_MIRICSTV, 0, 0}
 };
 
 static mirisdr_device_t *mirisdr_device_get (uint16_t vid, uint16_t pid) {
@@ -45,30 +46,53 @@ int mirisdr_device_known (uint16_t vid, uint16_t pid) {
 
 #define MIRISDR_OWN_VID         0x16d0
 #define MIRISDR_OWN_PID         0x158c
-#define MIRISDR_OWN_RSP1B       "B-"    /* our ids hide the board: an RSP1B serial starts so, */
-#define MIRISDR_OWN_RSPDXR2     "C-"    /* an RSPdx-R2's so, */
-#define MIRISDR_OWN_RSPDUO      "D-"    /* an RSPduo's so, */
-#define MIRISDR_OWN_RSP2        "E-"    /* an RSP2's so */
+/* our ids hide the board, so on an SDRplay the serial starts with its letter: the board's
+   own ids by that letter */
+static const struct { char prefix[3]; uint16_t pid; } mirisdr_own_boards[] = {
+    { "B-", 0x3050 },   /* RSP1B */
+    { "C-", 0x3060 },   /* RSPdx-R2 */
+    { "D-", 0x3020 },   /* RSPduo */
+    { "E-", 0x3010 },   /* RSP2 */
+    { "F-", 0x3040 },   /* nRSP-ST */
+};
 
-/* the board behind an open handle, by its VID:PID, and under our own ids by the serial */
-static int mirisdr_flavour_of (libusb_device_handle *dh)
+/* the table entry of the board behind these ids, under our own ids by the serial */
+static mirisdr_device_t *mirisdr_board_get (uint16_t vid, uint16_t pid, const char *serial)
 {
-    struct libusb_device_descriptor dd;
-    mirisdr_device_t *d;
-    unsigned char serial[MIRISDR_FW_SERIAL_MAX + 1];
+    size_t i;
 
-    if (libusb_get_device_descriptor(libusb_get_device(dh), &dd) < 0) return MIRISDR_HW_DEFAULT;
-
-    if ((dd.idVendor == MIRISDR_OWN_VID) && (dd.idProduct == MIRISDR_OWN_PID) && dd.iSerialNumber
-        && (libusb_get_string_descriptor_ascii(dh, dd.iSerialNumber, serial, sizeof serial) >= 2))
+    if ((vid == MIRISDR_OWN_VID) && (pid == MIRISDR_OWN_PID) && serial)
     {
-        if (!memcmp(serial, MIRISDR_OWN_RSP1B, 2)) return MIRISDR_HW_RSP1B;
-        if (!memcmp(serial, MIRISDR_OWN_RSPDXR2, 2)) return MIRISDR_HW_RSPDXR2;
-        if (!memcmp(serial, MIRISDR_OWN_RSPDUO, 2)) return MIRISDR_HW_RSPDUO;
-        if (!memcmp(serial, MIRISDR_OWN_RSP2, 2)) return MIRISDR_HW_RSP2;
+        for (i = 0; i < sizeof(mirisdr_own_boards) / sizeof(mirisdr_own_boards[0]); i++)
+        {
+            if (!strncmp(serial, mirisdr_own_boards[i].prefix, 2))
+                return mirisdr_device_get(0x1df7, mirisdr_own_boards[i].pid);
+        }
     }
 
-    d = mirisdr_device_get(dd.idVendor, dd.idProduct);
+    return mirisdr_device_get(vid, pid);
+}
+
+/* the board behind an open handle */
+static mirisdr_device_t *mirisdr_board_of (libusb_device_handle *dh)
+{
+    struct libusb_device_descriptor dd;
+    unsigned char serial[MIRISDR_FW_SERIAL_MAX + 1];
+
+    if (libusb_get_device_descriptor(libusb_get_device(dh), &dd) < 0) return NULL;
+
+    /* the serial only matters under our own ids */
+    serial[0] = 0;
+    if ((dd.idVendor == MIRISDR_OWN_VID) && (dd.idProduct == MIRISDR_OWN_PID) && dd.iSerialNumber
+        && (libusb_get_string_descriptor_ascii(dh, dd.iSerialNumber, serial, sizeof serial) < 2))
+        serial[0] = 0;
+
+    return mirisdr_board_get(dd.idVendor, dd.idProduct, (const char *) serial);
+}
+
+static int mirisdr_flavour_of (libusb_device_handle *dh)
+{
+    mirisdr_device_t *d = mirisdr_board_of(dh);
 
     return d ? d->flavour : MIRISDR_HW_DEFAULT;
 }

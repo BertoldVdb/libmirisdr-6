@@ -280,6 +280,67 @@ static int mirisdr_fw_set_ids (uint8_t *image, uint32_t size, uint16_t vid, uint
     return 0;
 }
 
+#define MIRISDR_FW_BLOCK_CONFIG 20      /* the configurations, high speed then full speed */
+#define MIRISDR_FW_BLOCK_LENGTH 22      /* the block's length, 0 in images from before it */
+#define MIRISDR_FW_MAX_MA       500
+
+/* The two configuration descriptors, where the power is. Only from an image whose block
+   reaches the pointer, as past its end an older image has code */
+static int mirisdr_fw_configs (const uint8_t *image, uint32_t size, uint32_t at[2])
+{
+    int i;
+
+    if ((size < MIRISDR_FW_BLOCK + MIRISDR_FW_BLOCK_LENGTH + 1)
+        || memcmp(image + MIRISDR_FW_BLOCK, "BVDB", 4)
+        || (image[MIRISDR_FW_BLOCK + MIRISDR_FW_BLOCK_LENGTH] < MIRISDR_FW_BLOCK_CONFIG + 2)) return -1;
+
+    at[0] = image[MIRISDR_FW_BLOCK + MIRISDR_FW_BLOCK_CONFIG]
+            | ((uint32_t) image[MIRISDR_FW_BLOCK + MIRISDR_FW_BLOCK_CONFIG + 1] << 8);
+
+    for (i = 0; i < 2; i++)
+    {
+        if (((uint64_t) at[i] + 9 > size) || (image[at[i]] != 9) || (image[at[i] + 1] != 2)) return -1;
+        if (!i) at[1] = at[0] + (image[at[0] + 2] | ((uint32_t) image[at[0] + 3] << 8));
+    }
+
+    return 0;
+}
+
+static int mirisdr_fw_get_power (const uint8_t *image, uint32_t size, int *self_powered, int *max_ma)
+{
+    uint32_t at[2];
+
+    if (mirisdr_fw_configs(image, size, at)) return -1;
+
+    *self_powered = (image[at[0] + 7] & 0x40) ? 1 : 0;
+    *max_ma = image[at[0] + 8] * 2;
+
+    return 0;
+}
+
+static int mirisdr_fw_set_power (uint8_t *image, uint32_t size, int self_powered, int max_ma)
+{
+    uint32_t at[2];
+    int i;
+
+    if ((max_ma < 0) || (max_ma > MIRISDR_FW_MAX_MA)) return -1;
+
+    if (mirisdr_fw_configs(image, size, at))
+    {
+        fprintf(stderr, "the firmware image does not say where its configuration is, its power cannot be set\n");
+
+        return -1;
+    }
+
+    for (i = 0; i < 2; i++)
+    {
+        image[at[i] + 7] = (uint8_t) ((image[at[i] + 7] & ~0x40) | (self_powered ? 0x40 : 0));
+        image[at[i] + 8] = (uint8_t) ((max_ma + 1) / 2);
+    }
+
+    return 0;
+}
+
 int mirisdr_fw_get (const uint8_t *image, uint32_t size, mirisdr_fw_patch_t *out)
 {
     if (!image || !out) return -1;
@@ -292,6 +353,9 @@ int mirisdr_fw_get (const uint8_t *image, uint32_t size, mirisdr_fw_patch_t *out
     if (mirisdr_fw_get_serial(image, size, out->serial, sizeof(out->serial)) >= 0)
         out->fields|= MIRISDR_FW_PATCH_SERIAL;
 
+    if (!mirisdr_fw_get_power(image, size, &out->self_powered, &out->max_ma))
+        out->fields|= MIRISDR_FW_PATCH_POWER;
+
     return out->fields ? 0 : -1;
 }
 
@@ -301,7 +365,7 @@ int mirisdr_fw_patch (uint8_t *image, uint32_t size, const mirisdr_fw_patch_t *p
     int r = -1;
 
     if (!image || !p || MIRISDR_RESERVED_SET(*p)) return -1;
-    if (p->fields & ~(MIRISDR_FW_PATCH_IDS | MIRISDR_FW_PATCH_SERIAL)) return -1;
+    if (p->fields & ~(MIRISDR_FW_PATCH_IDS | MIRISDR_FW_PATCH_SERIAL | MIRISDR_FW_PATCH_POWER)) return -1;
 
     /* on a copy, so a refused part leaves the image as it was */
     if (!(work = malloc(size ? size : 1))) return -1;
@@ -312,6 +376,9 @@ int mirisdr_fw_patch (uint8_t *image, uint32_t size, const mirisdr_fw_patch_t *p
 
     if ((p->fields & MIRISDR_FW_PATCH_SERIAL)
         && mirisdr_fw_set_serial(work, size, p->serial)) goto out;
+
+    if ((p->fields & MIRISDR_FW_PATCH_POWER)
+        && mirisdr_fw_set_power(work, size, p->self_powered, p->max_ma)) goto out;
 
     memcpy(image, work, size);
     r = 0;
@@ -386,9 +453,15 @@ static int mirisdr_fw_ids_wanted (mirisdr_dev_t *p, const mirisdr_open_config_t 
 
 #define MIRISDR_EE_IDS          0xB4    /* byte 0: the ROM takes ids from bytes 1-6 */
 #define MIRISDR_EE_SERIAL_AT    7       /* SDRplay keep the serial right behind them */
+#define MIRISDR_ROM_VID         0x1df7  /* the ROM's own ids, without an EEPROM */
+#define MIRISDR_ROM_PID         0x2500
 
-/* An RSP1B, RSPdx-R2 or RSPduo on its own ids running the ROM declares no serial, but its EEPROM
-   holds one behind the ids. Not when byte 0 says microcode follows instead. */
+/* The ROM takes the ids from the EEPROM but not the serial behind them, so a board on its
+   own ids declares none, though the EEPROM holds one (SDRplay boards and Mirics TV sticks
+   keep it behind the ids). Only where an EEPROM is sure, since without one the read reaches
+   the tuner: the ROM on ids other than its own took them from one. Under our firmware the
+   ids may be ones we set, so there only the boards known to have one (the expander boards
+   and the Mirics TV sticks). Not when byte 0 says microcode follows instead. */
 static int mirisdr_fw_ee_serial (mirisdr_dev_t *p, char *out, int len)
 {
     uint8_t b[MIRISDR_FW_SERIAL_MAX + 1];      /* one more, to see a longer one */
@@ -397,12 +470,17 @@ static int mirisdr_fw_ee_serial (mirisdr_dev_t *p, char *out, int len)
     int n;
 
     if (mirisdr_fw_ids_of(p, &vid, &pid) < 0) return 0;
-    if (!(d = mirisdr_device_get(vid, pid)) || !MIRISDR_HW_EXPANDER(d->flavour)) return 0;
+    if (!p->fw_ours)
+    {
+        if ((vid == MIRISDR_ROM_VID) && (pid == MIRISDR_ROM_PID)) return 0;
+    }
+    else if (!(d = mirisdr_device_get(vid, pid)) ||
+             (!MIRISDR_HW_EXPANDER(d->flavour) && (d->flavour != MIRISDR_HW_MIRICSTV))) return 0;
 
     if ((mirisdr_read_eeprom(p, 0, b, 1) < 0) || (b[0] != MIRISDR_EE_IDS)) return 0;
     if (mirisdr_read_eeprom(p, MIRISDR_EE_SERIAL_AT, b, sizeof b) < 0) return 0;
 
-    /* printable up to the first byte that is not, 0xFF on the RSP1B and RSPdx-R2. One
+    /* printable up to the first byte that is not, 0xFF on the RSP1B, RSPdx-R2 and WinTV. One
        longer than the image takes is not cut short: the image keeps its own */
     for (n = 0; (n < (int) sizeof b) && (b[n] >= 0x20) && (b[n] < 0x7F); n++);
     if (!n || (n > MIRISDR_FW_SERIAL_MAX) || (n >= len)) return 0;
@@ -414,8 +492,8 @@ static int mirisdr_fw_ee_serial (mirisdr_dev_t *p, char *out, int len)
 }
 
 /* The same three ways the ids are chosen, since a serial is part of the identity
-   the image carries. Read before any reboot: the ROM declares none, so an SDRplay's
-   comes from its EEPROM. */
+   the image carries. Read before any reboot: the ROM declares none, so an SDRplay's or
+   a Mirics TV stick's comes from its EEPROM. */
 static int mirisdr_fw_serial_wanted (mirisdr_dev_t *p, const mirisdr_open_config_t *cfg,
                                      const uint8_t *image, uint32_t size, char *out, int len)
 {
@@ -472,6 +550,62 @@ static int mirisdr_fw_ids_ok (mirisdr_dev_t *p, int have, uint16_t vid, uint16_t
     return (now_vid == vid) && (now_pid == pid);
 }
 
+int mirisdr_fw_board (mirisdr_dev_t *p, mirisdr_fw_patch_t *out)
+{
+    mirisdr_device_t *d;
+
+    if (!p || !out) return -1;
+
+    memset(out, 0, sizeof(*out));
+
+    if ((d = mirisdr_board_of(p->dh)) && (d->self_powered || d->max_ma))
+    {
+        out->fields = MIRISDR_FW_PATCH_POWER;
+        out->self_powered = d->self_powered;
+        out->max_ma = d->max_ma;
+    }
+
+    return 0;
+}
+
+/* The power is the board's, not part of the identity: from the device as found whatever
+   the ids, unless the config sets it. An image with no place for it loads as it is */
+static int mirisdr_fw_power_wanted (mirisdr_dev_t *p, const mirisdr_open_config_t *cfg,
+                                    const uint8_t *image, uint32_t size, mirisdr_fw_patch_t *out)
+{
+    uint32_t at[2];
+
+    if ((cfg->firmware_ids == MIRISDR_FW_IDS_SET) && (cfg->firmware_patch.fields & MIRISDR_FW_PATCH_POWER))
+        *out = cfg->firmware_patch;
+    else if (mirisdr_fw_board(p, out) || !(out->fields & MIRISDR_FW_PATCH_POWER))
+        return 0;
+
+    if (mirisdr_fw_configs(image, size, at))
+    {
+        fprintf(stderr, "libmirisdr: the image has no place for the board's power, so it keeps "
+                        "its own\n");
+        return 0;
+    }
+
+    return 1;
+}
+
+/* what the device declares now against what the image was patched with */
+static int mirisdr_fw_power_ok (mirisdr_dev_t *p, int have, const mirisdr_fw_patch_t *want)
+{
+    struct libusb_config_descriptor *cd;
+    int ok;
+
+    if (!have) return 1;
+    if (libusb_get_active_config_descriptor(libusb_get_device(p->dh), &cd) < 0) return 0;
+
+    ok = (((cd->bmAttributes & 0x40) != 0) == (want->self_powered != 0))
+         && (cd->MaxPower == (want->max_ma + 1) / 2);
+    libusb_free_config_descriptor(cd);
+
+    return ok;
+}
+
 /* by index, or by serial and port, see mirisdr_pick() */
 static int mirisdr_fw_open (mirisdr_dev_t **dev, const mirisdr_open_config_t *cfg, uint32_t at,
                             const char *serial, const char *usb_port)
@@ -512,9 +646,10 @@ static struct {
     int stage;
     /* the identity the load gives it, worked out before the reboots: past the EEPROM the
        ROM declares only its own */
-    int have_ids, have_serial;
+    int have_ids, have_serial, have_power;
     uint16_t vid, pid;
     char want[MIRISDR_FW_SERIAL_MAX + 1];
+    mirisdr_fw_patch_t power;
 } mirisdr_fd_note;
 
 static int mirisdr_fd_stage (mirisdr_dev_t *dev)
@@ -568,7 +703,8 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
     uint32_t index, size, at;
     uint16_t vid = 0, pid = 0;
     char serial[MIRISDR_FW_SERIAL_MAX + 1] = "";
-    int have_ids = 0, have_serial = 0;
+    mirisdr_fw_patch_t power;
+    int have_ids = 0, have_serial = 0, have_power = 0;
     int from_rom, fd_stage;
     int r = -1;
 
@@ -646,11 +782,14 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
         if ((have_serial = mirisdr_fw_serial_wanted(dev, cfg, work, size, serial,
                                                     sizeof(serial))) < 0) goto out;
         if (have_serial && (mirisdr_fw_set_serial(work, size, serial) < 0)) goto out;
+
+        if ((have_power = mirisdr_fw_power_wanted(dev, cfg, work, size, &power))
+            && (mirisdr_fw_set_power(work, size, power.self_powered, power.max_ma) < 0)) goto out;
     }
 
     if (cfg->keep_running || !image || !size
         || (mirisdr_fw_running(dev, work, size) && mirisdr_fw_ids_ok(dev, have_ids, vid, pid)
-            && mirisdr_fw_serial_ok(dev, have_serial, serial)))
+            && mirisdr_fw_serial_ok(dev, have_serial, serial) && mirisdr_fw_power_ok(dev, have_power, &power)))
     {
         *out = dev;
         dev = NULL;
@@ -681,8 +820,11 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
             pid = mirisdr_fd_note.pid;
             have_serial = mirisdr_fd_note.have_serial;
             snprintf(serial, sizeof serial, "%s", mirisdr_fd_note.want);
+            have_power = mirisdr_fd_note.have_power;
+            power = mirisdr_fd_note.power;
             if (have_ids && (mirisdr_fw_set_ids(work, size, vid, pid) < 0)) goto out;
             if (have_serial && (mirisdr_fw_set_serial(work, size, serial) < 0)) goto out;
+            if (have_power && (mirisdr_fw_set_power(work, size, power.self_powered, power.max_ma) < 0)) goto out;
         }
         mirisdr_fd_mark(dev, 0);
     }
@@ -693,6 +835,8 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
         mirisdr_fd_note.pid = pid;
         mirisdr_fd_note.have_serial = have_serial;
         snprintf(mirisdr_fd_note.want, sizeof mirisdr_fd_note.want, "%s", have_serial ? serial : "");
+        mirisdr_fd_note.have_power = have_power;
+        if (have_power) mirisdr_fd_note.power = power;
     }
 
     if ((from_rom == 0) && (fd_stage == 2))
@@ -786,7 +930,7 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
     if ((r = mirisdr_fw_recycle(&dev, cfg, &path, &at, index))) goto out;
 
     if (mirisdr_fw_running(dev, work, size) && mirisdr_fw_ids_ok(dev, have_ids, vid, pid)
-            && mirisdr_fw_serial_ok(dev, have_serial, serial))
+            && mirisdr_fw_serial_ok(dev, have_serial, serial) && mirisdr_fw_power_ok(dev, have_power, &power))
     {
         *out = dev;
         dev = NULL;

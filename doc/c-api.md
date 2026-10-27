@@ -170,7 +170,7 @@ The older `mirisdr_set_center_freq()` sets the LO directly. It switches `low_if_
 
 <h4>The front end</h4>
 
-`tc.frontend` holds what sits before the tuner. It goes out with the tune, in the same request.
+`tc.frontend` holds what sits before the tuner. It goes out with the tune, in the same request. The nRSP-ST has the RSPdx-R2's front end, so what this section says of the RSPdx-R2 holds for it too.
 
   - `bias`: the bias-T, which powers the antenna input. On the RSPdx-R2 and RSP2 it powers port B. On the RSPduo it powers the port marked tuner 2, so only tuner 1 takes it.
   - `notch`: notch filters, on the RSP1B, RSPdx-R2, RSPduo and RSP2 only. `MIRISDR_NOTCH_FM` covers 85 to 100 MHz, `MIRISDR_NOTCH_MW` medium wave from 0.4 to 1.6 MHz, and `MIRISDR_NOTCH_DAB` 165 to 230 MHz. Combine them with `|`. The FM and MW notches share a switch. The RSP2 has no DAB notch.
@@ -180,7 +180,7 @@ The older `mirisdr_set_center_freq()` sets the LO directly. It switches `low_if_
     - RSPdx-R2: 3 to 36 dB in 3 dB steps. Its four pads are in series, so they add: within 1 dB of the step up to 900 MHz. At 1.5 GHz the larger steps give less, 31 dB at most.
     - RSP2: 5, 11, 15 or 20 dB, flat within 2 to 4 dB from 2 to 250 MHz. Below 1 MHz they give 2 to 5 dB less. Its Hi-Z input does not pass through them.
   - `flags`: the board's switches, a bit for each that is on. A flag the board does not have is refused. They belong to the board, not to a tuner: a tune of either tuner sets them for both, and both tuners' configs and results then show them, the last tune's winning. `mirisdr_set_frontend_flags()` changes them alone.
-    - `MIRISDR_FRONTEND_PORT_TIE`, RSPduo only: ties the two 50 ohm ports together, so both tuners hear both, as from one antenna. It works at HF, 50 to 200 MHz and 600 to 900 MHz, where the other tuner hears a port within 5 to 10 dB of its own tuner. It works much less at 300 to 433 MHz and in L band. The port's own tuner loses 0 to 5 dB at HF and 3 to 10 dB at 50 to 600 MHz.
+    - `MIRISDR_FRONTEND_PORT_TIE`, RSPduo only: ties the two 50 ohm ports together, so both tuners hear both, as from one antenna. It works at HF, 50 to 200 MHz and 600 to 900 MHz, where the other tuner hears a port within 5 to 10 dB of its own tuner. It works much less at 300 to 433 MHz and in L band. The port's own tuner loses 0 to 5 dB at HF and 3 to 10 dB at 50 to 600 MHz. The tie's diodes are biased from the board's supply, so noise from the USB supply can reach both tuners through it, strongest at HF: from one laptop it was a comb every 1.6 MHz, up to 75 dB over the floor at HF.
     - `MIRISDR_FRONTEND_REF_OUT`, RSPduo and RSP2: the board's 24 MHz clock out of its reference connector, for another receiver. Off by default.
   - `direct_sampling`: RSPdx-R2 only. See Direct sampling below.
   - `raw`: the switch words themselves, in place of the band plan's. See Raw front end words below.
@@ -516,7 +516,7 @@ The comments in `mirisdr.h` describe the timing in detail.
   - I2C and serial output are refused on pins the open config holds as inputs, and on the RSP1B, RSPdx-R2, RSPduo and RSP2, whose front end uses those pins.
   - The infrared receiver on GPIO 3: `mirisdr_set_ir()` calls a function for every pulse.
   - The EEPROM: `mirisdr_read_eeprom()`, `mirisdr_write_eeprom()` and `mirisdr_eeprom_size()`.
-  - Firmware: `mirisdr_get_fw_id()` reads the id of the running image. `mirisdr_fw_get()` and `mirisdr_fw_patch()` read and change the USB ids and serial inside an image.
+  - Firmware: `mirisdr_get_fw_id()` reads the id of the running image. `mirisdr_fw_get()` and `mirisdr_fw_patch()` read and change the USB ids, the serial and the power inside an image. The image is bus powered at 500 mA as built. `mirisdr_fw_board()` says what the board needs instead: the nRSP-ST is self powered. The library patches that in when it loads the firmware.
   - `mirisdr_get_serial()`, `mirisdr_get_usb_ids()` and `mirisdr_get_usb_position()` say which device this is and where it sits on the USB.
 
 <h4>For experts</h4>
