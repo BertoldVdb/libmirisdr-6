@@ -12,7 +12,7 @@ miri_sdr \- capture samples from a Mirics based receiver
 .SH DESCRIPTION
 .B miri_sdr
 tunes a receiver built on the Mirics MSi2500 and MSi001, such as the SDRplay
-RSP1, RSP1B, RSP2, RSPdx, RSPdx\-R2, nRSP\-ST and RSPduo, and writes the samples it receives to a file.
+RSP1, RSP1A, RSP1B, RSP2, RSPdx, RSPdx\-R2, nRSP\-ST and RSPduo, and writes the samples it receives to a file.
 Give
 .B \-
 as the file to write them to standard output.
@@ -104,7 +104,7 @@ Which receiver to open, counting from 0. The default is 0.
 The board, when the USB ids do not tell it: 0 a plain MSi2500 and MSi001 board,
 or the SDRplay RSP1, 1 the original libmirisdr\(aqs SDRplay plan (its board is
 not known), 2 the RSP1B, 3 the RSPdx, RSPdx\-R2 and nRSP\-ST, 4 the RSPduo, 5 the Mirics TV reference design
-(TV sticks such as the Hauppauge WinTV 133559LF) and 6 the RSP2.
+(TV sticks such as the Hauppauge WinTV 133559LF), 6 the RSP2 and 7 the RSP1A.
 .TP
 .BI \-b " size"
 The size of each block written, in bytes. The default is 16 times 16384. With

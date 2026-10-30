@@ -625,10 +625,12 @@ static void mirisdr_flavour_clean (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_fla
     p->tune.frontend.raw.fields &= mirisdr_frontend_parts(hw_flavour);
     p->tune.frontend.flags &= mirisdr_frontend_flags(hw_flavour);
 
-    /* the antenna only where the board has it as the same kind of input: A, and B on the
-       RSPdx-R2 and RSP2 (the RSP2's C is its Hi-Z, the RSPdx-R2's a 50 ohm port) */
+    /* the antenna only where the board has it as the same kind of input: A, B on the
+       RSPdx-R2 and RSP2 (the RSP2's C is its Hi-Z, the RSPdx-R2's a 50 ohm port), and the
+       test signal on the RSP2 and RSP1A */
     if ((p->antenna != MIRISDR_ANTENNA_A) &&
-        !((p->antenna == MIRISDR_ANTENNA_B) && ((hw_flavour == MIRISDR_HW_RSPDXR2) || (hw_flavour == MIRISDR_HW_RSP2))))
+        !((p->antenna == MIRISDR_ANTENNA_B) && ((hw_flavour == MIRISDR_HW_RSPDXR2) || (hw_flavour == MIRISDR_HW_RSP2))) &&
+        !((p->antenna == MIRISDR_ANTENNA_TEST) && ((hw_flavour == MIRISDR_HW_RSP2) || (hw_flavour == MIRISDR_HW_RSP1A))))
     {
         p->antenna = MIRISDR_ANTENNA_A;
         p->tune.frontend.antenna = MIRISDR_ANTENNA_A;
@@ -651,7 +653,7 @@ int mirisdr_set_hw_flavour (mirisdr_dev_t *p, mirisdr_hw_flavour_t hw_flavour) {
 
     if (!p) goto failed;
 
-    if (hw_flavour < MIRISDR_HW_DEFAULT || hw_flavour > MIRISDR_HW_RSP2) goto failed;
+    if (hw_flavour < MIRISDR_HW_DEFAULT || hw_flavour > MIRISDR_HW_RSP1A) goto failed;
 
     /* the board it is already: nothing to clean, and nothing to tune again */
     if (hw_flavour == p->hw_flavour) return 0;

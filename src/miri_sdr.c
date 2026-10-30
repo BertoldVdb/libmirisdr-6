@@ -110,6 +110,7 @@ void usage(void)
 		"\t    4:       SDRplay RSPduo\n"
 		"\t    5:       a TV stick on the Mirics TV reference design\n"
 		"\t    6:       SDRplay RSP2 or RSP2pro\n"
+		"\t    7:       SDRplay RSP1A\n"
 		"\t[-g total gain in 10 dB units: 4.5 is 45 dB, taken to the nearest the band has\n"
 		"\t    (default: keep the gain set, there is no automatic gain)]\n"
         "\t[-G individual gains separated by comma (mixer, lna, mixbuffer, baseband)]\n"
@@ -256,9 +257,9 @@ int main(int argc, char **argv)
 			break;
         case 'T':
             intval = atoi(optarg);
-            if ((intval < 0) || (intval > MIRISDR_HW_RSP2))
+            if ((intval < 0) || (intval > MIRISDR_HW_RSP1A))
             {
-                fprintf(stderr, "-T takes 0 to %d.\n", MIRISDR_HW_RSP2);
+                fprintf(stderr, "-T takes 0 to %d.\n", MIRISDR_HW_RSP1A);
                 exit(2);
             }
             hw_flavour = (mirisdr_hw_flavour_t) intval;

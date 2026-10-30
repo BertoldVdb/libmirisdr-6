@@ -15,8 +15,8 @@
 
 /*
  * SDRplay front ends: the filters, notches and bias-T sit on SPI I/O expanders on the
- * MSi2500's SPI master (0x0B-0x0D), and some models carry two. The RSP1B, RSPdx-R2, RSPduo
- * and RSP2 are mapped, and the RSP1B and RSPdx-R2 share the expander's wiring and most of its pins.
+ * MSi2500's SPI master (0x0B-0x0D), and some models carry two. The RSP1B, RSPdx-R2, RSPduo,
+ * RSP2 and RSP1A are mapped, and the RSP1B and RSPdx-R2 share the expander's wiring and most of its pins.
  *
  * One MCP23S18, chip select GPIO_3, MISO GPIO_0. GPIO_1 is the EEPROM's chip select.
  * The tuner takes words only with GPIO_1 and GPIO_3 high. The master pulls GPIO_1 low
@@ -144,6 +144,30 @@
  * The Hi-Z input goes to the tuner's AM input 1 through a fixed low pass of about 30 MHz (3
  * dB near 26 MHz, 10 near 40), past the expander: no pin moves it. On it the library turns the
  * 50 ohm ports off (no switch line active).
+ *
+ * RSP1A, 2026-10-30 on the remote bench: one MCP23S18, chip select GPIO_3 and MISO GPIO_0 as on
+ * the RSP1B, register 8 as the RSP1B's. Its RESET follows the MSi2500's power on reset only (no
+ * GPIO state, EEPROM access or reopen resets it). One antenna input. The PCB (the user): a filter
+ * bank, the amplifier, the notches and pads, then a 6-way splitter and a 4-into-AM2 combiner:
+ *
+ *   A2 A3 A4: the path (1 released). 000 the HF bank to AM2, 001 the 250-300 filter, 010 a wide
+ *     path (flat 260-410 MHz), 011 the high UHF filter (flat 345-420), 100 (and 110) the VHF and
+ *     B45 inputs' diplexer (60-120, 420-1000 MHz), 101 the B3 and L inputs' (120-250, from 1 GHz),
+ *     111 off. A0 A1 must be low on all but the HF bank
+ *   A1 A0 with 000: the HF filter, 00 the 2 MHz low pass, 10 2-12, 01 12-30, 11 30-60. Below 1.4
+ *     MHz every word rolls off, 15 dB at 0.2 MHz
+ *   A5 A6 A7: pads of 6.1-6.6, 12.3-13.1 and 18.2-19.1 dB, one at a time (two give less than the
+ *     larger alone)
+ *   B1: the amplifier, on when low, its supply and bypass in one: 23-24 dB at VHF, 17 at 1.5 GHz,
+ *     not on the HF bank. Switched on, it disturbs the tuner's calibration (soft.c's wait)
+ *   B2: the FM and MW notch, 46-63 dB at 84-106 MHz, 37-52 at 0.8-1.5 MHz
+ *   B0: the DAB notch, 28-38 dB at 162-230 MHz
+ *   B3: the test oscillator's coupling into the path, on when low: the signal 3.5-3.8 dB down
+ *     to 100 MHz, 2 at 600, whether the oscillator runs or not
+ *   B5: the test oscillator, stopped when low: 1.589 MHz with its harmonics (-53 dBFS at gain
+ *     off), seen only with B3 low too. The library holds it low but for the TEST antenna
+ *   B4: the bias-T, on when low (by meter). On, it takes 6-7 dB off at 0.5 MHz and 0.8 at 1
+ *     MHz, nothing from 1.5 MHz. B6 B7 not connected (read low)
  */
 
 #define EXP_WRITE               0x40    /* MCP23S18 opcode, no address pins */
@@ -193,6 +217,28 @@ static int mirisdr_rsp2_att (int db)
     return -1;
 }
 
+/* RSP1A (see above) */
+#define RSP1A_PAD               5           /* A5-A7: about 6, 13 and 19 dB, one at a time */
+#define RSP1A_DAB               (1u << 8)   /* B0 */
+#define RSP1A_AMP               (1u << 9)   /* B1, low in the plan's words from 55 MHz */
+#define RSP1A_NOTCH             (1u << 10)  /* B2: FM and MW */
+#define RSP1A_TEST              (1u << 11)  /* B3: the test oscillator coupled in */
+#define RSP1A_BIAS              (1u << 12)  /* B4 */
+#define RSP1A_OSC_OFF           (1u << 13)  /* B5: the test oscillator stopped */
+
+static uint16_t mirisdr_rsp1a_word (uint16_t w, int notch, int bias, int antenna, int amp_off, int att)
+{
+    if (notch & (MIRISDR_NOTCH_FM | MIRISDR_NOTCH_MW)) w &= (uint16_t) ~RSP1A_NOTCH;
+    if (notch & MIRISDR_NOTCH_DAB) w &= (uint16_t) ~RSP1A_DAB;
+    if (bias) w &= (uint16_t) ~RSP1A_BIAS;
+    if (antenna == MIRISDR_ANTENNA_TEST) w &= (uint16_t) ~RSP1A_TEST;
+    else w &= (uint16_t) ~RSP1A_OSC_OFF;
+    if (amp_off) w |= RSP1A_AMP;
+    if (mirisdr_duo_pad(att) > 0) w &= (uint16_t) ~(1u << (RSP1A_PAD + mirisdr_duo_pad(att) - 1));
+
+    return w;
+}
+
 static uint16_t mirisdr_rsp2_word (uint16_t w, int notch, int bias, int antenna, int att)
 {
     int k = mirisdr_rsp2_att(att);
@@ -240,6 +286,7 @@ static uint16_t mirisdr_sdrplay_word (int flavour, uint16_t word, int notch, int
 
     if (!w || (flavour == MIRISDR_HW_RSPDUO)) return w;
     if (flavour == MIRISDR_HW_RSP2) return mirisdr_rsp2_word(w, notch, bias, antenna, att);
+    if (flavour == MIRISDR_HW_RSP1A) return mirisdr_rsp1a_word(w, notch, bias, antenna, amp_off, att);
 
     if (notch & (MIRISDR_NOTCH_FM | MIRISDR_NOTCH_MW)) w &= (uint16_t) ~SDRPLAY_A4;
     if (notch & MIRISDR_NOTCH_DAB) w &= (uint16_t) ~SDRPLAY_A6;
@@ -418,7 +465,7 @@ static int mirisdr_sdrplay_send (mirisdr_dev_t *p, int chip, uint16_t w)
    notches off, and on the RSPduo the ports apart (its second chip all released). The rest
    of the word as it was, all released when it is not known. The next open sets the
    expanders up again. On the RSP2 the reference output and the test oscillator off too,
-   and the notch and attenuator bypassed */
+   and the notch and attenuator bypassed, on the RSP1A the test oscillator too */
 static int mirisdr_sdrplay_off (mirisdr_dev_t *p)
 {
     int chip = (p->hw_flavour == MIRISDR_HW_RSPDUO) ? 1 : 0;
@@ -428,6 +475,9 @@ static int mirisdr_sdrplay_off (mirisdr_dev_t *p)
     if (!MIRISDR_HW_EXPANDER(p->hw_flavour)) return 0;
 
     if (p->hw_flavour == MIRISDR_HW_RSPDXR2) return mirisdr_sdrplay_send(p, 0, (uint16_t) ((w | off) & ~SDRPLAY_A0));
+    if (p->hw_flavour == MIRISDR_HW_RSP1A)
+        return mirisdr_sdrplay_send(p, 0, (uint16_t) ((w | RSP1A_DAB | RSP1A_AMP | RSP1A_NOTCH | RSP1A_TEST | RSP1A_BIAS |
+                                                       (7u << RSP1A_PAD)) & ~RSP1A_OSC_OFF));
     if (p->hw_flavour == MIRISDR_HW_RSP2)
     {
         w |= RSP2_REF_OUT | RSP2_BIAS | RSP2_PORT_TEST | RSP2_ATT_IN | RSP2_ATT_15 | RSP2_ATT_20 | RSP2_NOTCH_THROUGH;

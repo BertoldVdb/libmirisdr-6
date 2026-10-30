@@ -49,6 +49,7 @@ typedef enum
     MIRISDR_HW_MIRICSTV,        /* the Mirics TV reference design, TV sticks such as the Hauppauge
                                    WinTV 133559LF: VHF, band III and band IV/V only */
     MIRISDR_HW_RSP2,            /* SDRplay RSP2 and RSP2pro */
+    MIRISDR_HW_RSP1A,           /* SDRplay RSP1A */
 } mirisdr_hw_flavour_t;
 
 typedef enum

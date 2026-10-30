@@ -4902,6 +4902,74 @@ static tres_t t_plan_rsp2 (void)
     return plan_bad ? T_FAIL : T_PASS;
 }
 
+/* The RSP1A: its band plan's words (the path on A2 A3 A4, the HF filter on A0 A1, the
+ * amplifier B1 low from 55 MHz) and the notch, bias-T, test signal, pads and amplifier bypass
+ * bits, as measured with tone sweeps (sdrplay.c) */
+static tres_t t_plan_rsp1a (void)
+{
+    static const struct { uint32_t hz; int ant, bias, notch, att, bypass; uint16_t word; } want[] = {
+        {   1000000, MIRISDR_ANTENNA_A, 0, 0, 0, 0, 0xDFE0 },   /* 2 MHz low pass */
+        {   5000000, MIRISDR_ANTENNA_A, 0, 0, 0, 0, 0xDFE2 },   /* 2-12 */
+        {  20000000, MIRISDR_ANTENNA_A, 0, 0, 0, 0, 0xDFE1 },   /* 12-30 */
+        {  45000000, MIRISDR_ANTENNA_A, 0, 0, 0, 0, 0xDFE3 },   /* 30-60, no amplifier */
+        { 100000000, MIRISDR_ANTENNA_A, 0, 0, 0, 0, 0xDDE4 },   /* VHF, the amplifier on */
+        { 200000000, MIRISDR_ANTENNA_A, 0, 0, 0, 0, 0xDDF4 },   /* band III */
+        { 270000000, MIRISDR_ANTENNA_A, 0, 0, 0, 0, 0xDDF0 },   /* 250-300 */
+        { 330000000, MIRISDR_ANTENNA_A, 0, 0, 0, 0, 0xDDE8 },   /* the wide path */
+        { 400000000, MIRISDR_ANTENNA_A, 0, 0, 0, 0, 0xDDF8 },   /* the high UHF filter */
+        { 600000000, MIRISDR_ANTENNA_A, 0, 0, 0, 0, 0xDDE4 },   /* band IV/V */
+        {1400000000, MIRISDR_ANTENNA_A, 0, 0, 0, 0, 0xDDF4 },   /* L band */
+        { 100000000, MIRISDR_ANTENNA_A, 0, MIRISDR_NOTCH_FM, 0, 0, 0xD9E4 },
+        {   1000000, MIRISDR_ANTENNA_A, 0, MIRISDR_NOTCH_MW, 0, 0, 0xDBE0 },
+        { 200000000, MIRISDR_ANTENNA_A, 0, MIRISDR_NOTCH_DAB, 0, 0, 0xDCF4 },
+        { 100000000, MIRISDR_ANTENNA_A, 1, 0, 0, 0, 0xCDE4 },
+        { 100000000, MIRISDR_ANTENNA_TEST, 0, 0, 0, 0, 0xF5E4 },
+        { 100000000, MIRISDR_ANTENNA_A, 0, 0, 6, 0, 0xDDC4 },
+        { 100000000, MIRISDR_ANTENNA_A, 0, 0, 13, 0, 0xDDA4 },
+        { 100000000, MIRISDR_ANTENNA_A, 0, 0, 19, 0, 0xDD64 },
+        {  10000000, MIRISDR_ANTENNA_A, 0, 0, 19, 0, 0xDF62 },
+        { 100000000, MIRISDR_ANTENNA_A, 0, 0, 0, 1, 0xDFE4 },
+        {  10000000, MIRISDR_ANTENNA_A, 0, 0, 0, 1, 0xDFE2 },   /* no amplifier at HF to bypass */
+    };
+    mirisdr_dev_t *n;
+    mirisdr_tune_config_t c;
+    mirisdr_tune_result_t r;
+    unsigned i;
+
+    plan_bad = 0;
+
+    if (mirisdr_open_null(&n, "252_S16") < 0) { say("no null device"); return T_FAIL; }
+    if (mirisdr_set_hw_flavour(n, MIRISDR_HW_RSP1A) < 0 || mirisdr_get_hw_flavour(n) != MIRISDR_HW_RSP1A)
+    { plan_bad++; say("to the RSP1A refused"); }
+
+    for (i = 0; i < sizeof want / sizeof want[0]; i++)
+    {
+        mirisdr_tune_config_default(&c);
+        c.frequency = want[i].hz;
+        c.frontend.antenna = want[i].ant;
+        c.frontend.bias = want[i].bias;
+        c.frontend.notch = want[i].notch;
+        c.frontend.attenuator = want[i].att;
+        c.gain.mode = MIRISDR_GAIN_STAGES; c.gain.lna = 1; c.gain.mixer = 1; c.gain.baseband = 30;
+        c.gain.amp_bypass = want[i].bypass;
+        if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.frontend.raw.expander[0] != want[i].word)
+        { plan_bad++; say("RSP1A %u Hz, antenna %d, bias %d, notch %x, %d dB, bypass %d: word %04X, not %04X", want[i].hz,
+                          want[i].ant, want[i].bias, want[i].notch, want[i].att, want[i].bypass, r.frontend.raw.expander[0], want[i].word); }
+    }
+
+    /* the amplifier counted from 55 MHz, its bypass taking it out, and antenna B refused */
+    mirisdr_tune_config_default(&c);
+    c.frequency = 100000000;
+    c.gain.mode = MIRISDR_GAIN_STAGES; c.gain.lna = 1; c.gain.mixer = 1; c.gain.baseband = 30;
+    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.gain.total != 24 + 19 + 30 + 23) { plan_bad++; say("RSP1A 100 MHz total %d", r.gain.total); }
+    c.frontend.antenna = MIRISDR_ANTENNA_B;
+    plan_tune(n, "antenna B on the RSP1A", &c, 0, &r);
+
+    mirisdr_close(n);
+    if (!plan_bad) say("the plan's words from 1 MHz to 1.4 GHz, notches, bias-T, test signal, pads and the amplifier's bypass");
+    return plan_bad ? T_FAIL : T_PASS;
+}
+
 /* What each board's front end has, as mirisdr_get_frontend_caps() lists it */
 static tres_t t_plan_caps (void)
 {
@@ -4916,6 +4984,7 @@ static tres_t t_plan_caps (void)
         { MIRISDR_HW_RSPDUO,  1, 7, 0x1, -1, 1, 0, 55000000, 25, 4, 19, MIRISDR_FRONTEND_PORT_TIE | MIRISDR_FRONTEND_REF_OUT, 0x7 },
         { MIRISDR_HW_MIRICSTV,   0, 0, 0x1, -1, 0, 0, 0, 0, 1, 0, 0, 0x1 },
         { MIRISDR_HW_RSP2,    0, 5, 0xF, MIRISDR_ANTENNA_C, 1, 0, 0, 0, 5, 20, MIRISDR_FRONTEND_REF_OUT, 0x3 },
+        { MIRISDR_HW_RSP1A,   0, 7, 0x9, -1, 1, 0, 55000000, 24, 4, 19, 0, 0x3 },
     };
     mirisdr_dev_t *n;
     mirisdr_frontend_caps_t c;
@@ -7349,6 +7418,7 @@ static const struct {
     { "plan",     "frontend with the tune",     t_plan_frontend       },
     { "plan",     "RSPdx-R2 front end",         t_plan_dxr2           },
     { "plan",     "RSP2 front end",             t_plan_rsp2           },
+    { "plan",     "RSP1A front end",            t_plan_rsp1a          },
     { "plan",     "front end caps",             t_plan_caps           },
     { "plan",     "Mirics TV plan",             t_plan_miricstv       },
     { "plan",     "raw front end words",        t_plan_raw            },

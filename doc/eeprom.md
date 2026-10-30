@@ -46,6 +46,7 @@ Software that knows the board by its ids still takes it for that board, the vend
 | RSP2 | `E-` |
 | nRSP-ST | `F-` |
 | RSPdx | `G-` |
+| RSP1A | `H-` |
 
 For example, on an RSP1B:
 

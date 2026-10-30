@@ -510,6 +510,7 @@ std::string SoapyMiriSDR::getHardwareKey(void) const
     case MIRISDR_HW_RSPDUO:   return "RSPduo";
     case MIRISDR_HW_MIRICSTV: return "MiricsTV";
     case MIRISDR_HW_RSP2:     return "RSP2";
+    case MIRISDR_HW_RSP1A:    return "RSP1A";
     case MIRISDR_HW_SDRPLAY:  return "SDRplay";
     default:                  return "MSi2500";
     }

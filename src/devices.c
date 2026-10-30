@@ -17,7 +17,7 @@
 
 static mirisdr_device_t mirisdr_devices[] = {
     { 0x1df7, 0x2500, "Mirics MSi2500 default (e.g. VTX3D card, SDRplay RSP1)", "Mirics", "MSi2500", MIRISDR_HW_DEFAULT, 0, 0, 0, 0},
-    { 0x1df7, 0x3000, "SDRplay RSP1A", "SDRPlay", "RSP1A", MIRISDR_HW_DEFAULT, 0, 0, 0, 0},
+    { 0x1df7, 0x3000, "SDRplay RSP1A", "SDRPlay", "RSP1A", MIRISDR_HW_RSP1A, 0, 0, 0, 0},
     { 0x1df7, 0x3010, "SDRplay RSP2/RSP2pro", "SDRPlay", "RSP2", MIRISDR_HW_RSP2, 0, 0, 0, 0},
     { 0x1df7, 0x3050, "SDRplay RSP1B", "SDRPlay", "RSP1B", MIRISDR_HW_RSP1B, 0, 0, 0, 0},
     { 0x1df7, 0x3060, "SDRplay RSPdx-R2", "SDRPlay", "RSPdxR2", MIRISDR_HW_RSPDXR2, 0, 0, 0, 0},
@@ -56,6 +56,7 @@ static const struct { char prefix[3]; uint16_t pid; } mirisdr_own_boards[] = {
     { "E-", 0x3010 },   /* RSP2 */
     { "F-", 0x3040 },   /* nRSP-ST */
     { "G-", 0x3030 },   /* RSPdx */
+    { "H-", 0x3000 },   /* RSP1A */
 };
 
 /* the table entry of the board behind these ids, under our own ids by the serial */

@@ -284,14 +284,61 @@ static hw_switch_freq_plan_t hw_switch_freq_plan_rsp2_hiz[] = {
         {DUO_HIZ_END_MHZ * 1000, -1, 0, 0, 0, 0x0000, 0, 0, 0, 0},
 };
 
-static hw_switch_freq_plan_t *hw_switch_freq_plan[7] = {
+/* RSP1A (sdrplay.c): A2 A3 A4 pick the path (the 6-way splitter), A0 A1 the HF filter on its
+   AM2 route, B1 low the amplifier on (its power and bypass in one), register 8 as the RSP1B's.
+   Measured through channel 1 to 250 MHz and channel 2 above, 2026-10-30: each of these the best
+   of the 32 combinations of A0-A4 in its stretch. The amplifier is not on the HF route */
+#define RSP1A_LPF2      0xFFE0  /* 000, A1 A0 low: the 2 MHz low pass */
+#define RSP1A_2_12      0xFFE2  /* A0 low */
+#define RSP1A_12_30     0xFFE1  /* A1 low */
+#define RSP1A_30_60     0xFFE3
+#define RSP1A_VHF_B45   0xFDE4  /* 100: the VHF and B45 inputs, B1 low */
+#define RSP1A_B3_L      0xFDF4  /* 101: the B3 and L inputs */
+#define RSP1A_250_300   0xFDF0  /* 001 */
+#define RSP1A_UHF_WIDE  0xFDE8  /* 010: flat 260-410 MHz (SDRplay's 300-380 by its place) */
+#define RSP1A_UHF_HIGH  0xFDF8  /* 011: flat 345-420 MHz */
+#define RSP1A_2_12_KHZ  1850    /* the 2 MHz low pass and 2-12 cross at about 1.85 MHz */
+#define RSP1A_30_60_KHZ 38000   /* 12-30 up to 38 MHz, 0.2-0.4 dB better than 30-60 there */
+#define RSP1A_WIDE_KHZ  305000  /* 250-300 and the wide path equal at 304 MHz */
+#define RSP1A_HIGH_KHZ  390000  /* the wide path and the high filter equal at 380, the high 1.5-7 dB better 400-420 */
+
+/* The amplifier (B1 low) against its bypass through the library, 2026-10-30: 22.9-23.4 dB at
+   60-107 MHz, 22.4-24.7 at 110-250, 21.1-22.6 at 255-420, 20.1-22.4 at 420-950, 20.9 at 970
+   falling to 15.7 at 2 GHz. Counted from 55 MHz */
+#define RSP1A_AMP_VHF   23
+#define RSP1A_AMP_B3    24
+#define RSP1A_AMP_UHF   22
+#define RSP1A_AMP_HIGH  21
+#define RSP1A_AMP_B45   21
+#define RSP1A_AMP_L     18
+
+static hw_switch_freq_plan_t hw_switch_freq_plan_rsp1a[] = {
+        {0,       MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1A_LPF2, 0, 0},
+        {RSP1A_2_12_KHZ, MIRISDR_MODE_AM, MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1A_2_12, 0, 0},
+        {12000,   MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1A_12_30, 0, 0},
+        {RSP1A_30_60_KHZ, MIRISDR_MODE_AM, MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 0, RSP1A_30_60, 0, 0},
+        {55000,   MIRISDR_MODE_VHF, 0, 0, 32, 0xea80, 0, RSP1A_VHF_B45, RSP1A_AMP_VHF, 0},
+        {108000,  MIRISDR_MODE_B3,  0, 0, 16, 0xea80, 0, RSP1A_B3_L, RSP1A_AMP_B3, 0},
+        {255000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 6, RSP1A_250_300, RSP1A_AMP_UHF, 0},
+        {280000,  MIRISDR_MODE_AM,  MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1A_250_300, RSP1A_AMP_UHF, 0},
+        {RSP1A_WIDE_KHZ, MIRISDR_MODE_AM, MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1A_UHF_WIDE,
+         RSP1A_AMP_UHF, 0},
+        {RSP1A_HIGH_KHZ, MIRISDR_MODE_AM, MIRISDR_UPCONVERT_MIXER_ON, MIRISDR_AM_PORT2, 16, 0xea80, 7, RSP1A_UHF_HIGH,
+         RSP1A_AMP_HIGH, 0},
+        {420000,  MIRISDR_MODE_B45, 0, 0, 4,  0xea80, 0, RSP1A_VHF_B45, RSP1A_AMP_B45, 0},
+        {960000,  MIRISDR_MODE_BL,  0, 0, 2,  0xea80, 0, RSP1A_B3_L, RSP1A_AMP_L, 0},
+        {2400000, -1, 0, 0, 0, 0x0000, 0, 0, 0, 0},
+};
+
+static hw_switch_freq_plan_t *hw_switch_freq_plan[8] = {
         hw_switch_freq_plan_default,
         hw_switch_freq_plan_sdrplay,
         hw_switch_freq_plan_rsp1b,
         hw_switch_freq_plan_rspdxr2,
         hw_switch_freq_plan_rspduo,
         hw_switch_freq_plan_miricstv,
-        hw_switch_freq_plan_rsp2
+        hw_switch_freq_plan_rsp2,
+        hw_switch_freq_plan_rsp1a
 };
 
 /* The antenna that is a board's Hi-Z input on this tuner, -1 none */
@@ -310,6 +357,7 @@ static uint32_t mirisdr_antennas_of (int flavour, int tuner)
 
     if (flavour == MIRISDR_HW_RSPDXR2) a |= (1u << MIRISDR_ANTENNA_B) | (1u << MIRISDR_ANTENNA_C);
     if (flavour == MIRISDR_HW_RSP2) a |= (1u << MIRISDR_ANTENNA_B) | (1u << MIRISDR_ANTENNA_C) | (1u << MIRISDR_ANTENNA_TEST);
+    if (flavour == MIRISDR_HW_RSP1A) a |= 1u << MIRISDR_ANTENNA_TEST;
     if (mirisdr_hiz_antenna(flavour, tuner) >= 0) a |= 1u << mirisdr_hiz_antenna(flavour, tuner);
 
     return a;
@@ -322,7 +370,7 @@ static int mirisdr_board_amp_max (mirisdr_dev_t *p)
 {
     const int f = p->hw_flavour;
     const hw_switch_freq_plan_t *plan =
-        hw_switch_freq_plan[(f >= MIRISDR_HW_DEFAULT && f <= MIRISDR_HW_RSP2) ? f : MIRISDR_HW_DEFAULT];
+        hw_switch_freq_plan[(f >= MIRISDR_HW_DEFAULT && f <= MIRISDR_HW_RSP1A) ? f : MIRISDR_HW_DEFAULT];
     int i, most = 0;
 
     for (i = 0; plan[i].mode >= 0; i++)
@@ -338,7 +386,7 @@ static const hw_switch_freq_plan_t *mirisdr_plan_of (mirisdr_dev_t *p)
     if (p->antenna == mirisdr_hiz_antenna(f, p->tuner_cur))
         return (f == MIRISDR_HW_RSP2) ? hw_switch_freq_plan_rsp2_hiz : hw_switch_freq_plan_rspduo_hiz;
 
-    return hw_switch_freq_plan[(f >= MIRISDR_HW_DEFAULT && f <= MIRISDR_HW_RSP2) ? f : MIRISDR_HW_DEFAULT];
+    return hw_switch_freq_plan[(f >= MIRISDR_HW_DEFAULT && f <= MIRISDR_HW_RSP1A) ? f : MIRISDR_HW_DEFAULT];
 }
 
 /* Register 8 before the first tune: the GPIOs as the plan's first row has them */
@@ -610,7 +658,7 @@ static int mirisdr_attenuator_list (int flavour, int *v)
     int db, n = 0;
 
     for (db = 0; db <= 36; db++)
-        if ((flavour == MIRISDR_HW_RSPDUO || flavour == MIRISDR_HW_RSP1B) ? (mirisdr_duo_pad(db) >= 0) :
+        if ((flavour == MIRISDR_HW_RSPDUO || flavour == MIRISDR_HW_RSP1B || flavour == MIRISDR_HW_RSP1A) ? (mirisdr_duo_pad(db) >= 0) :
             (flavour == MIRISDR_HW_RSPDXR2) ? (mirisdr_dxr2_pads(db) >= 0) :
             (flavour == MIRISDR_HW_RSP2) ? (mirisdr_rsp2_att(db) >= 0) : !db)
         {
@@ -654,6 +702,7 @@ static uint32_t mirisdr_frontend_flags (int flavour)
 
 /* how long the synthesizer gets to start when the tuner wakes, before its band search */
 #define MIRISDR_WAKE_US         1000
+#define MIRISDR_EXP_SETTLE_US   200     /* after a front end pin switched, before the tuner's words */
 
 /* Nothing hears the selected tuner under direct sampling (ds), or when the stream does not
    take it. Left running, a strong signal on it still shows in what is heard (seen on the
@@ -675,10 +724,26 @@ static int mirisdr_tune_send (mirisdr_dev_t *p, const mirisdr_tune_words_t *w, c
                               uint32_t raw)
 {
     int r = 0;
+    uint16_t was0 = p->exp_iodir[0], was1 = p->exp_iodir[1];
+    int valid = p->exp_valid;
 
     if ((fe->fields & MIRISDR_FRONTEND_RAW_EXP1) &&
         ((mirisdr_duo_close(p, fe->expander[0]) < 0) || (mirisdr_sdrplay_send(p, 0, fe->expander[0]) < 0))) r = -1;
     if ((fe->fields & MIRISDR_FRONTEND_RAW_EXP2) && (mirisdr_sdrplay_send(p, 1, fe->expander[1]) < 0)) r = -1;
+
+    /* the front end settles before the tuner calibrates: the board's amplifier switched on
+       (the RSP1A's B1, the RSPdx's A5) is a supply step, and during the calibration register 2
+       starts it left the up-converter's code or the VCO band wrong, the tuner deaf (35-45 dB
+       down) until its next tune (2026-10-30). The other pins did nothing to it. 50 us was enough.
+       Not in a scan's recorded hops, which take no waits: a scan across the amplifier switching
+       on can still meet it */
+    if (!p->rec &&
+        (((fe->fields & MIRISDR_FRONTEND_RAW_EXP1) && (!(valid & 1) || (was0 != p->exp_iodir[0]))) ||
+         ((fe->fields & MIRISDR_FRONTEND_RAW_EXP2) && (!(valid & 2) || (was1 != p->exp_iodir[1])))))
+    {
+        if (p->fw_ours && p->fw_list_at) r |= mirisdr_write_reg(p, MIRISDR_LIST_WAIT_US, MIRISDR_EXP_SETTLE_US);
+        else { r |= mirisdr_batch_flush(p); usleep(MIRISDR_EXP_SETTLE_US); }
+    }
 
     p->reg8 = (w->row->band_select_word & ~0xFF00u) | ((uint32_t) fe->gpio_dir << 12) | ((uint32_t) fe->gpio_level << 8);
     p->fe_raw = raw;
@@ -1950,7 +2015,7 @@ int mirisdr_get_frontend_caps (mirisdr_dev_t *p, int tuner, mirisdr_frontend_cap
     caps->ds_lna_db = caps->direct_sampling ? mirisdr_ds_lna_db(p) : 0;
 
     /* the amplifier: the 50 ohm plan's rows that have one */
-    plan = hw_switch_freq_plan[(f >= MIRISDR_HW_DEFAULT && f <= MIRISDR_HW_RSP2) ? f : MIRISDR_HW_DEFAULT];
+    plan = hw_switch_freq_plan[(f >= MIRISDR_HW_DEFAULT && f <= MIRISDR_HW_RSP1A) ? f : MIRISDR_HW_DEFAULT];
     for (i = 0; plan[i].mode >= 0; i++)
         if (plan[i].amp_db && !(p->amp_fixed_30_60 && (plan[i].expander == RSP1B_30_60)))
         {
