@@ -1,7 +1,7 @@
 Using libmirisdr receivers with SoapySDR
 ========================================
 
-The `mirisdr` SoapySDR module lets programs that use SoapySDR work with libmirisdr receivers. Examples are SDR++, CubicSDR, GQRX, GNU Radio and your own programs. It supports boards with the MSi2500 and MSi001 chips, such as the SDRplay RSP1, RSP1B, RSP2, RSPdx-R2, nRSP-ST and RSPduo. The nRSP-ST works as an RSPdx-R2.
+The `mirisdr` SoapySDR module lets programs that use SoapySDR work with libmirisdr receivers. Examples are SDR++, CubicSDR, GQRX, GNU Radio and your own programs. It supports boards with the MSi2500 and MSi001 chips, such as the SDRplay RSP1, RSP1B, RSP2, RSPdx, RSPdx-R2, nRSP-ST and RSPduo. The RSPdx and nRSP-ST work as an RSPdx-R2.
 
 This guide explains how to install the module, how to pick it, and what each setting does.
 
@@ -145,7 +145,7 @@ Set the gain as one total, from 0 to 102 dB on most bands, plus the board's ampl
 The stages can also be set one by one:
 
   - `ATT`: RSP1B, RSPdx-R2, RSPduo and RSP2. The pads before the tuner, against strong signals, as a negative gain: 0, -6, -13 or -19 dB on the RSP1B and RSPduo, 0 to -36 dB in steps of 3 on the RSPdx-R2, and 0, -5, -11, -15 or -20 dB on the RSP2. Another value takes the nearest pad. In L band they attenuate less, and `ATT` reads back what they give there. A Hi-Z input has none. `ATT` is not part of the total: the total is the gain of the receiver's own chain, and setting it leaves the pads as they are. So with pads in, the stages add up to more than the total.
-  - `AMP`: RSP1B, RSPdx-R2 and RSPduo. 0 or the full gain of the amplifier before the tuner in the band tuned, up to about 25 dB: from 30 MHz on the RSP1B and RSPdx-R2, from 55 MHz on the RSPduo (not on its Hi-Z). A total turns it on first, and bypasses it only below its own gain.
+  - `AMP`: RSP1B, RSPdx-R2 and RSPduo. 0 or the full gain of the amplifier before the tuner in the band tuned, up to about 25 dB: from 30 MHz on the RSP1B and RSPdx-R2, from 55 MHz on the RSPduo (not on its Hi-Z). On the RSPdx it is always on from 30 to 55 MHz, and `AMP` acts from 55 MHz. A total turns it on first, and bypasses it only below its own gain.
   - `LNA`: 0 or its full gain, which is 24 dB on most bands, 7 dB in band IV/V and about 4 dB in L band. The AM inputs have none.
   - `MIX`: 0 or 19 dB.
   - `MIXBUF`: only where the receiver uses an AM input: below 55 MHz, and from 255 to 420 MHz through the up-converter (on the SDRplay plan, board 1, below 50 MHz only). 0 or 24 dB on AM input 2, which the 50 ohm ports use, and 0, 6, 12 or 18 dB on AM input 1, which only the Hi-Z inputs (the RSPduo's and the RSP2's) use.

@@ -16,12 +16,12 @@
 #define MIRISDR_AM_PORT2_BLOCKUP_CONVERT_GAIN_REDUCTION_24DB 3
 
 /* reg1: 12 (MIXL) */
-#define MIRISDR_LNA_GAIN_REDUCTION_OFF                  0
-#define MIRISDR_LNA_GAIN_REDUCTION_ON                   1
-
-/* reg1: 13 (LNAGR) */
 #define MIRISDR_MIXER_GAIN_REDUCTION_OFF                0
 #define MIRISDR_MIXER_GAIN_REDUCTION_ON                 1
+
+/* reg1: 13 (LNAGR) */
+#define MIRISDR_LNA_GAIN_REDUCTION_OFF                  0
+#define MIRISDR_LNA_GAIN_REDUCTION_ON                   1
 
 /* reg1: 14:16 (DCCAL0 - DCCAL2) */
 #define MIRISDR_DC_OFFSET_CALIBRATION_STATIC            0
@@ -37,6 +37,6 @@
 
 /*** Register 6: DC Offset Calibration setup ***/
 
-/* reg6: 4:7 (DCTRK_TIM0 - DCTRK_TIM3) */
+/* reg6: 4:9 (DCTRK_TIM0 - DCTRK_TIM5) */
 
-/* reg6: 8:21 (DCRATE_TIM0 - DCRATE_TIM11) */
+/* reg6: 10:21 (DCRATE_TIM0 - DCRATE_TIM11) */

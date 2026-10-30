@@ -327,6 +327,7 @@ static const char *own_prefix (uint16_t vid, uint16_t pid)
     if (pid == 0x3020) return "D-";
     if (pid == 0x3010) return "E-";
     if (pid == 0x3040) return "F-";
+    if (pid == 0x3030) return "G-";
 
     return NULL;
 }

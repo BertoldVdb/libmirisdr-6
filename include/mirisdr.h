@@ -604,15 +604,15 @@ MIRISDR_API int mirisdr_set_freq_correction (mirisdr_dev_t *p, int ppm);
  * to I, and a baseband one puts the frequency at 0 Hz, its converters at 2.4 x the low
  * pass's edge whatever the frequency, so a retune moves only the NCO, no restart. The
  * 500 kHz low pass is taken when a baseband stream's band fits under it. The gain is
- * then the low pass's amplifier alone, about 37 dB: gain.lna in STAGES, a total from
- * 19 dB. The tuner's IF, bandwidth and iq are kept for above. Not in scans.
+ * then the low pass's amplifier alone, about 37 dB (32 on the RSPdx, the caps'
+ * ds_lna_db): gain.lna in STAGES, a total from half of it. The tuner's IF, bandwidth and iq are kept for above. Not in scans.
  * mirisdr_set_direct_sampling(): 0 off, 1 on (the I converter), as librtlsdr's, or
  * MIRISDR_DS_AUTO. The 2 of librtlsdr, the Q converter, is refused. */
 #define MIRISDR_DS_OFF          0
 #define MIRISDR_DS_ON           1
 #define MIRISDR_DS_AUTO         3
 #define MIRISDR_DS_MAX_HZ       2000000
-#define MIRISDR_DS_LNA_DB       37
+#define MIRISDR_DS_LNA_DB       37      /* the RSPdx-R2's and nRSP-ST's */
 MIRISDR_API int mirisdr_set_direct_sampling (mirisdr_dev_t *p, int on);
 MIRISDR_API int mirisdr_get_direct_sampling (mirisdr_dev_t *p);  /* extra: MIRISDR_DS_* as set, -1 on error */
 
@@ -664,6 +664,8 @@ typedef struct mirisdr_frontend_caps
 	int      bias;              /* a bias-T on this tuner's input (plain boards take frontend.bias
 	                               as libmirisdr did, on GPIO_3, but have none known) */
 	int      direct_sampling;   /* frontend.direct_sampling taken */
+	int      ds_lna_db;         /* its amplifier's gain, dB (MIRISDR_DS_LNA_DB, the RSPdx 32), 0
+	                               without direct sampling */
 	uint32_t amp_bypass_hz;     /* gain.amp_bypass from this frequency up, 0 no amplifier */
 	int      amp_max_db;        /* the amplifier's gain in its best band */
 	int      attenuator_count;  /* the values frontend.attenuator takes, 1 (0 dB) without pads */

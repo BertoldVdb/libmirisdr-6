@@ -63,7 +63,7 @@
 #define MIRISDR_LBAND_LNA_CALIBRATION_OFF               0
 #define MIRISDR_LBAND_LNA_CALIBRATION_ON                1
 
-/*** Register 6: RF Synthesizer Configuration ***/
+/*** Register 5: RF Synthesizer Configuration ***/
 
 /* reg5: 4:15 (THRESH0 - THRESH11) */
 

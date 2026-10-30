@@ -145,6 +145,7 @@ static int mirisdr_setup (mirisdr_dev_t **out_dev, mirisdr_dev_t *dev) {
     mirisdr_adc_stop(dev);
 
     if (dev->hw_flavour == MIRISDR_HW_AUTO) dev->hw_flavour = mirisdr_flavour_of(dev->dh);
+    mirisdr_board_parts(dev);
     dev->exp_valid = 0;
 
     /* a readback leaves the tuner holding its answer line until its next word, and a

@@ -12,7 +12,7 @@ miri_fm \- demodulate FM, AM and SSB with a Mirics based receiver
 .SH DESCRIPTION
 .B miri_fm
 tunes a receiver built on the Mirics MSi2500 and MSi001, such as the SDRplay
-RSP1, RSP1B, RSP2, RSPdx\-R2 and RSPduo, demodulates what it hears and writes the
+RSP1, RSP1B, RSP2, RSPdx, RSPdx\-R2, nRSP\-ST and RSPduo, demodulates what it hears and writes the
 audio as signed 16 bit mono samples, little endian. Without a file, or with
 .BR \- ,
 the audio goes to standard output. Play it with
@@ -140,7 +140,7 @@ or the start of its serial. The default is 0.
 .BI \-T " board"
 The board, when the USB ids do not tell it: 0 a plain MSi2500 and MSi001 board,
 or the SDRplay RSP1, 1 the original libmirisdr\(aqs SDRplay plan (its board is
-not known), 2 the RSP1B, 3 the RSPdx\-R2, 4 the RSPduo, 5 the Mirics TV reference design
+not known), 2 the RSP1B, 3 the RSPdx, RSPdx\-R2 and nRSP\-ST, 4 the RSPduo, 5 the Mirics TV reference design
 (TV sticks such as the Hauppauge WinTV 133559LF) and 6 the RSP2.
 .SH EXAMPLES
 Listen to an FM station:

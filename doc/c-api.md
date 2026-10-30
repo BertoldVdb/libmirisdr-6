@@ -170,7 +170,7 @@ The older `mirisdr_set_center_freq()` sets the LO directly. It switches `low_if_
 
 <h4>The front end</h4>
 
-`tc.frontend` holds what sits before the tuner. It goes out with the tune, in the same request. The nRSP-ST has the RSPdx-R2's front end, so what this section says of the RSPdx-R2 holds for it too.
+`tc.frontend` holds what sits before the tuner. It goes out with the tune, in the same request. The RSPdx and nRSP-ST have the RSPdx-R2's front end, so what this section says of the RSPdx-R2 holds for them too. The RSPdx differs in two places: its amplifier stays on from 30 to 55 MHz (see `amp_bypass`), and its direct sampling amplifier gives 32 dB.
 
   - `bias`: the bias-T, which powers the antenna input. On the RSPdx-R2 and RSP2 it powers port B. On the RSPduo it powers the port marked tuner 2, so only tuner 1 takes it.
   - `notch`: notch filters, on the RSP1B, RSPdx-R2, RSPduo and RSP2 only. `MIRISDR_NOTCH_FM` covers 85 to 100 MHz, `MIRISDR_NOTCH_MW` medium wave from 0.4 to 1.6 MHz, and `MIRISDR_NOTCH_DAB` 165 to 230 MHz. Combine them with `|`. The FM and MW notches share a switch. The RSP2 has no DAB notch.
@@ -187,7 +187,7 @@ The older `mirisdr_set_center_freq()` sets the LO directly. It switches `low_if_
 
 A notch, an antenna, pads or direct sampling on a board without them is refused. A pad value between steps is taken to the nearest, or refused with `strict`. The config keeps what you asked for, and the tune result reports what is in force.
 
-`mirisdr_get_frontend_caps()` says what a tuner's front end has, so a program can offer only that: the notches, the antennas and which is a Hi-Z input, the bias-T, direct sampling, the amplifier (from which frequency, and its gain in its best band), the pad values, the flags, the raw parts and the stretches of frequency a tune takes (`range`, `range_count` of them, each from the first value up to the second). It does not change while the device is open. What depends on the frequency comes with a tune result, and `mirisdr_tune_check()` says what a given tune would get.
+`mirisdr_get_frontend_caps()` says what a tuner's front end has, so a program can offer only that: the notches, the antennas and which is a Hi-Z input, the bias-T, direct sampling and its amplifier's gain, the amplifier (from which frequency, and its gain in its best band), the pad values, the flags, the raw parts and the stretches of frequency a tune takes (`range`, `range_count` of them, each from the first value up to the second). It does not change while the device is open. What depends on the frequency comes with a tune result, and `mirisdr_tune_check()` says what a given tune would get.
 
 ```c
 mirisdr_frontend_caps_t caps;
@@ -224,7 +224,7 @@ Other tunes use the tuner as usual. The tune result's `frontend.direct_sampling`
 
   - **The stream.** Direct sampling is like a single tuner output on I whose IF is the frequency. A stream that follows the tune, or a baseband one, switches to I by itself. With baseband the frequency comes out at 0 Hz, the right way round. The converters run at 4.8 Msps whatever the frequency, so a retune only moves the NCO and the stream does not restart. When a baseband stream's band fits under 500 kHz, the 500 kHz low pass is used instead, with the converters at 1.3 Msps. Rates go from about 9.4 ksps (2.5 ksps with the 500 kHz low pass) up. Without baseband the I samples are the band itself, from 0 Hz to half the rate.
   - **The tuner.** It is not in the path, so it rests in standby (the tune result's `standby`). Left running, a strong signal on it showed in the direct sampling path. A tune above 2 MHz wakes it and calibrates it again, which takes a few ms.
-  - **The gain.** The tuner is not in the path. The only gain is an amplifier of about 37 dB (`MIRISDR_DS_LNA_DB`), on by default. With `MIRISDR_GAIN_STAGES` it is `gain.lna`. With `MIRISDR_GAIN_TOTAL` it is on from 19 dB. `mirisdr_set_lna_gain()` and `mirisdr_set_tuner_gain()` switch it the same way. The tune result then reports it alone. Leave it on unless the signals are very strong: it raises the noise floor only 4 to 5 dB.
+  - **The gain.** The tuner is not in the path. The only gain is an amplifier of about 37 dB (`MIRISDR_DS_LNA_DB`), 32 dB on the RSPdx, on by default. `mirisdr_get_frontend_caps()` gives it as `ds_lna_db`. With `MIRISDR_GAIN_STAGES` it is `gain.lna`. With `MIRISDR_GAIN_TOTAL` it is on from half its gain. `mirisdr_set_lna_gain()` and `mirisdr_set_tuner_gain()` switch it the same way. The tune result then reports it alone. Leave it on unless the signals are very strong: it raises the noise floor only 4 to 5 dB.
   - **What stays.** The tune's IF, bandwidth and `iq` are kept for tunes above 2 MHz. The tune result shows `lo` 0, `iq` `MIRISDR_IQ_ONLY_I`, and the low pass's edge as `bandwidth`. Scans refuse direct sampling.
   - **Response.** Flat from about 30 kHz to 1.5 MHz, 15 dB down at 2.5 MHz. Below 30 kHz it rolls off, 8 dB down at 10 kHz.
 
@@ -239,7 +239,7 @@ The gain goes with the tune, in `tc.gain`. Its `mode` decides what happens.
 
 The stages:
 
-  - `amp_bypass`: the board's amplifier before the tuner, on the RSP1B, RSPdx-R2 and RSPduo (the RSP2's is always in, and not counted). 0 keeps it in, 1 bypasses it. Its gain in the band, up to about 25 dB, counts in the total, and `mirisdr_get_frontend_caps()` says from which frequency it is there (30 MHz on the RSP1B and RSPdx-R2, 55 MHz on the RSPduo, not on its Hi-Z). `MIRISDR_GAIN_TOTAL` turns it on first, and bypasses it only for a total below its own gain. Elsewhere there is none, and the result reports 0.
+  - `amp_bypass`: the board's amplifier before the tuner, on the RSP1B, RSPdx-R2 and RSPduo (the RSP2's is always in, and not counted). 0 keeps it in, 1 bypasses it. Its gain in the band, up to about 25 dB, counts in the total, and `mirisdr_get_frontend_caps()` says from which frequency it is there (30 MHz on the RSP1B and RSPdx-R2, 55 MHz on the RSPduo, not on its Hi-Z). On the RSPdx it is there from 30 MHz but takes no bypass below 55 MHz: switched on again with that band's filter in place it oscillates, and the signal drops some 40 dB. A bypass asked there is 0 in force, or refused with `strict`. `MIRISDR_GAIN_TOTAL` turns it on first, and bypasses it only for a total below its own gain. Elsewhere there is none, and the result reports 0.
   - `lna`: on or off. It adds 24 dB on most bands, 7 dB in band IV/V and about 4 dB in L band. The AM inputs have none.
   - `mixer`: on or off. It adds 19 dB.
   - `mixbuffer`: only on the AM inputs. 0, 6, 12 or 18 dB on AM1, 0 or 24 dB on AM2.

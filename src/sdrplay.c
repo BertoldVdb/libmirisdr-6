@@ -55,7 +55,8 @@
  *   A4: FM notch 51-53 dB at 85-90 MHz, MW notch 19-28 dB at 0.55-1.6 MHz
  *   A6: DAB notch 50-72 dB at 175-210 MHz
  *   A0: direct sampling amplifier, on when released, +37.5 dB flat from 0.1 to 2
- *     MHz, the I converter's floor 4-5 dB up. No effect with GPIO_2 low
+ *     MHz, the I converter's floor 4-5 dB up. No effect with GPIO_2 low, so it is held
+ *     low (off) outside direct sampling and at close
  *
  * RSPdx-R2 direct sampling: GPIO_2 high (register 8, the MSi2500's own pin) switches the
  * I converter from the tuner's I output to the antenna through the HF bank, the tuner
@@ -249,7 +250,7 @@ static uint16_t mirisdr_sdrplay_word (int flavour, uint16_t word, int notch, int
     {
         if (antenna != MIRISDR_ANTENNA_B) w &= (uint16_t) ~SDRPLAY_A2;
         if (antenna != MIRISDR_ANTENNA_A) w &= (uint16_t) ~SDRPLAY_A3;
-        if (ds && !ds_lna) w &= (uint16_t) ~SDRPLAY_A0;
+        if (!ds || !ds_lna) w &= (uint16_t) ~SDRPLAY_A0;
         if (amp_off) w |= SDRPLAY_A5;
         if (mirisdr_dxr2_pads(att) > 0) w &= (uint16_t) ~(mirisdr_dxr2_pads(att) << DXR2_PAD);
     }
@@ -413,10 +414,11 @@ static int mirisdr_sdrplay_send (mirisdr_dev_t *p, int chip, uint16_t w)
     return r;
 }
 
-/* At close: the bias-T, the amplifiers, pads and notches off, and on the RSPduo the ports
-   apart (its second chip all released). The rest of the word as it was, all released when
-   it is not known. The next open sets the expanders up again. On the RSP2 the reference
-   output and the test oscillator off too, and the notch and attenuator bypassed */
+/* At close: the bias-T, the amplifiers (the RSPdx-R2's direct sampling one too), pads and
+   notches off, and on the RSPduo the ports apart (its second chip all released). The rest
+   of the word as it was, all released when it is not known. The next open sets the
+   expanders up again. On the RSP2 the reference output and the test oscillator off too,
+   and the notch and attenuator bypassed */
 static int mirisdr_sdrplay_off (mirisdr_dev_t *p)
 {
     int chip = (p->hw_flavour == MIRISDR_HW_RSPDUO) ? 1 : 0;
@@ -425,6 +427,7 @@ static int mirisdr_sdrplay_off (mirisdr_dev_t *p)
 
     if (!MIRISDR_HW_EXPANDER(p->hw_flavour)) return 0;
 
+    if (p->hw_flavour == MIRISDR_HW_RSPDXR2) return mirisdr_sdrplay_send(p, 0, (uint16_t) ((w | off) & ~SDRPLAY_A0));
     if (p->hw_flavour == MIRISDR_HW_RSP2)
     {
         w |= RSP2_REF_OUT | RSP2_BIAS | RSP2_PORT_TEST | RSP2_ATT_IN | RSP2_ATT_15 | RSP2_ATT_20 | RSP2_NOTCH_THROUGH;

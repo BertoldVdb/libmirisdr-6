@@ -871,7 +871,7 @@ SoapySDR::Range SoapyMiriSDR::getGainRange(const int direction, const size_t cha
         /* the RSPdx-R2's direct sampling amplifier counts as its LNA */
         if (name == "LNA")
         {
-            int lna = cap().direct_sampling ? MIRISDR_DS_LNA_DB : MAX_LNA;
+            int lna = cap().direct_sampling ? cap().ds_lna_db : MAX_LNA;
             return SoapySDR::Range(0, lna, lna);
         }
         if (name == "AMP" && cap().amp_bypass_hz) return SoapySDR::Range(0, cap().amp_max_db, cap().amp_max_db);

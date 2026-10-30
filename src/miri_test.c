@@ -1386,6 +1386,67 @@ static tres_t t_usb_reset (void)
     return within(sps, 2000000, 0.03) ? T_PASS : T_FAIL;
 }
 
+/* The RSPdx (its 32 dB direct sampling amplifier tells it from the RSPdx-R2): its amplifier
+   (A5), switched on again with the 30-60 filter in place, oscillates, so it takes no bypass
+   below 55 MHz: a bypass asked there is not in force, or refused strict, and a total keeps it
+   on. From 55 MHz the bypass as usual. Under direct sampling the gain is its amplifier's 32 dB */
+static tres_t t_rspdx_parts (void)
+{
+    mirisdr_frontend_caps_t caps;
+    mirisdr_tune_config_t tc;
+    mirisdr_tune_result_t tr;
+    int bad = 0;
+
+    if (mirisdr_get_frontend_caps(dev, 0, &caps) < 0 || !caps.direct_sampling || caps.ds_lna_db != 32)
+    { say("needs an RSPdx"); return T_SKIP; }
+    if (caps.amp_bypass_hz != 55000000) { say("amp_bypass_hz %u, not 55 MHz", caps.amp_bypass_hz); bad++; }
+
+    pump_stop();
+    mirisdr_get_tune(dev, 0, &tc, NULL);
+    tc.frontend.direct_sampling = MIRISDR_DS_OFF;
+    tc.gain.mode = MIRISDR_GAIN_STAGES; tc.gain.lna = 1; tc.gain.mixer = 1; tc.gain.mixbuffer = 0; tc.gain.baseband = 20;
+    tc.gain.amp_bypass = 1;
+    tc.frequency = 45000000;
+    if (mirisdr_tune_check(dev, 0, &tc, &tr) < 0 || tr.gain.amp_bypass || (tr.frontend.raw.expander[0] & 0x20))
+    { say("45 MHz bypass asked: in force %d, word %04X", tr.gain.amp_bypass, tr.frontend.raw.expander[0]); bad++; }
+    tc.strict = 1;
+    if (mirisdr_tune_check(dev, 0, &tc, &tr) == 0) { say("45 MHz bypass accepted, strict"); bad++; }
+    tc.strict = 0;
+    tc.gain.mode = MIRISDR_GAIN_TOTAL; tc.gain.total = 5;
+    if (mirisdr_tune_check(dev, 0, &tc, &tr) < 0 || tr.gain.amp_bypass || (tr.frontend.raw.expander[0] & 0x20))
+    { say("45 MHz total 5: bypass %d, total %d, word %04X", tr.gain.amp_bypass, tr.gain.total, tr.frontend.raw.expander[0]); bad++; }
+    note("45 MHz total 5: total %d in force, word %04X", tr.gain.total, tr.frontend.raw.expander[0]);
+    tc.strict = 1;
+    if (mirisdr_tune_check(dev, 0, &tc, &tr) == 0) { say("45 MHz total 5 accepted, strict"); bad++; }
+    tc.strict = 0;
+    tc.gain.mode = MIRISDR_GAIN_STAGES; tc.gain.amp_bypass = 1;
+    tc.frequency = 100000000;
+    if (mirisdr_tune_check(dev, 0, &tc, &tr) < 0 || !tr.gain.amp_bypass || !(tr.frontend.raw.expander[0] & 0x20))
+    { say("100 MHz bypass: in force %d, word %04X", tr.gain.amp_bypass, tr.frontend.raw.expander[0]); bad++; }
+    tc.gain.amp_bypass = 0;
+
+    tc.frontend.notch = 0;
+    tc.frequency = 1000000;
+    tc.frontend.direct_sampling = MIRISDR_DS_ON;
+    tc.gain.mode = MIRISDR_GAIN_TOTAL; tc.gain.total = 32;
+    if (mirisdr_tune_check(dev, 0, &tc, &tr) < 0 || !tr.frontend.direct_sampling || !tr.gain.lna || tr.gain.total != 32)
+    { say("1 MHz total 32: ds %d lna %d total %d", tr.frontend.direct_sampling, tr.gain.lna, tr.gain.total); bad++; }
+    tc.gain.total = 15;
+    if (mirisdr_tune_check(dev, 0, &tc, &tr) < 0 || tr.gain.lna || tr.gain.total) { say("1 MHz total 15: lna %d total %d", tr.gain.lna, tr.gain.total); bad++; }
+    tc.gain.total = 16;
+    if (mirisdr_tune_check(dev, 0, &tc, &tr) < 0 || !tr.gain.lna || tr.gain.total != 32) { say("1 MHz total 16: lna %d total %d", tr.gain.lna, tr.gain.total); bad++; }
+    tc.gain.total = 37; tc.strict = 1;
+    if (mirisdr_tune_check(dev, 0, &tc, &tr) == 0) { say("strict total 37 accepted under direct sampling"); bad++; }
+    tc.strict = 0; tc.gain.total = 32;
+    if (mirisdr_tune(dev, 0, &tc, &tr) < 0 || mirisdr_get_lna_gain(dev) != 32) { say("get_lna_gain %d", mirisdr_get_lna_gain(dev)); bad++; }
+
+    tc.frontend.direct_sampling = MIRISDR_DS_OFF;
+    tc.frequency = 100000000;
+    mirisdr_tune(dev, 0, &tc, NULL);
+
+    return bad ? T_FAIL : T_PASS;
+}
+
 /* The RSPdx-R2's tuner rests under direct sampling, as nothing hears it, and comes back
    calibrated: nothing to read from it in standby, after the retune the VCO band it had before,
    the stream running through both */
@@ -4555,24 +4616,24 @@ static tres_t t_plan_raw (void)
 static tres_t t_plan_dxr2 (void)
 {
     static const struct { uint32_t hz; int ant, bias, notch, word; } want[] = {
-        {    300000, MIRISDR_ANTENNA_A, 0, 0, 0x3DFB },    /* 2 MHz low pass: the zero IF filter */
-        {   1000000, MIRISDR_ANTENNA_A, 0, 0, 0x3DFB },    /*   reaches past 500 kHz */
-        {   5000000, MIRISDR_ANTENNA_A, 0, 0, 0x3CFB },    /* 2-12 */
-        {  13000000, MIRISDR_ANTENNA_A, 0, 0, 0x3EFB },    /* 12-30 */
-        {  20000000, MIRISDR_ANTENNA_A, 0, 0, 0x3EFB },    /* 12-30, A5 released */
-        {  40000000, MIRISDR_ANTENNA_A, 0, 0, 0x3D5B },    /* 30-60 */
-        { 100000000, MIRISDR_ANTENNA_A, 0, 0, 0xBFDB },    /* VHF */
-        { 150000000, MIRISDR_ANTENNA_A, 0, 0, 0x7FDB },    /* band III */
-        { 270000000, MIRISDR_ANTENNA_A, 0, 0, 0x3F5B },    /* 250-300 */
-        { 340000000, MIRISDR_ANTENNA_A, 0, 0, 0x3C5B },    /* 300-380 */
-        { 400000000, MIRISDR_ANTENNA_A, 0, 0, 0x3E5B },    /* 380-420 */
-        { 600000000, MIRISDR_ANTENNA_A, 0, 0, 0xBFDB },    /* band IV/V */
-        {1400000000, MIRISDR_ANTENNA_A, 0, 0, 0x7FDB },    /* L band */
-        { 100000000, MIRISDR_ANTENNA_B, 0, 0, 0xBFD7 },
-        { 100000000, MIRISDR_ANTENNA_C, 0, 0, 0xBFD3 },
-        { 100000000, MIRISDR_ANTENNA_B, 1, 0, 0xBFD5 },
-        { 100000000, MIRISDR_ANTENNA_A, 0, MIRISDR_NOTCH_FM, 0xBFCB },
-        { 200000000, MIRISDR_ANTENNA_A, 0, MIRISDR_NOTCH_DAB, 0x7F9B },
+        {    300000, MIRISDR_ANTENNA_A, 0, 0, 0x3DFA },    /* 2 MHz low pass: the zero IF filter */
+        {   1000000, MIRISDR_ANTENNA_A, 0, 0, 0x3DFA },    /*   reaches past 500 kHz */
+        {   5000000, MIRISDR_ANTENNA_A, 0, 0, 0x3CFA },    /* 2-12 */
+        {  13000000, MIRISDR_ANTENNA_A, 0, 0, 0x3EFA },    /* 12-30 */
+        {  20000000, MIRISDR_ANTENNA_A, 0, 0, 0x3EFA },    /* 12-30, A5 released */
+        {  40000000, MIRISDR_ANTENNA_A, 0, 0, 0x3D5A },    /* 30-60 */
+        { 100000000, MIRISDR_ANTENNA_A, 0, 0, 0xBFDA },    /* VHF */
+        { 150000000, MIRISDR_ANTENNA_A, 0, 0, 0x7FDA },    /* band III */
+        { 270000000, MIRISDR_ANTENNA_A, 0, 0, 0x3F5A },    /* 250-300 */
+        { 340000000, MIRISDR_ANTENNA_A, 0, 0, 0x3C5A },    /* 300-380 */
+        { 400000000, MIRISDR_ANTENNA_A, 0, 0, 0x3E5A },    /* 380-420 */
+        { 600000000, MIRISDR_ANTENNA_A, 0, 0, 0xBFDA },    /* band IV/V */
+        {1400000000, MIRISDR_ANTENNA_A, 0, 0, 0x7FDA },    /* L band */
+        { 100000000, MIRISDR_ANTENNA_B, 0, 0, 0xBFD6 },
+        { 100000000, MIRISDR_ANTENNA_C, 0, 0, 0xBFD2 },
+        { 100000000, MIRISDR_ANTENNA_B, 1, 0, 0xBFD4 },
+        { 100000000, MIRISDR_ANTENNA_A, 0, MIRISDR_NOTCH_FM, 0xBFCA },
+        { 200000000, MIRISDR_ANTENNA_A, 0, MIRISDR_NOTCH_DAB, 0x7F9A },
     };
     mirisdr_dev_t *n;
     mirisdr_tune_config_t c;
@@ -4612,9 +4673,9 @@ static tres_t t_plan_dxr2 (void)
     c.frontend.antenna = MIRISDR_ANTENNA_A; c.frontend.bias = 0; c.frontend.notch = 0;
     c.if_freq = 450000; c.bandwidth = 200000;
     c.frequency = 400000;
-    if ((w = plan_exp_word(n, &c)) != 0x3FFB) { plan_bad++; say("400 kHz, 200 kHz wide: word %04X, not 3FFB", w); }
+    if ((w = plan_exp_word(n, &c)) != 0x3FFA) { plan_bad++; say("400 kHz, 200 kHz wide: word %04X, not 3FFA", w); }
     c.frequency = 401000;
-    if ((w = plan_exp_word(n, &c)) != 0x3DFB) { plan_bad++; say("401 kHz, 200 kHz wide: word %04X, not 3DFB", w); }
+    if ((w = plan_exp_word(n, &c)) != 0x3DFA) { plan_bad++; say("401 kHz, 200 kHz wide: word %04X, not 3DFA", w); }
     c.if_freq = 0; c.bandwidth = 0;
 
     /* HF: the 2 MHz low pass to 1.7 MHz, 2-12 up to 12.5 MHz, then 12-30, A5 released (no
@@ -4622,9 +4683,9 @@ static tres_t t_plan_dxr2 (void)
        amplifier, A5 low */
     {
         static const struct { uint32_t hz; uint16_t word; } hf[] = {
-            { 1699000, 0x3DFB }, { 1700000, 0x3CFB }, { 12499000, 0x3CFB }, { 12500000, 0x3EFB }, { 17000000, 0x3EFB }, { 21000000, 0x3EFB },
-            { 25900000, 0x3EFB }, { 29900000, 0x3EFB },
-            { 349000000, 0x3C5B }, { 350000000, 0x3E5B },          /* the 380-420 filter from 350 MHz */
+            { 1699000, 0x3DFA }, { 1700000, 0x3CFA }, { 12499000, 0x3CFA }, { 12500000, 0x3EFA }, { 17000000, 0x3EFA }, { 21000000, 0x3EFA },
+            { 25900000, 0x3EFA }, { 29900000, 0x3EFA },
+            { 349000000, 0x3C5A }, { 350000000, 0x3E5A },          /* the 380-420 filter from 350 MHz */
         };
         mirisdr_tune_config_default(&c);
         c.gain.mode = MIRISDR_GAIN_TOTAL; c.gain.total = 60;
@@ -4642,26 +4703,26 @@ static tres_t t_plan_dxr2 (void)
        apart from the total: 21 dB is B3 and B5, 36 all four, and 4 and 39 are refused */
     c.frequency = 100000000; c.frontend.antenna = MIRISDR_ANTENNA_A;
     c.gain.mode = MIRISDR_GAIN_TOTAL; c.gain.total = 200;
-    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.gain.total != 126 || r.gain.amp_bypass || r.frontend.raw.expander[0] != 0xBFDB)
+    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.gain.total != 126 || r.gain.amp_bypass || r.frontend.raw.expander[0] != 0xBFDA)
     { plan_bad++; say("RSPdx-R2 total 200 at 100 MHz: %d, bypass %d, word %04X", r.gain.total, r.gain.amp_bypass, r.frontend.raw.expander[0]); }
     c.gain.total = 23;
-    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.gain.total != 23 || !r.gain.amp_bypass || r.frontend.raw.expander[0] != 0xBFFB)
+    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.gain.total != 23 || !r.gain.amp_bypass || r.frontend.raw.expander[0] != 0xBFFA)
     { plan_bad++; say("RSPdx-R2 total 23 at 100 MHz: %d, bypass %d, word %04X", r.gain.total, r.gain.amp_bypass, r.frontend.raw.expander[0]); }
     c.gain.mode = MIRISDR_GAIN_STAGES; c.gain.lna = 1; c.gain.mixer = 1; c.gain.mixbuffer = 0; c.gain.baseband = 30; c.gain.amp_bypass = 0;
-    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.gain.total != 24 + 24 + 19 + 30 || r.frontend.raw.expander[0] != 0xBFDB)
+    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.gain.total != 24 + 24 + 19 + 30 || r.frontend.raw.expander[0] != 0xBFDA)
     { plan_bad++; say("RSPdx-R2 stages with the amplifier: %d, word %04X", r.gain.total, r.frontend.raw.expander[0]); }
     c.gain.amp_bypass = 1;
-    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.gain.total != 24 + 19 + 30 || r.frontend.raw.expander[0] != 0xBFFB)
+    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.gain.total != 24 + 19 + 30 || r.frontend.raw.expander[0] != 0xBFFA)
     { plan_bad++; say("RSPdx-R2 stages bypassed: %d, word %04X", r.gain.total, r.frontend.raw.expander[0]); }
     c.frequency = 10000000;
-    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.gain.amp_bypass || r.frontend.raw.expander[0] != 0x3CFB)
+    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.gain.amp_bypass || r.frontend.raw.expander[0] != 0x3CFA)
     { plan_bad++; say("RSPdx-R2 bypass at 10 MHz: %d, word %04X", r.gain.amp_bypass, r.frontend.raw.expander[0]); }
     c.frequency = 100000000; c.gain.amp_bypass = 0;
     c.frontend.attenuator = 21;
-    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.frontend.attenuator != 21 || r.gain.total != 97 || r.frontend.raw.expander[0] != 0x97DB)
+    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.frontend.attenuator != 21 || r.gain.total != 97 || r.frontend.raw.expander[0] != 0x97DA)
     { plan_bad++; say("RSPdx-R2 21 dB of pads: %d, total %d, word %04X", r.frontend.attenuator, r.gain.total, r.frontend.raw.expander[0]); }
     c.frontend.attenuator = 36;
-    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.frontend.raw.expander[0] != 0x83DB)
+    if (mirisdr_tune_check(n, 0, &c, &r) < 0 || r.frontend.raw.expander[0] != 0x83DA)
     { plan_bad++; say("RSPdx-R2 36 dB of pads: word %04X", r.frontend.raw.expander[0]); }
     c.frontend.attenuator = 4; c.strict = 1;
     if (mirisdr_tune_check(n, 0, &c, &r) == 0) { plan_bad++; say("RSPdx-R2 4 dB of pads accepted, strict"); }
@@ -7369,6 +7430,7 @@ static const struct {
     { "tuner",    "tuning across bands",        t_tuning              },
     { "tuner",    "tuner status readback",      t_tuner_status        },
     { "tuner",    "tuner rests in direct sampling", t_ds_standby      },
+    { "tuner",    "RSPdx amplifiers",           t_rspdx_parts         },
     { "tuner",    "RSPduo tuner 1 wakes calibrated", t_duo_wake       },
     { "tuner",    "tuner overrides",            t_tuner_override      },
     { "tuner",    "unknown override",           t_tuner_unknown       },

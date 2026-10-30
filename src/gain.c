@@ -189,11 +189,13 @@ typedef struct mirisdr_gr
     int lna, mixbuffer, mixer, baseband;
     int amp;            /* the board's amplifier bypassed */
     int amp_db;         /* its gain on the path in force, 0 none: given, not chosen */
+    int amp_fixed;      /* and it cannot be bypassed there: given */
 } mirisdr_gr_t;
 
 /* A total split for a band and r->amp_db: the front end first, so noise figure and IIP3
-   stay low. The board's amplifier is on while the total holds it. On a path without one its
-   state is left as it was, for the next path that has one */
+   stay low. The board's amplifier is on while the total holds it, always where it cannot
+   be bypassed. On a path without one its state is left as it was, for the next path that
+   has one */
 static void mirisdr_split_of(mirisdr_band_t band, int gain, mirisdr_gr_t *r)
 {
     int front = mirisdr_front_gain_of(band);
@@ -203,8 +205,8 @@ static void mirisdr_split_of(mirisdr_band_t band, int gain, mirisdr_gr_t *r)
 
     if (r->amp_db)
     {
-        r->amp = gain < r->amp_db;
-        if (!r->amp) gain -= r->amp_db;
+        r->amp = !r->amp_fixed && (gain < r->amp_db);
+        if (!r->amp) gain = (gain > r->amp_db) ? gain - r->amp_db : 0;
     }
 
     if (gain >= front + 19)
@@ -271,6 +273,7 @@ static void mirisdr_gr_get(const mirisdr_dev_t *p, mirisdr_gr_t *r)
     r->baseband = p->gain_reduction_baseband;
     r->amp = p->gain_reduction_amp;
     r->amp_db = p->amp_db;
+    r->amp_fixed = p->amp_fixed;
 }
 
 static void mirisdr_gr_set(mirisdr_dev_t *p, const mirisdr_gr_t *r)
@@ -281,11 +284,12 @@ static void mirisdr_gr_set(mirisdr_dev_t *p, const mirisdr_gr_t *r)
     p->gain_reduction_baseband = r->baseband;
     p->gain_reduction_amp = r->amp;
     p->amp_db = r->amp_db;
+    p->amp_fixed = r->amp_fixed;
 }
 
 /* Stages asked for as reductions, for a band and r->amp_db. Strict: dB values the band
    cannot do are refused, the mixbuffer off the AM inputs, and a bypass where there is no
-   amplifier. Otherwise each is taken to the nearest the band has (on or off, baseband 0-59,
+   amplifier or it cannot be bypassed. Otherwise each is taken to the nearest the band has (on or off, baseband 0-59,
    the mixbuffer's steps). The LNA's state is kept on the AM inputs, which do not have it, for
    the band after (the stages read back carry it there). On a path without the amplifier its
    state is left as it was */
@@ -295,7 +299,7 @@ static int mirisdr_gr_of_stages(mirisdr_band_t band, const mirisdr_gain_config_t
     const int am = (band == MIRISDR_BAND_AM1) || (band == MIRISDR_BAND_AM2);
 
     if (strict && ((g->lna & ~1) || (g->mixer & ~1) || (g->amp_bypass & ~1) || (bb < 0) || (bb > 59) ||
-                   (g->amp_bypass && !r->amp_db) || (!am && mb)))
+                   (g->amp_bypass && (!r->amp_db || r->amp_fixed)) || (!am && mb)))
         return -1;
 
     if (bb < 0) bb = 0;
@@ -303,7 +307,7 @@ static int mirisdr_gr_of_stages(mirisdr_band_t band, const mirisdr_gain_config_t
     r->lna = !g->lna;
     r->mixer = !g->mixer;
     r->baseband = 59 - bb;
-    if (r->amp_db) r->amp = !!g->amp_bypass;
+    if (r->amp_db) r->amp = !r->amp_fixed && g->amp_bypass;
 
     if (band == MIRISDR_BAND_AM2)
     {
@@ -635,7 +639,7 @@ int mirisdr_get_lna_gain(mirisdr_dev_t *p)
 
     gain = 24;
     /* under direct sampling its amplifier */
-    if (p->ds) gain = p->ds_lna ? MIRISDR_DS_LNA_DB : 0;
+    if (p->ds) gain = p->ds_lna ? mirisdr_ds_lna_db(p) : 0;
     else if (p->gain_reduction_lna) gain = 0;
     else if (p->band == MIRISDR_BAND_45) gain = 7;
     else if (p->band == MIRISDR_BAND_L) gain = 4; /* mean of measured values, with LNA cal */
