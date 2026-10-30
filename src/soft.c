@@ -703,6 +703,7 @@ static uint32_t mirisdr_frontend_flags (int flavour)
 /* how long the synthesizer gets to start when the tuner wakes, before its band search */
 #define MIRISDR_WAKE_US         1000
 #define MIRISDR_EXP_SETTLE_US   200     /* after a front end pin switched, before the tuner's words */
+#define MIRISDR_OVR14_CAL_HELD  0x841   /* register 14's holds of the VCO, the up-converter and the finer control */
 
 /* Nothing hears the selected tuner under direct sampling (ds), or when the stream does not
    take it. Left running, a strong signal on it still shows in what is heard (seen on the
@@ -725,7 +726,7 @@ static int mirisdr_tune_send (mirisdr_dev_t *p, const mirisdr_tune_words_t *w, c
 {
     int r = 0;
     uint16_t was0 = p->exp_iodir[0], was1 = p->exp_iodir[1];
-    int valid = p->exp_valid;
+    int valid = p->exp_valid & ~p->exp_stale;   /* a stale word may not be the chip's (a scan's wrap) */
 
     if ((fe->fields & MIRISDR_FRONTEND_RAW_EXP1) &&
         ((mirisdr_duo_close(p, fe->expander[0]) < 0) || (mirisdr_sdrplay_send(p, 0, fe->expander[0]) < 0))) r = -1;
@@ -735,9 +736,9 @@ static int mirisdr_tune_send (mirisdr_dev_t *p, const mirisdr_tune_words_t *w, c
        (the RSP1A's B1, the RSPdx's A5) is a supply step, and during the calibration register 2
        starts it left the up-converter's code or the VCO band wrong, the tuner deaf (35-45 dB
        down) until its next tune (2026-10-30). The other pins did nothing to it. 50 us was enough.
-       Not in a scan's recorded hops, which take no waits: a scan across the amplifier switching
-       on can still meet it */
-    if (!p->rec &&
+       A tune that holds the codes the calibration would find (VCO, its finer control and the
+       up-converter's) has nothing to disturb and skips it, which keeps held scan hops short */
+    if (((p->tuner_ovr14 & MIRISDR_OVR14_CAL_HELD) != MIRISDR_OVR14_CAL_HELD) &&
         (((fe->fields & MIRISDR_FRONTEND_RAW_EXP1) && (!(valid & 1) || (was0 != p->exp_iodir[0]))) ||
          ((fe->fields & MIRISDR_FRONTEND_RAW_EXP2) && (!(valid & 2) || (was1 != p->exp_iodir[1])))))
     {

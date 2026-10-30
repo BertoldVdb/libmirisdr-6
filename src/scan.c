@@ -166,9 +166,11 @@ static int mirisdr_scan_hop_words (mirisdr_dev_t *sh, mirisdr_dev_t *p, const mi
 
     if (mirisdr_tune_apply(sh, c, 0, &h->res) < 0) goto refused;
 
+    /* the only wait a hop takes is the front end's settling after its word changed: a
+       calibration's would hold the list far longer */
     for (i = from; i < sh->rec_n; i++)
     {
-        if (sh->rec[i].reg == MIRISDR_LIST_WAIT_US)
+        if ((sh->rec[i].reg == MIRISDR_LIST_WAIT_US) && (sh->rec[i].val != MIRISDR_EXP_SETTLE_US))
         {
             fprintf(stderr, "hop %u: would calibrate in the list\n", k);
             return -1;
@@ -180,8 +182,11 @@ static int mirisdr_scan_hop_words (mirisdr_dev_t *sh, mirisdr_dev_t *p, const mi
         h->pre_entries = (uint16_t) (i - from);
     }
 
-    for (i = from, h->pre_words = 0; i < from + h->pre_entries; i++)
+    for (i = from, h->pre_words = 0, h->pre_us = 0; i < from + h->pre_entries; i++)
+    {
         if (sh->rec[i].reg == 0x09) h->pre_words++;
+        if (sh->rec[i].reg == MIRISDR_LIST_WAIT_US) h->pre_us = (uint16_t) (h->pre_us + sh->rec[i].val);
+    }
 
     if (r2 != 1)
     {

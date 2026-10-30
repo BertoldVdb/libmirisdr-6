@@ -4316,7 +4316,8 @@ static tres_t t_plan_frontend (void)
     mirisdr_tune_config_t c, got, h[3];
     mirisdr_tune_result_t r;
     mirisdr_scan_t *s;
-    mirisdr_scan_hop_t hb, hc;
+    mirisdr_scan_hop_t ha, hb, hc;
+    int k;
 
     plan_bad = 0;
 
@@ -4366,6 +4367,25 @@ static tres_t t_plan_frontend (void)
         mirisdr_scan_hop(s, 1, &hb);
         mirisdr_scan_hop(s, 2, &hc);
         if (hb.pre_entries <= hc.pre_entries || hb.res.frontend.notch != (MIRISDR_NOTCH_FM | MIRISDR_NOTCH_MW)) { plan_bad++; say("hop entries before register 2: %u then %u, notch %x", hb.pre_entries, hc.pre_entries, hb.res.frontend.notch); }
+        /* the front end settles before the calibration: the first hop (the list wraps to it) and
+           the one whose word changed wait, the same word again does not */
+        mirisdr_scan_hop(s, 0, &ha);
+        if (ha.pre_us != 200 || hb.pre_us != 200 || hc.pre_us) { plan_bad++; say("hop waits %u, %u, %u us, not 200, 200, 0", ha.pre_us, hb.pre_us, hc.pre_us); }
+        mirisdr_scan_free(s);
+    }
+
+    /* hops holding their VCO and up-converter codes calibrate nothing, so none waits */
+    for (k = 0; k < 3; k++)
+    {
+        h[k].override.hold_vco = 1; h[k].override.coarse = 1; h[k].override.fine = 10;
+        h[k].override.hold_unknown = 1; h[k].override.unknown = 12;
+        h[k].override.hold_upconv = 1; h[k].override.upconv = 2;
+    }
+    if (mirisdr_scan_compile(n, 0, h, 3, 4, &s) < 0) { plan_bad++; say("held scan with notches refused"); }
+    else
+    {
+        mirisdr_scan_hop(s, 0, &ha); mirisdr_scan_hop(s, 1, &hb); mirisdr_scan_hop(s, 2, &hc);
+        if (ha.pre_us || hb.pre_us || hc.pre_us) { plan_bad++; say("held hops wait %u, %u, %u us", ha.pre_us, hb.pre_us, hc.pre_us); }
         mirisdr_scan_free(s);
     }
 

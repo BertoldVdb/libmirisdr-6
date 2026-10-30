@@ -1006,9 +1006,9 @@ MIRISDR_API int mirisdr_get_list_status (mirisdr_dev_t *p, mirisdr_list_status_t
  * before it, which is the start of the packet before the one that toggles. Each wait
  * counts its own dwell interrupts of 1 (isochronous 1x1024) to 4 (bulk) packets, so a
  * hop that started late still gets them and the hops after it move. Entries before
- * register 2 (a band change, the expander, held codes) delay it by up to ~3 packets, and
- * the host loading the next chunk now and then delays a hop more (up to ~0.5 ms seen in
- * isochronous mode). The reports come from each hop's own toggle, so they correctly identify
+ * register 2 (a band change, the expander and its settling, held codes) delay it by up to
+ * ~3 packets, and the host loading the next chunk now and then delays a hop more (up to
+ * ~0.5 ms seen in isochronous mode). The reports come from each hop's own toggle, so they correctly identify
  * the samples regardless of delays.
  * Measured on an RSP1B at 8 Msps: the tone moves ~27 us in and is within 2 kHz after
  * ~0.13-0.15 ms and ~0.09-0.13 ms with all codes held.
@@ -1021,6 +1021,8 @@ typedef struct mirisdr_scan_hop
 	uint16_t entries;        /* list entries it takes, its wait included */
 	uint16_t pre_entries;    /* entries before its register 2 */
 	uint16_t pre_words;      /* of which tuner words, ~5.6 us each */
+	uint16_t pre_us;         /* and waits, us: the front end settling after its word changed,
+	                            200 us unless the hop holds its tuner codes */
 	mirisdr_tune_result_t res;
 	uint32_t reserved[MIRISDR_RESERVED];
 } mirisdr_scan_hop_t;
