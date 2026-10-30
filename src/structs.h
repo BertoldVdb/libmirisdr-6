@@ -28,8 +28,6 @@ typedef struct mirisdr_device {
                                            image's own, bus powered at 500 mA */
     int                 ds_lna_db;      /* the direct sampling amplifier's gain, dB, 0 for
                                            MIRISDR_DS_LNA_DB */
-    int                 amp_fixed_30_60; /* the amplifier (A5) is not bypassed on the 30-60
-                                           filter's path: switched on again there it oscillates */
 } mirisdr_device_t;
 
 /* the lock on the transfers, recursive: a stop holds it while it frees and allocates them
@@ -64,7 +62,6 @@ typedef struct mirisdr_tuner_ctx
     int                 gain_stages_set;
     int                 gain_reduction_amp;
     int                 amp_db;
-    int                 amp_fixed;
     int                 attenuator;
     int                 lna_cal_mhz;
     mirisdr_band_t      band;
@@ -98,7 +95,7 @@ typedef struct mirisdr_tuner_ctx
 
 /* its fields, as the device has them too (tuner_reg apart, an array) */
 #define MIRISDR_TUNER_CTX(X) X(freq) X(gain) X(gain_reduction_lna) X(gain_reduction_mixbuffer) \
-    X(gain_reduction_mixer) X(gain_reduction_baseband) X(gain_stages_set) X(gain_reduction_amp) X(amp_db) X(amp_fixed) X(attenuator) X(lna_cal_mhz) X(band) \
+    X(gain_reduction_mixer) X(gain_reduction_baseband) X(gain_stages_set) X(gain_reduction_amp) X(amp_db) X(attenuator) X(lna_cal_mhz) X(band) \
     X(bandwidth) X(if_freq) X(bias) X(tune) X(tune_lo) X(tune_iq) X(tune_exp) X(tuner_valid) X(tuner_turned) X(tuner_last) \
     X(tuner_regd) X(tuner_ovr13) X(tuner_ovr14) X(filter_cal) X(tuner_gap) X(dc_n) X(notch) X(antenna) \
     X(ds) X(ds_lna) X(ds_edge) X(dc_mode) X(dc_speedup) X(dc_track) X(dc_period)
@@ -119,7 +116,6 @@ struct mirisdr_dev {
     int                 gain_stages_set;    /* a stage set by hand: retunes keep the split */
     int                 gain_reduction_amp; /* the board's amplifier before the tuner bypassed */
     int                 amp_db;             /* that amplifier's gain in the band in force, 0 none */
-    int                 amp_fixed;          /* and it cannot be bypassed there */
     int                 attenuator;         /* dB of the board's pad, 0 none (frontend) */
     uint8_t             gpio_hold;          /* the open config's gpio_input_mask */
     uint32_t            fe_flags;           /* frontend.flags in force: the board's, not a tuner's */
@@ -262,8 +258,7 @@ struct mirisdr_dev {
     int                 ds;             /* RSPdx-R2 direct sampling in force: GPIO_2 high */
     int                 ds_lna;         /* its amplifier on (expander A0 released) */
     uint32_t            ds_edge;        /* Hz, the low pass it runs through, 0 without it */
-    int                 ds_lna_db;      /* the board's, from its table entry: 0 for */
-    int                 amp_fixed_30_60; /* MIRISDR_DS_LNA_DB, and its amplifier on 30-60 */
+    int                 ds_lna_db;      /* the board's, from its table entry: 0 for MIRISDR_DS_LNA_DB */
     int                 fw_ours;
     uint8_t             fw_pps_at;      /* status blocks, from the firmware block: internal RAM, */
     uint16_t            fw_anchor_at;   /* xdata, */

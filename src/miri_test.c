@@ -1387,9 +1387,9 @@ static tres_t t_usb_reset (void)
 }
 
 /* The RSPdx (its 32 dB direct sampling amplifier tells it from the RSPdx-R2): its amplifier
-   (A5), switched on again with the 30-60 filter in place, oscillates, so it takes no bypass
-   below 55 MHz: a bypass asked there is not in force, or refused strict, and a total keeps it
-   on. From 55 MHz the bypass as usual. Under direct sampling the gain is its amplifier's 32 dB */
+   bypassed from 30 MHz as on the RSPdx-R2 (switched on again, it once left the tuner deaf, the
+   front end's settling wait in soft.c cured that). Under direct sampling the gain is its
+   amplifier's 32 dB */
 static tres_t t_rspdx_parts (void)
 {
     mirisdr_frontend_caps_t caps;
@@ -1399,7 +1399,7 @@ static tres_t t_rspdx_parts (void)
 
     if (mirisdr_get_frontend_caps(dev, 0, &caps) < 0 || !caps.direct_sampling || caps.ds_lna_db != 32)
     { say("needs an RSPdx"); return T_SKIP; }
-    if (caps.amp_bypass_hz != 55000000) { say("amp_bypass_hz %u, not 55 MHz", caps.amp_bypass_hz); bad++; }
+    if (caps.amp_bypass_hz != 30000000) { say("amp_bypass_hz %u, not 30 MHz", caps.amp_bypass_hz); bad++; }
 
     pump_stop();
     mirisdr_get_tune(dev, 0, &tc, NULL);
@@ -1407,22 +1407,14 @@ static tres_t t_rspdx_parts (void)
     tc.gain.mode = MIRISDR_GAIN_STAGES; tc.gain.lna = 1; tc.gain.mixer = 1; tc.gain.mixbuffer = 0; tc.gain.baseband = 20;
     tc.gain.amp_bypass = 1;
     tc.frequency = 45000000;
-    if (mirisdr_tune_check(dev, 0, &tc, &tr) < 0 || tr.gain.amp_bypass || (tr.frontend.raw.expander[0] & 0x20))
-    { say("45 MHz bypass asked: in force %d, word %04X", tr.gain.amp_bypass, tr.frontend.raw.expander[0]); bad++; }
-    tc.strict = 1;
-    if (mirisdr_tune_check(dev, 0, &tc, &tr) == 0) { say("45 MHz bypass accepted, strict"); bad++; }
-    tc.strict = 0;
-    tc.gain.mode = MIRISDR_GAIN_TOTAL; tc.gain.total = 5;
-    if (mirisdr_tune_check(dev, 0, &tc, &tr) < 0 || tr.gain.amp_bypass || (tr.frontend.raw.expander[0] & 0x20))
-    { say("45 MHz total 5: bypass %d, total %d, word %04X", tr.gain.amp_bypass, tr.gain.total, tr.frontend.raw.expander[0]); bad++; }
-    note("45 MHz total 5: total %d in force, word %04X", tr.gain.total, tr.frontend.raw.expander[0]);
-    tc.strict = 1;
-    if (mirisdr_tune_check(dev, 0, &tc, &tr) == 0) { say("45 MHz total 5 accepted, strict"); bad++; }
-    tc.strict = 0;
-    tc.gain.mode = MIRISDR_GAIN_STAGES; tc.gain.amp_bypass = 1;
-    tc.frequency = 100000000;
     if (mirisdr_tune_check(dev, 0, &tc, &tr) < 0 || !tr.gain.amp_bypass || !(tr.frontend.raw.expander[0] & 0x20))
-    { say("100 MHz bypass: in force %d, word %04X", tr.gain.amp_bypass, tr.frontend.raw.expander[0]); bad++; }
+    { say("45 MHz bypass: in force %d, word %04X", tr.gain.amp_bypass, tr.frontend.raw.expander[0]); bad++; }
+    tc.gain.mode = MIRISDR_GAIN_TOTAL; tc.gain.total = 5;
+    if (mirisdr_tune_check(dev, 0, &tc, &tr) < 0 || !tr.gain.amp_bypass || !(tr.frontend.raw.expander[0] & 0x20))
+    { say("45 MHz total 5: bypass %d, word %04X", tr.gain.amp_bypass, tr.frontend.raw.expander[0]); bad++; }
+    tc.gain.total = 60;
+    if (mirisdr_tune_check(dev, 0, &tc, &tr) < 0 || tr.gain.amp_bypass || (tr.frontend.raw.expander[0] & 0x20))
+    { say("45 MHz total 60: bypass %d, word %04X", tr.gain.amp_bypass, tr.frontend.raw.expander[0]); bad++; }
     tc.gain.amp_bypass = 0;
 
     tc.frontend.notch = 0;

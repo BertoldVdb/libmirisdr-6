@@ -1284,8 +1284,6 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
     /* the gain in that band, the board's amplifier on this path */
     mirisdr_gr_get(p, &pl->gr);
     pl->gr.amp_db = pl->ds ? 0 : pl->w.amp_db;
-    /* the RSPdx's amplifier, switched on with the 30-60 filter in place, oscillates: kept on there */
-    pl->gr.amp_fixed = pl->gr.amp_db && p->amp_fixed_30_60 && (pl->w.expander == RSP1B_30_60);
     if (g.mode == MIRISDR_GAIN_STAGES)
     {
         if (mirisdr_gr_of_stages(pl->w.band, &g, &pl->gr, strict) < 0)
@@ -1298,11 +1296,10 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
     }
     else if (c->gain.mode == MIRISDR_GAIN_TOTAL)
     {
-        if (strict && !pl->ds && ((c->gain.total > mirisdr_max_gain_of(pl->w.band) + pl->gr.amp_db) ||
-                                  (pl->gr.amp_fixed && (c->gain.total < pl->gr.amp_db))))
+        if (strict && !pl->ds && (c->gain.total > mirisdr_max_gain_of(pl->w.band) + pl->gr.amp_db))
         {
-            mirisdr_refuse(p, "unsupported gain %d dB: the band takes %d to %d\n", c->gain.total,
-                           pl->gr.amp_fixed ? pl->gr.amp_db : 0, mirisdr_max_gain_of(pl->w.band) + pl->gr.amp_db);
+            mirisdr_refuse(p, "unsupported gain %d dB: the band reaches %d\n", c->gain.total,
+                           mirisdr_max_gain_of(pl->w.band) + pl->gr.amp_db);
             return -1;
         }
         mirisdr_split_of(pl->w.band, c->gain.total, &pl->gr);
@@ -1597,7 +1594,6 @@ static void mirisdr_tuner_defaults (mirisdr_dev_t *p)
     p->gain_reduction_baseband = 43;
     p->gain_reduction_amp = 0;
     p->amp_db = 0;
-    p->amp_fixed = 0;
     p->attenuator = 0;
     p->fe_flags = 0;
     p->if_freq = MIRISDR_IF_ZERO;
@@ -2017,7 +2013,7 @@ int mirisdr_get_frontend_caps (mirisdr_dev_t *p, int tuner, mirisdr_frontend_cap
     /* the amplifier: the 50 ohm plan's rows that have one */
     plan = hw_switch_freq_plan[(f >= MIRISDR_HW_DEFAULT && f <= MIRISDR_HW_RSP1A) ? f : MIRISDR_HW_DEFAULT];
     for (i = 0; plan[i].mode >= 0; i++)
-        if (plan[i].amp_db && !(p->amp_fixed_30_60 && (plan[i].expander == RSP1B_30_60)))
+        if (plan[i].amp_db)
         {
             caps->amp_bypass_hz = plan[i].low_khz * 1000u;
             break;

@@ -16,19 +16,19 @@
  */
 
 static mirisdr_device_t mirisdr_devices[] = {
-    { 0x1df7, 0x2500, "Mirics MSi2500 default (e.g. VTX3D card, SDRplay RSP1)", "Mirics", "MSi2500", MIRISDR_HW_DEFAULT, 0, 0, 0, 0},
-    { 0x1df7, 0x3000, "SDRplay RSP1A", "SDRPlay", "RSP1A", MIRISDR_HW_RSP1A, 0, 0, 0, 0},
-    { 0x1df7, 0x3010, "SDRplay RSP2/RSP2pro", "SDRPlay", "RSP2", MIRISDR_HW_RSP2, 0, 0, 0, 0},
-    { 0x1df7, 0x3050, "SDRplay RSP1B", "SDRPlay", "RSP1B", MIRISDR_HW_RSP1B, 0, 0, 0, 0},
-    { 0x1df7, 0x3060, "SDRplay RSPdx-R2", "SDRPlay", "RSPdxR2", MIRISDR_HW_RSPDXR2, 0, 0, 0, 0},
-    { 0x1df7, 0x3030, "SDRplay RSPdx", "SDRPlay", "RSPdx", MIRISDR_HW_RSPDXR2, 0, 0, 32, 1},
-    { 0x1df7, 0x3040, "SDRplay nRSP-ST", "SDRPlay", "nRSP-ST", MIRISDR_HW_RSPDXR2, 1, 10, 0, 0},
-    { 0x1df7, 0x3020, "SDRplay RSPduo", "SDRPlay", "RSPduo", MIRISDR_HW_RSPDUO, 0, 0, 0, 0},
-    { 0x16d0, 0x158c, "BertoldVdb MSi2500 Acquisition Board", "BertoldVdb", "MSI2500-PPS", MIRISDR_HW_DEFAULT, 0, 0, 0, 0},
-    { 0x2040, 0xd300, "Hauppauge WinTV 133559 LF", "Hauppauge", "WinTV 133559 LF", MIRISDR_HW_MIRICSTV, 0, 0, 0, 0},
-    { 0x07ca, 0x8591, "AverMedia A859 Pure DVBT", "AverTV", "A859 Pure DVBT", MIRISDR_HW_MIRICSTV, 0, 0, 0, 0},
-    { 0x04bb, 0x0537, "IO-DATA GV-TV100 stick", "IO-DATA", "GV-TV100", MIRISDR_HW_MIRICSTV, 0, 0, 0, 0},
-    { 0x0511, 0x0037, "Logitec LDT-1S310U/J", "Logitec", "LDT-1S310U/J", MIRISDR_HW_MIRICSTV, 0, 0, 0, 0}
+    { 0x1df7, 0x2500, "Mirics MSi2500 default (e.g. VTX3D card, SDRplay RSP1)", "Mirics", "MSi2500", MIRISDR_HW_DEFAULT, 0, 0, 0},
+    { 0x1df7, 0x3000, "SDRplay RSP1A", "SDRPlay", "RSP1A", MIRISDR_HW_RSP1A, 0, 0, 0},
+    { 0x1df7, 0x3010, "SDRplay RSP2/RSP2pro", "SDRPlay", "RSP2", MIRISDR_HW_RSP2, 0, 0, 0},
+    { 0x1df7, 0x3050, "SDRplay RSP1B", "SDRPlay", "RSP1B", MIRISDR_HW_RSP1B, 0, 0, 0},
+    { 0x1df7, 0x3060, "SDRplay RSPdx-R2", "SDRPlay", "RSPdxR2", MIRISDR_HW_RSPDXR2, 0, 0, 0},
+    { 0x1df7, 0x3030, "SDRplay RSPdx", "SDRPlay", "RSPdx", MIRISDR_HW_RSPDXR2, 0, 0, 32},
+    { 0x1df7, 0x3040, "SDRplay nRSP-ST", "SDRPlay", "nRSP-ST", MIRISDR_HW_RSPDXR2, 1, 10, 0},
+    { 0x1df7, 0x3020, "SDRplay RSPduo", "SDRPlay", "RSPduo", MIRISDR_HW_RSPDUO, 0, 0, 0},
+    { 0x16d0, 0x158c, "BertoldVdb MSi2500 Acquisition Board", "BertoldVdb", "MSI2500-PPS", MIRISDR_HW_DEFAULT, 0, 0, 0},
+    { 0x2040, 0xd300, "Hauppauge WinTV 133559 LF", "Hauppauge", "WinTV 133559 LF", MIRISDR_HW_MIRICSTV, 0, 0, 0},
+    { 0x07ca, 0x8591, "AverMedia A859 Pure DVBT", "AverTV", "A859 Pure DVBT", MIRISDR_HW_MIRICSTV, 0, 0, 0},
+    { 0x04bb, 0x0537, "IO-DATA GV-TV100 stick", "IO-DATA", "GV-TV100", MIRISDR_HW_MIRICSTV, 0, 0, 0},
+    { 0x0511, 0x0037, "Logitec LDT-1S310U/J", "Logitec", "LDT-1S310U/J", MIRISDR_HW_MIRICSTV, 0, 0, 0}
 };
 
 static mirisdr_device_t *mirisdr_device_get (uint16_t vid, uint16_t pid) {
@@ -100,14 +100,12 @@ static int mirisdr_flavour_of (libusb_device_handle *dh)
     return d ? d->flavour : MIRISDR_HW_DEFAULT;
 }
 
-/* what sets the board apart within its flavour: the RSPdx's direct sampling amplifier, and
-   its amplifier kept on along the 30-60 filter's path */
+/* what sets the board apart within its flavour: the RSPdx's direct sampling amplifier */
 static void mirisdr_board_parts (mirisdr_dev_t *p)
 {
     mirisdr_device_t *d = mirisdr_board_of(p->dh);
 
     p->ds_lna_db = d ? d->ds_lna_db : 0;
-    p->amp_fixed_30_60 = d ? d->amp_fixed_30_60 : 0;
 }
 
 /* the direct sampling amplifier's gain, dB */

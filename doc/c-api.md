@@ -170,7 +170,7 @@ The older `mirisdr_set_center_freq()` sets the LO directly. It switches `low_if_
 
 <h4>The front end</h4>
 
-`tc.frontend` holds what sits before the tuner. It goes out with the tune, in the same request. The RSPdx and nRSP-ST have the RSPdx-R2's front end, so what this section says of the RSPdx-R2 holds for them too. The RSPdx differs in two places: its amplifier stays on from 30 to 55 MHz (see `amp_bypass`), and its direct sampling amplifier gives 32 dB.
+`tc.frontend` holds what sits before the tuner. It goes out with the tune, in the same request. The RSPdx and nRSP-ST have the RSPdx-R2's front end, so what this section says of the RSPdx-R2 holds for them too. The RSPdx differs in one place: its direct sampling amplifier gives 32 dB.
 
   - `bias`: the bias-T, which powers the antenna input. On the RSPdx-R2 and RSP2 it powers port B. On the RSPduo it powers the port marked tuner 2, so only tuner 1 takes it. On the RSP1A it takes 6 to 7 dB off at 0.5 MHz and under 1 dB from 1 MHz.
   - `notch`: notch filters, on the RSP1B, RSPdx-R2, RSPduo, RSP2 and RSP1A only. `MIRISDR_NOTCH_FM` covers 85 to 100 MHz, `MIRISDR_NOTCH_MW` medium wave from 0.4 to 1.6 MHz, and `MIRISDR_NOTCH_DAB` 165 to 230 MHz. Combine them with `|`. The FM and MW notches share a switch. The RSP2 has no DAB notch.
@@ -239,7 +239,7 @@ The gain goes with the tune, in `tc.gain`. Its `mode` decides what happens.
 
 The stages:
 
-  - `amp_bypass`: the board's amplifier before the tuner, on the RSP1B, RSPdx-R2, RSPduo and RSP1A (the RSP2's is always in, and not counted). 0 keeps it in, 1 bypasses it. Its gain in the band, up to about 25 dB, counts in the total, and `mirisdr_get_frontend_caps()` says from which frequency it is there (30 MHz on the RSP1B and RSPdx-R2, 55 MHz on the RSPduo and RSP1A, not on the RSPduo's Hi-Z). On the RSPdx it is there from 30 MHz but takes no bypass below 55 MHz: switched on again with that band's filter in place it oscillates, and the signal drops some 40 dB. A bypass asked there is 0 in force, or refused with `strict`. `MIRISDR_GAIN_TOTAL` turns it on first, and bypasses it only for a total below its own gain. Elsewhere there is none, and the result reports 0.
+  - `amp_bypass`: the board's amplifier before the tuner, on the RSP1B, RSPdx-R2, RSPduo and RSP1A (the RSP2's is always in, and not counted). 0 keeps it in, 1 bypasses it. Its gain in the band, up to about 25 dB, counts in the total, and `mirisdr_get_frontend_caps()` says from which frequency it is there (30 MHz on the RSP1B and RSPdx-R2, 55 MHz on the RSPduo and RSP1A, not on the RSPduo's Hi-Z). `MIRISDR_GAIN_TOTAL` turns it on first, and bypasses it only for a total below its own gain. Elsewhere there is none, and the result reports 0.
   - `lna`: on or off. It adds 24 dB on most bands, 7 dB in band IV/V and about 4 dB in L band. The AM inputs have none.
   - `mixer`: on or off. It adds 19 dB.
   - `mixbuffer`: only on the AM inputs. 0, 6, 12 or 18 dB on AM1, 0 or 24 dB on AM2.

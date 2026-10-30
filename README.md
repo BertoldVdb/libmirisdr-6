@@ -11,10 +11,13 @@ This library is an API compatible drop-in replacement for libmirisdr-5, it only 
 
 <h3>For users</h3>
 
-  - **SDRplay RSP1B, RSPdx, RSPdx-R2 and nRSP-ST support.** Filters, notches, bias-T, the amplifier (in the gain) and pads, and the RSPdx-R2's three antenna inputs and direct sampling below 2 MHz.
-  - **SDRplay RSP1A support.** Filters, notches, bias-T, the amplifier (in the gain) and pads, and the board's test oscillator as an antenna.
-  - **SDRplay RSP2 support.** Filters, notches, bias-T, attenuator, the reference output, ports A and B, the Hi-Z input, and the board's test oscillator as an antenna.
-  - **SDRplay RSPduo support.** Both tuners, alone or together (a low IF each, delivered as two labelled streams or two SoapySDR channels). Each tuner's filters, notches, amplifier (in the gain) and pads, the bias-T, the Hi-Z input, the tie that feeds both tuners from one port, and the reference output.
+  - **Support for all SDRplay devices, supporting all features of the devices:**
+      - **RSP1B support.** Filters, notches, bias-T, the amplifier and pads.
+      - **RSPdx, RSPdx-R2 and nRSP-ST support.** Filters, notches, bias-T, the amplifier and pads, all antenna inputs and direct sampling below 2 MHz.
+      - **RSPduo support.** Both tuners, alone or together (a low IF each, delivered as two labelled streams or two SoapySDR channels). Each tuner's filters, notches, amplifier and pads, the bias-T, the Hi-Z input, the tie that feeds both tuners from one port, and the reference output.
+      - **RSP1A support.** Filters, notches, bias-T, the amplifier and pads, and the board's test oscillator as an antenna.
+      - **RSP2 support.** Filters, notches, bias-T, attenuator, the reference output, ports A and B, the Hi-Z input, and the board's test oscillator.
+      - **RSP1 support.**
   - **A SoapySDR module.** Programs that use SoapySDR can use the receivers with `driver=mirisdr`. With `report=true` it logs what the receiver runs after each change: the rate, the IF, the NCO, direct sampling and more.
   - **Low sample rates.** Any rate down to about 3.5 ksps, through the tuner's low IF.
   - **High sample rates.** Up to 12 Msps with isochronous USB transfers, and about 27.5 Msps with bulk transfers.
@@ -64,4 +67,6 @@ Linux has its own drivers for these chips, `msi2500` and `msi001`. They USB ids 
 
 The first line keeps the drivers from loading from the next boot on, the second unloads them now.
 
+<h2>Credits</h2>
 
+Thanks to Nicolas Kulaga for remote access to SDRplay receivers. The support for the RSP2, RSPdx and RSP1A was mapped and tested on them.
