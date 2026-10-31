@@ -87,6 +87,28 @@ MIRISDR_API int mirisdr_get_index_by_serial_port (const char *serial, const char
    Serial (may be NULL) the serial it declares, empty if none. */
 MIRISDR_API int mirisdr_get_device_port (uint32_t index, char *port, int port_len, char *serial, int serial_len); /* extra */
 
+/* A receiver as mirisdr_list_receivers() finds it */
+typedef struct mirisdr_receiver
+{
+	uint16_t    vid, pid;
+	char        serial[128];    /* the serial it declares, empty if none (from ROM it has none) */
+	char        usb_port[48];   /* "<bus>:<port>[.<port>...]", as mirisdr_get_device_port() gives it */
+	const char *manufacturer;   /* the library's table: "SDRPlay", "Mirics", ... */
+	const char *product;        /* the board's model, as mirisdr_get_board_name() gives it */
+	const char *name;           /* the long name, "SDRplay RSPdx" */
+	int         hw_flavour;     /* what MIRISDR_HW_AUTO opens it as */
+	uint32_t    reserved[MIRISDR_RESERVED];
+} mirisdr_receiver_t;
+
+/* Every receiver the library takes, from one look at the USB, so the entries agree with each other:
+   no index to go stale. With serial or usb_port (either may be NULL) only the one an open with them
+   would take (see mirisdr_open_config_t). The serial is the system's copy where it has one, otherwise
+   read by opening the device for a moment. Under the library's own ids the board comes from the
+   serial. Fills up to max entries of out and returns how many there are (more than max: call again
+   with more room), -1 when the USB cannot be listed */
+MIRISDR_API int mirisdr_list_receivers (const char *serial, const char *usb_port, mirisdr_receiver_t *out,
+                                        int max); /* extra */
+
 /* main */
 MIRISDR_API int mirisdr_open (mirisdr_dev_t **p, uint32_t index);
 /* On the stock firmware this loads the library's and returns MIRISDR_REOPEN: open again with the new fd */
@@ -98,6 +120,10 @@ MIRISDR_API int mirisdr_get_usb_strings (mirisdr_dev_t *dev, char *manufact, cha
 MIRISDR_API int mirisdr_get_usb_ids (mirisdr_dev_t *p, uint16_t *vid, uint16_t *pid); /* extra */
 /* The serial the device itself declares, returns 0 if none declared */
 MIRISDR_API int mirisdr_get_serial (mirisdr_dev_t *p, char *out, int len); /* extra */
+/* The board's model as the library's table names it ("RSPdx", "RSPdxR2", "nRSP-ST" and so on), from its
+   USB ids or, under the library's own ids, its serial. Boards sharing a flavour differ here. NULL for a
+   device the table does not have */
+MIRISDR_API const char *mirisdr_get_board_name (mirisdr_dev_t *p); /* extra */
 /* Where the device sits on the USB: bus number and device address (as lsusb shows them, either may
    be NULL) and in port (len bytes, may be NULL) the port path as Linux sysfs names the device,
    "<bus>-<port>[.<port>...]", e.g. "1-1.2"; 32 bytes hold any path. They find the device's host

@@ -104,9 +104,10 @@ static int probe(Dev *d, soapy_say_t say, soapy_say_t note)
     }
 
     /* the board's amplifier before the tuner: the RSPduo's and RSP1B's 25 dB in band II, their
-       most, and the RSPdx-R2's 24 there, 25 at most (band III) */
+       most, and the RSPdx-R2's 24 there, 25 at most (band III). The RSPdx and nRSP-ST have its
+       front end */
     const std::string hw = d->getHardwareKey();
-    const bool duo = hw == "RSPduo", dxr2 = hw == "RSPdxR2", rsp1b = hw == "RSP1B";
+    const bool duo = hw == "RSPduo", dxr2 = hw == "RSPdxR2" || hw == "RSPdx" || hw == "nRSP-ST", rsp1b = hw == "RSP1B";
     const double amp = (duo || rsp1b) ? 25 : dxr2 ? 24 : 0, ampMax = (duo || dxr2 || rsp1b) ? 25 : 0;
 
     /* the pads first, as ATT, where the board has them: a negative gain, apart from the total.
@@ -127,8 +128,8 @@ static int probe(Dev *d, soapy_say_t say, soapy_say_t note)
 
     /* the most of any band, the same at VHF and HF: GQRX reads them once. The RSPduo's
        mixbuffer steps by 6 (its Hi-Z is on AM1), the RSPdx-R2's LNA reaches 37 (its direct
-       sampling amplifier) */
-    const double lnaMax = hw == "RSPdxR2" ? 37 : 24, mixbufStep = duo ? 6 : 24;
+       sampling amplifier, the RSPdx's 32) */
+    const double lnaMax = hw == "RSPdx" ? 32 : dxr2 ? 37 : 24, mixbufStep = duo ? 6 : 24;
     d->setFrequency(SOAPY_SDR_RX, 0, 100e6);
     if (d->getGainRange(SOAPY_SDR_RX, 0).maximum() != 102 + ampMax ||
         d->getGainRange(SOAPY_SDR_RX, 0, "AMP").maximum() != ampMax ||
@@ -554,8 +555,9 @@ static int bandRanges(Dev *d, soapy_say_t say, soapy_say_t note)
 
     /* VHF: LNA 24, mixer 19, no mixbuffer, baseband 59, and the amplifier, the RSPduo's and RSP1B's
        25, the RSPdx-R2's 24 */
-    const double amp = (d->getHardwareKey() == "RSPduo" || d->getHardwareKey() == "RSP1B") ? 25 :
-                       d->getHardwareKey() == "RSPdxR2" ? 24 : 0;
+    const std::string hw = d->getHardwareKey();
+    const double amp = (hw == "RSPduo" || hw == "RSP1B") ? 25 :
+                       (hw == "RSPdxR2" || hw == "RSPdx" || hw == "nRSP-ST") ? 24 : 0;
     d->setFrequency(SOAPY_SDR_RX, 0, 100e6);
     if (d->getGainRange(SOAPY_SDR_RX, 0).maximum() != 102 + amp ||
         d->getGainRange(SOAPY_SDR_RX, 0, "AMP").maximum() != amp ||
@@ -779,8 +781,8 @@ static int report(const char *module, const char *serial, soapy_say_t say, soapy
         if (!logLine("stream: 2000000 S/s, complex float at zero IF") || !logLine("tuner 0: ", "zero IF"))
         { say("2 Msps: not back at zero IF in the %zu lines", logged.size()); bad++; }
 
-        /* the RSPdx-R2 under 2 MHz: direct sampling, which always runs the NCO */
-        if (d->getHardwareKey() == "RSPdxR2")
+        /* the RSPdx-R2 (and RSPdx, nRSP-ST) under 2 MHz: direct sampling, which always runs the NCO */
+        if (d->getHardwareKey() == "RSPdxR2" || d->getHardwareKey() == "RSPdx" || d->getHardwareKey() == "nRSP-ST")
         {
             d->setSampleRate(SOAPY_SDR_RX, 0, 1e6);
             logged.clear();

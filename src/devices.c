@@ -108,6 +108,16 @@ static void mirisdr_board_parts (mirisdr_dev_t *p)
     p->ds_lna_db = d ? d->ds_lna_db : 0;
 }
 
+const char *mirisdr_get_board_name (mirisdr_dev_t *p)
+{
+    mirisdr_device_t *d;
+
+    if (!p || !p->dh) return NULL;
+    d = mirisdr_board_of(p->dh);
+
+    return d ? d->product : NULL;
+}
+
 /* the direct sampling amplifier's gain, dB */
 static int mirisdr_ds_lna_db (const mirisdr_dev_t *p)
 {
@@ -425,6 +435,61 @@ int mirisdr_get_index_by_serial_port (const char *serial, const char *usb_port)
     libusb_exit(ctx);
 
     return found;
+}
+
+/* one receiver's entry */
+static void mirisdr_receiver_of (libusb_device *d, const struct libusb_device_descriptor *dd, mirisdr_receiver_t *r)
+{
+    mirisdr_device_t *board;
+    char port[256];
+
+    memset(r, 0, sizeof *r);
+    r->vid = dd->idVendor;
+    r->pid = dd->idProduct;
+    if (!mirisdr_device_serial(d, dd->iSerialNumber, r->serial, sizeof r->serial)) *r->serial = 0;
+    mirisdr_port_name(d, port);
+    if (strlen(port) < sizeof r->usb_port) strcpy(r->usb_port, port);
+    if ((board = mirisdr_board_get(dd->idVendor, dd->idProduct, r->serial)))
+    {
+        r->manufacturer = board->manufacturer;
+        r->product = board->product;
+        r->name = board->name;
+        r->hw_flavour = board->flavour;
+    }
+}
+
+int mirisdr_list_receivers (const char *serial, const char *usb_port, mirisdr_receiver_t *out, int max)
+{
+    struct libusb_device_descriptor dd;
+    libusb_context *ctx;
+    libusb_device **list, *one;
+    ssize_t i, i_max;
+    int n = 0;
+
+    if ((max < 0) || (max && !out)) return -1;
+    if ((i_max = mirisdr_list_devices(&ctx, &list)) < 0) return -1;
+
+    /* asked for: the one the open takes, by its rules */
+    if (serial || usb_port)
+    {
+        if ((one = mirisdr_pick(list, i_max, 0, serial, usb_port, NULL)) && (libusb_get_device_descriptor(one, &dd) == 0))
+        {
+            if (max) mirisdr_receiver_of(one, &dd, out);
+            n = 1;
+        }
+    }
+    else for (i = 0; i < i_max; i++)
+    {
+        if (libusb_get_device_descriptor(list[i], &dd) < 0) continue;
+        if (!mirisdr_device_get(dd.idVendor, dd.idProduct)) continue;
+        if (n < max) mirisdr_receiver_of(list[i], &dd, &out[n]);
+        n++;
+    }
+
+    libusb_free_device_list(list, 1);
+    libusb_exit(ctx);
+
+    return n;
 }
 
 int mirisdr_get_index_by_serial (const char *serial)
