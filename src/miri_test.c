@@ -3505,6 +3505,168 @@ static tres_t t_dec_slips (void)
     return T_PASS;
 }
 
+/* Headers under an anchor. Taking one garbles a few bytes the device is sending, a header
+   at times. The null device places the anchor at the stream's count, as mirisdr_enable_pps(dev,
+   1) would, before block ANC_AT. Each plan runs with the anchor and without, the one without
+   showing what the window keeps out */
+#define ANC_AT      100
+#define ANC_BLOCKS  300
+#define ANC_TUNE    (1 << 14)       /* the header's tune bit */
+
+typedef struct {
+    int bad_count;      /* this block's counter is garbage, 0 none */
+    int bad_event;      /* this block's event word and IR byte are, 0 none */
+    int tune_from;      /* the tune bit toggles here and stays, 0 never */
+    int skip_at;        /* two blocks go missing before this one, 0 none */
+} anc_plan_t;
+
+static struct { int events, tunes, ended; uint64_t tune_index; } anct;
+
+static void anc_ev_cb (const mirisdr_stream_event_t *e, void *ctx)
+{
+    (void) ctx;
+    anct.events++;
+    if (e->events & MIRISDR_EVENT_TUNE) { anct.tunes++; anct.tune_index = e->index; }
+}
+
+static void anc_ir_cb (const mirisdr_ir_pulse_t *e, void *ctx)
+{
+    (void) ctx;
+    if (e->ended) anct.ended++;
+}
+
+static int anc_run (const anc_plan_t *pl, int anchor, mirisdr_stream_stats_t *st)
+{
+    mirisdr_dev_t *d;
+    uint8_t *b = xcalloc(ANC_BLOCKS, 1024), *h;
+    uint32_t len = ANC_BLOCKS * 1024, at, t;
+    uint64_t idx = 0;
+    int k, i;
+
+    for (k = 0; k < ANC_BLOCKS; k++) {
+        uint64_t c;
+        uint16_t w = (pl->tune_from && k >= pl->tune_from) ? ANC_TUNE : 0;
+
+        if (pl->skip_at && k == pl->skip_at) idx += 2 * DEC_STEP;
+        c = (pl->bad_count && k == pl->bad_count) ? idx + 0x40000000 : idx;
+        h = b + 1024 * k;
+        h[0] = (uint8_t) c; h[1] = (uint8_t) (c >> 8); h[2] = (uint8_t) (c >> 16); h[3] = (uint8_t) (c >> 24);
+        h[4] = (uint8_t) w; h[5] = (uint8_t) (w >> 8); h[6] = 0x7F;
+        if (pl->bad_event && k == pl->bad_event) { h[4] = 0xFF; h[5] = 0xFF; h[6] = 0x05; }
+        memcpy(h + 8, "BVDB", 4);
+        for (i = 0; i < DEC_STEP; i++) {
+            uint64_t v = idx + (uint64_t) i;
+            h[16 + 2 * i] = (uint8_t) v;
+            h[17 + 2 * i] = (uint8_t) (v >> 8);
+        }
+        idx += DEC_STEP;
+    }
+
+    memset(&dec, 0, sizeof dec);
+    memset(&anct, 0, sizeof anct);
+    if (mirisdr_open_null(&d, "504_S8") < 0) { free(b); return -1; }
+    mirisdr_set_gap_fill(d, 0);
+    mirisdr_set_stream_events(d, anc_ev_cb, NULL);
+    mirisdr_set_ir(d, 10000, anc_ir_cb, NULL);
+
+    mirisdr_feed_bulk(d, dec_cb, d, 0, b, ANC_AT * 1024);
+    if (anchor && mirisdr_enable_pps(d, 1) < 0) { mirisdr_close(d); free(b); return -1; }
+    for (at = ANC_AT * 1024; at < len; at += t) {
+        t = 1 + (uint32_t) rand() % (16 * 1024);
+        if (t > len - at) t = len - at;
+        mirisdr_feed_bulk(d, dec_cb, d, 0, b + at, t);
+    }
+    mirisdr_get_stream_stats(d, st);
+    mirisdr_close(d);
+    free(b);
+    return 0;
+}
+
+static tres_t t_dec_anchor (void)
+{
+    mirisdr_stream_stats_t a, n;
+    uint64_t ta;
+    int ba, bad = 0;
+
+    srand(7);
+
+    /* a garbage counter in the window: no loss and every sample in place, which without
+       the anchor is a loss of 2^30 */
+    {
+        anc_plan_t pl = { .bad_count = ANC_AT + 3 };
+        if (anc_run(&pl, 1, &a) < 0) { say("no anchor on the null device"); return T_FAIL; }
+        ba = dec.bad;
+        if (anc_run(&pl, 0, &n) < 0) { say("no null device"); return T_FAIL; }
+        if (a.lost || a.gaps || ba || !n.lost) {
+            say("a garbage counter: %llu lost in %llu gaps, %d misplaced (without the anchor %llu lost)",
+                (unsigned long long) a.lost, (unsigned long long) a.gaps, ba, (unsigned long long) n.lost);
+            bad++;
+        }
+    }
+
+    /* garbage events and IR byte in the window: nothing reported */
+    {
+        anc_plan_t pl = { .bad_event = ANC_AT + 3 };
+        int ev_n, end_n;
+        if (anc_run(&pl, 0, &n) < 0) { say("no null device"); return T_FAIL; }
+        ev_n = anct.events;
+        end_n = anct.ended;
+        if (anc_run(&pl, 1, &a) < 0) { say("no anchor on the null device"); return T_FAIL; }
+        if (anct.events || anct.ended || !ev_n || !end_n) {
+            say("garbage events: %d events and %d IR runs ended (without the anchor %d and %d)", anct.events,
+                anct.ended, ev_n, end_n);
+            bad++;
+        }
+    }
+
+    /* a real tune in the window: reported once, after the window */
+    {
+        anc_plan_t pl = { .tune_from = ANC_AT + 4 };
+        int tn;
+        if (anc_run(&pl, 0, &n) < 0) { say("no null device"); return T_FAIL; }
+        tn = anct.tunes;
+        ta = anct.tune_index;
+        if (anc_run(&pl, 1, &a) < 0) { say("no anchor on the null device"); return T_FAIL; }
+        if (tn != 1 || anct.tunes != 1 || anct.tune_index <= ta || anct.tune_index > ta + 16 * DEC_STEP) {
+            say("a tune: %d events at %llu (without the anchor %d at %llu)", anct.tunes,
+                (unsigned long long) anct.tune_index, tn, (unsigned long long) ta);
+            bad++;
+        }
+        note("a tune in the window reported %llu blocks late", (unsigned long long) (anct.tune_index - ta) / DEC_STEP);
+    }
+
+    /* two blocks really missing in the window: the next header confirms them, counted as
+       lost, the one block before it misplaced */
+    {
+        anc_plan_t pl = { .skip_at = ANC_AT + 3 };
+        int bn;
+        if (anc_run(&pl, 0, &n) < 0) { say("no null device"); return T_FAIL; }
+        bn = dec.bad;
+        if (anc_run(&pl, 1, &a) < 0) { say("no anchor on the null device"); return T_FAIL; }
+        if (a.lost != 2 * DEC_STEP || a.gaps != 1 || dec.bad != DEC_STEP || n.lost != 2 * DEC_STEP || bn) {
+            say("a real gap: %llu lost in %llu gaps, %d misplaced (without the anchor %llu lost, %d misplaced)",
+                (unsigned long long) a.lost, (unsigned long long) a.gaps, dec.bad, (unsigned long long) n.lost, bn);
+            bad++;
+        }
+    }
+
+    /* a garbage counter past the window is what it was without one */
+    {
+        anc_plan_t pl = { .bad_count = ANC_AT + 50 };
+        if (anc_run(&pl, 0, &n) < 0) { say("no null device"); return T_FAIL; }
+        if (anc_run(&pl, 1, &a) < 0) { say("no anchor on the null device"); return T_FAIL; }
+        if (!a.lost || a.lost != n.lost) {
+            say("past the window: %llu lost, without the anchor %llu", (unsigned long long) a.lost,
+                (unsigned long long) n.lost);
+            bad++;
+        }
+    }
+
+
+    if (!bad) say("garbage counters, events and IR held over in the window, a real gap and tune still seen, nothing held past it");
+    return bad ? T_FAIL : T_PASS;
+}
+
 
 /* Holding unknown, the finer VCO control, high lowers the frequency: with the VCO
    free the band search makes up for it with a lower fine code */
@@ -7418,6 +7580,7 @@ static const struct {
     { "decode",   "bulk blocks, clean",         t_dec_clean           },
     { "decode",   "bulk gaps and gap fill",     t_dec_gaps            },
     { "decode",   "bulk slips",                 t_dec_slips           },
+    { "decode",   "headers under an anchor",    t_dec_anchor          },
     { "decode",   "IR runs under a full count", t_dec_ir              },
 
     { "plan",     "tune config rules",          t_plan_tune           },

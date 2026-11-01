@@ -286,6 +286,12 @@ struct mirisdr_dev {
     int                 pps_div;        /* latch every Nth edge, 1 to 255 */
     uint8_t             pps_seen;       /* an interval matching the clock has been seen */
     double              pps_k_min;      /* least a SOF handler was seen to cost */
+    /* the blocks an anchor may have damaged, see mirisdr_anchor_open() */
+    int                 anc_open;       /* anchors asked for, by the control thread */
+    int                 anc_known;      /* the last of them placed in the count */
+    uint32_t            anc_from;       /* its first block that may be damaged */
+    uint32_t            anc_to;         /* and its last */
+    int                 anc_shut;       /* the last the stream thread is past, its own */
     uint16_t            i2c_delay;
     uint32_t            i2c_clock_ns;
     int                 ee_size;        /* what the EEPROM's address reaches, 0 if none */

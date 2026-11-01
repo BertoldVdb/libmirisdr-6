@@ -65,6 +65,20 @@ static uint64_t mirisdr_gap_note (mirisdr_dev_t *p, uint64_t missing) {
     return f;
 }
 
+/* 1 while this block may be one an anchor damaged, see mirisdr_anchor_open() */
+static int mirisdr_anchor_suspect (mirisdr_dev_t *p) {
+    int open = mirisdr_atomic_add(&p->anc_open, 0);
+
+    if (!p->addr_valid || (open == p->anc_shut)) return 0;
+    /* taken, not yet read back: any block may be the one */
+    if (mirisdr_atomic_add(&p->anc_known, 0) != open) return 1;
+    if ((int32_t) (p->addr - p->anc_to) > 0) {
+        p->anc_shut = open;
+        return 0;
+    }
+    return (int32_t) (p->addr - p->anc_from) >= 0;
+}
+
 /* Called once per 1024 byte block with its header, which carries the sample
    counter and the IR block last completed run (if enabled). */
 /* returns 1 for a block to drop */
@@ -72,6 +86,7 @@ static int mirisdr_addr_next (mirisdr_dev_t *p, const uint8_t *hdr, uint32_t ste
     uint32_t addr = (uint32_t) hdr[3] << 24 | (uint32_t) hdr[2] << 16 | (uint32_t) hdr[1] << 8 | hdr[0];
     const uint32_t seen = addr;
     int32_t d;
+    int suspect;
 
     if (p->addr_restart) {
         if (p->addr_dropped++ < MIRISDR_ADDR_DROP) return 1;
@@ -85,12 +100,27 @@ static int mirisdr_addr_next (mirisdr_dev_t *p, const uint8_t *hdr, uint32_t ste
             p->ev_missed = 1;
         }
         p->addr_valid = 0;
+
+        /* a window placed in the stream before ends with it */
+        {
+            int open = mirisdr_atomic_add(&p->anc_open, 0);
+
+            if (mirisdr_atomic_add(&p->anc_known, 0) == open) p->anc_shut = open;
+        }
     }
 
     d = (int32_t) (addr - p->addr);
+    suspect = mirisdr_anchor_suspect(p);
 
     if (!p->addr_valid) {
         p->addr_valid = 1;
+    } else if (((d > MIRISDR_ADDR_JITTER) || (d < -MIRISDR_ADDR_JITTER)) && suspect &&
+               (addr != p->addr_seen + step)) {
+        /* where the anchor may have damaged it: garbage, unless the next header agrees,
+           when it is taken below as any other */
+        fprintf(stderr, "libmirisdr: a block header off the count as the anchor was taken, %08x:%08x\n",
+                p->addr, addr);
+        addr = p->addr;
     } else if ((d > MIRISDR_ADDR_JITTER) || (d < -MIRISDR_ADDR_JITTER)) {
         /* Blocks go missing whole. Without our firmware's stamp a misaligned stream reads
            sample data as a header: a counter that went backwards, or on by part of a block,
@@ -131,7 +161,8 @@ static int mirisdr_addr_next (mirisdr_dev_t *p, const uint8_t *hdr, uint32_t ste
         p->stats.index = p->stats.samples + p->stats.lost;
     }
 
-    mirisdr_events_latch(p, hdr, p->stats.samples, p->stats.samples + p->stats.lost, step);
+    /* a damaged header's events would be garbage, the next one's tell what changed */
+    if (!suspect) mirisdr_events_latch(p, hdr, p->stats.samples, p->stats.samples + p->stats.lost, step);
 
     p->stats.samples+= step;
     p->addr_seen = seen;
@@ -143,7 +174,8 @@ static int mirisdr_addr_next (mirisdr_dev_t *p, const uint8_t *hdr, uint32_t ste
     p->count_gaps = p->stats.gaps;
     mirisdr_atomic_add(&p->count_seq, 1);
 
-    mirisdr_ir_latch(p, hdr[6], addr);
+    if (suspect) mirisdr_ir_resync(p);
+    else mirisdr_ir_latch(p, hdr[6], addr);
 
     return 0;
 }

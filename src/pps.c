@@ -52,6 +52,12 @@ static uint32_t mirisdr_burst (mirisdr_dev_t *p);
 /* Which of the four capture buffers the anchor interrupt was announcing. */
 #define MIRISDR_PPS_ANCHOR_BACK 0
 
+/* Blocks either side of the newest capture buffer the anchor saw that it may have damaged.
+   The remap hits whatever the USB controller is sending, which can be anywhere in the
+   device's queue of twelve 512 byte packets: up to 6 blocks behind the newest, 4 and 5
+   seen. Nothing newer can be, the blocks ahead only keep the window a little longer */
+#define MIRISDR_ANCHOR_SPREAD   8
+
 static uint32_t mirisdr_pps_le32 (const uint8_t *b)
 {
     return (uint32_t) b[0] | ((uint32_t) b[1] << 8)
@@ -94,6 +100,33 @@ static void mirisdr_pps_count (mirisdr_dev_t *p, uint64_t *index, uint32_t *addr
     }
 }
 
+/* Taking the anchor cuts the DSP buffer off the USB controller for a moment, and the
+   bytes sent meanwhile are garbage: samples, and a header when one falls there. From
+   the request until the stream is past the anchor the stream thread holds to its own
+   count over the headers, and leaves their events and IR byte alone */
+static void mirisdr_anchor_open (mirisdr_dev_t *p)
+{
+    mirisdr_atomic_add(&p->anc_open, 1);
+}
+
+/* The blocks from..to may be damaged, the rest of the window is not */
+static void mirisdr_anchor_place (mirisdr_dev_t *p, uint32_t from, uint32_t to)
+{
+    p->anc_from = from;
+    p->anc_to = to;
+    mirisdr_atomic_xchg(&p->anc_known, mirisdr_atomic_add(&p->anc_open, 0));
+}
+
+/* No anchor to place the window by: it ends at the next block */
+static void mirisdr_anchor_none (mirisdr_dev_t *p)
+{
+    uint64_t index = 0, gaps = 0;
+    uint32_t addr = 0;
+
+    mirisdr_pps_count(p, &index, &addr, &gaps);
+    mirisdr_anchor_place(p, addr, addr - 1);
+}
+
 /* The anchor is taken by the next streaming interrupt, so it is read here while
    the sample counter it carries is still within a wrap of the stream: from then
    on everything is 64 bit and counted from it. */
@@ -106,14 +139,22 @@ static int mirisdr_pps_anchor (mirisdr_dev_t *p)
 
     for (tries = 0; tries < 100; tries++)
     {
-        if (!p->fw_anchor_at || mirisdr_read_mem(p, p->fw_anchor_at, b, PPS_ANCHOR_LEN, MIRISDR_MEM_XDATA) < 0) return -1;
+        if (!p->fw_anchor_at || mirisdr_read_mem(p, p->fw_anchor_at, b, PPS_ANCHOR_LEN, MIRISDR_MEM_XDATA) < 0)
+        {
+            mirisdr_anchor_none(p);
+            return -1;
+        }
 
         if (b[16]) break;
 
         usleep(2000);
     }
 
-    if (!b[16]) return -1;
+    if (!b[16])
+    {
+        mirisdr_anchor_none(p);
+        return -1;
+    }
 
     for (i = 0; i < 4; i++) c[i] = mirisdr_pps_le32(b + i * 4);
 
@@ -121,6 +162,9 @@ static int mirisdr_pps_anchor (mirisdr_dev_t *p)
        than indexed */
     for (i = 1; i < 4; i++)
         if ((int32_t) (c[i] - c[newest]) > 0) newest = i;
+
+    mirisdr_anchor_place(p, c[newest] - MIRISDR_ANCHOR_SPREAD * p->addr_step,
+                         c[newest] + MIRISDR_ANCHOR_SPREAD * p->addr_step);
 
     mirisdr_pps_count(p, &index, &addr, &gaps);
     p->pps_base = (int64_t) index + (int32_t) (c[newest] - MIRISDR_PPS_ANCHOR_BACK * p->addr_step - addr);
@@ -146,15 +190,35 @@ static int mirisdr_pps_anchor (mirisdr_dev_t *p)
    back, so the anchor is taken again. */
 static int mirisdr_pps_reanchor (mirisdr_dev_t *p)
 {
+    mirisdr_anchor_open(p);
     if (libusb_control_transfer(p->dh, 0x40, CMD_PPS_ENABLE,
                                 mirisdr_pps_wvalue(p, 1), 0, NULL, 0,
-                                CTRL_TIMEOUT) < 0) return -1;
+                                CTRL_TIMEOUT) < 0)
+    {
+        mirisdr_anchor_none(p);
+        return -1;
+    }
 
     return mirisdr_pps_anchor(p);
 }
 
 int mirisdr_enable_pps (mirisdr_dev_t *p, int run)
 {
+    /* the null device takes no anchor: its window is placed at the stream's count, for the
+       offline tests */
+    if (p && p->fake && !p->dh)
+    {
+        uint64_t index = 0, gaps = 0;
+        uint32_t addr = 0;
+
+        if (!run) return 0;
+        mirisdr_anchor_open(p);
+        mirisdr_pps_count(p, &index, &addr, &gaps);
+        mirisdr_anchor_place(p, addr - MIRISDR_ANCHOR_SPREAD * p->addr_step,
+                             addr + MIRISDR_ANCHOR_SPREAD * p->addr_step);
+        return 0;
+    }
+
     if (!p || !p->dh || !p->fw_ours) return -1;
 
     if (run && !p->pps_src_sof) mirisdr_set_gpio_direction(p, 0, 0);
@@ -162,12 +226,21 @@ int mirisdr_enable_pps (mirisdr_dev_t *p, int run)
     p->pps_anchor_valid = 0;
 
     /* bit 1 asks for the anchor, which the next streaming interrupt takes */
+    if (run) mirisdr_anchor_open(p);
     if (libusb_control_transfer(p->dh, 0x40, CMD_PPS_ENABLE,
                                 mirisdr_pps_wvalue(p, run), 0,
-                                NULL, 0, CTRL_TIMEOUT) < 0) return -1;
+                                NULL, 0, CTRL_TIMEOUT) < 0)
+    {
+        if (run) mirisdr_anchor_none(p);
+        return -1;
+    }
 
     if (!run) return 0;
-    if (!p->rate || !p->addr_step || !p->addr_valid) return -1;
+    if (!p->rate || !p->addr_step || !p->addr_valid)
+    {
+        mirisdr_anchor_none(p);
+        return -1;
+    }
 
     return mirisdr_pps_anchor(p);
 }
