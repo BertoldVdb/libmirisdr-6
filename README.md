@@ -35,6 +35,7 @@ This library is an API compatible drop-in replacement for libmirisdr-5, it only 
   - **More stream options:** real modes that capture one converter and halve the USB data, a bypass of the receiver's own decimation filter for rates up to about 30 Msps, and an automatic choice of sample format.
   - **More low-level functionality:** GPIO pins, a serial port, an I2C master, the infrared input, and the EEPROM.
   - **A null device** that runs your own USB data through the library, for tests.
+  - Future versions of this library will maintain binary compatibility with this commit.
 
 <h3>Tools</h3>
 
@@ -47,7 +48,7 @@ This library is an API compatible drop-in replacement for libmirisdr-5, it only 
   - [The C API](doc/c-api.md): for your own programs. Opening, tuning, streaming, baseband output, time stamps and scanning.
   - [Firmware in the EEPROM](doc/eeprom.md): a serial from the moment the receiver is plugged in. Backing up the EEPROM, writing the firmware and the serials of SDRplay boards.
   - [The firmware](https://github.com/BertoldVdb/msi2500-pps): the source of the firmware the library loads into the receiver.
-  
+
 <h2>Building</h2>
 
     mkdir build
