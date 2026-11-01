@@ -883,6 +883,7 @@ typedef struct mirisdr_pps
 	uint8_t  guard;     /* why, if trusted is 0: see MIRISDR_PPS_GUARD_* below */
 	int      gapless;   /* nothing lost since the anchor, ignore sample if 0. Self repairs */
 	uint16_t frame;     /* USB frame the edge fell in, 11 bits, wraps every 2.048 s */
+	uint8_t  microframe; /* with the USB frame source: the edge's SOF in that frame, 0-7 */
 	uint32_t reserved[MIRISDR_RESERVED];
 } mirisdr_pps_t;
 
@@ -893,6 +894,12 @@ typedef struct mirisdr_pps
                                                capture, or between the
                                                streaming interrupt and the
                                                interval's first SOF */
+#define MIRISDR_PPS_GUARD_GRID      0xF9    /* USB frame source: off the line the
+                                               edges before it are on, by its
+                                               frame and microframe. A SOF the
+                                               device missed, or time it lost
+                                               before the edge, and the first
+                                               edge after enabling */
 #define MIRISDR_PPS_GUARD_BASE      0xFB    /* the interval opened on the poll
                                                loop's carry */
 #define MIRISDR_PPS_GUARD_TAIL      0xFC    /* the interval's first SOF fell
@@ -907,9 +914,10 @@ typedef struct mirisdr_pps
 
 MIRISDR_API int mirisdr_enable_pps (mirisdr_dev_t *p, int run); /* extra */
 /* Take the edges from the USB start of frame instead of GPIO_0, syncing
- * to the USB host clock. The divider divides the 2ms pulse rate (1-255).
+ * to the USB host clock. Each mirisdr_get_pps() then asks for the next edge:
+ * the first SOF that nothing disturbs, its frame and microframe saying which.
  * Applies on mirisdr_enable_pps. */
-MIRISDR_API int mirisdr_set_pps_source (mirisdr_dev_t *p, int sof, int divider); /* extra */
+MIRISDR_API int mirisdr_set_pps_source (mirisdr_dev_t *p, int sof); /* extra */
 MIRISDR_API int mirisdr_get_pps (mirisdr_dev_t *p, mirisdr_pps_t *out); /* extra */
 
 /* I2C master on GPIO_1 (SDA) and GPIO_2 (SCL). A read or write is at most 64 bytes

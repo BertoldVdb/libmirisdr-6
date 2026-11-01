@@ -25,6 +25,7 @@
  */
 
 static uint32_t mirisdr_burst (mirisdr_dev_t *p);
+static void mirisdr_pps_checks_reset (mirisdr_dev_t *p, double expect);
 
 #define CMD_PPS_ENABLE          0x52
 
@@ -69,17 +70,15 @@ static uint16_t mirisdr_pps_wvalue (mirisdr_dev_t *p, int run)
     uint16_t v = run ? 3 : 0;               /* bit 0 run, bit 1 take an anchor */
 
     if (p->pps_src_sof) v |= 8;             /* edges from the SOF interrupt */
-    v |= (uint16_t)(p->pps_div ? p->pps_div : 1) << 8;
 
     return v;
 }
 
-int mirisdr_set_pps_source (mirisdr_dev_t *p, int sof, int divider)
+int mirisdr_set_pps_source (mirisdr_dev_t *p, int sof)
 {
-    if (!p || divider < 1 || divider > 255) return -1;
+    if (!p) return -1;
 
     p->pps_src_sof = sof ? 1 : 0;
-    p->pps_div = divider;
 
     return 0;
 }
@@ -224,6 +223,7 @@ int mirisdr_enable_pps (mirisdr_dev_t *p, int run)
     if (run && !p->pps_src_sof) mirisdr_set_gpio_direction(p, 0, 0);
 
     p->pps_anchor_valid = 0;
+    mirisdr_pps_checks_reset(p, 0);
 
     /* bit 1 asks for the anchor, which the next streaming interrupt takes */
     if (run) mirisdr_anchor_open(p);
@@ -259,6 +259,7 @@ typedef struct {
     uint8_t  sofs;          /* SOF interrupts in the last full interval      */
     uint8_t  edge_sof;      /* SOFs before the edge in its interval          */
     uint32_t first_tick;    /* the interval's first SOF's tick               */
+    uint8_t  microframe;    /* the edge's microframe in its frame, on SOF    */
 } mirisdr_pps_time_t;
 
 #define PPS_CARRY_EDGE   1  /* the edge's tick was on the counter's wrap     */
@@ -285,6 +286,116 @@ static void mirisdr_pps_unpack (const uint8_t *b, mirisdr_pps_time_t *t)
     t->sofs        = b[20];
     t->edge_sof    = b[21];
     t->first_tick  = mirisdr_pps_ticks(b[22], b[23]);
+    t->microframe  = b[18] & 7;
+}
+
+/*
+ * A SOF source edge is a SOF, and says which: its frame and microframe. The SOFs are
+ * 125 us apart on the host's clock, so an edge sits on the line through the edges
+ * before it, as many microframes on as its label says, and one that does not is one
+ * the firmware could not see was wrong. The device misses a SOF now and then, which
+ * leaves the microframe count one short, and it at times loses a few us with no
+ * interrupt running, which moves the edge as much. Good edges sit within half a us.
+ *
+ * The line runs through two edges on it, the last and one up to twice the span
+ * before, so its slope is good to well under a us over the span. What it may be off by
+ * grows with how far ahead it is asked: the two ends' jitter over its length, and a
+ * drift of the clocks against each other.
+ */
+#define MIRISDR_PPS_GRID_US     2.0     /* off the line by more than this flags the edge */
+#define MIRISDR_PPS_GRID_SPAN_S 10.0    /* the line's length, between this and twice it */
+#define MIRISDR_PPS_GRID_PPM    100.0   /* the clocks' difference before the line has a slope */
+#define MIRISDR_PPS_LABELS      16384   /* microframes before the frame number wraps */
+
+static void mirisdr_pps_checks_reset (mirisdr_dev_t *p, double expect)
+{
+    p->pps_chk_expect = expect;
+    p->pps_chk_valid = 0;
+    p->pps_grid_have = 0;
+    p->pps_grid_off = 0;
+}
+
+static void mirisdr_pps_grid_start (mirisdr_dev_t *p, int64_t from, int64_t at, int label, int64_t microframes)
+{
+    p->pps_grid_a = p->pps_grid_m = from;
+    p->pps_grid_ka = p->pps_grid_km = 0;
+    p->pps_grid_b = at;
+    p->pps_grid_kb = microframes;
+    p->pps_grid_lb = label;
+    p->pps_grid_have = 1;
+    p->pps_grid_off = 0;
+}
+
+/* d is n microframes, n at least one and what the labels dl apart say, within tol and
+   grow more a microframe */
+static int mirisdr_pps_grid_fits (double d, double per, double tol, double grow, int dl, double *n)
+{
+    *n = floor(d / per + 0.5);
+
+    return (*n >= 1) && ((((int64_t) *n - dl) % MIRISDR_PPS_LABELS) == 0)
+        && (fabs(d - *n * per) <= tol + *n * grow);
+}
+
+/* 1 when the edge at, with its frame and microframe as label, is off the line */
+static int mirisdr_pps_grid (mirisdr_dev_t *p, int64_t at, int label)
+{
+    double rate = p->rate, nominal = 0.000125 * rate;
+    double tol = MIRISDR_PPS_GRID_US * 1e-6 * rate, span = MIRISDR_PPS_GRID_SPAN_S * rate, n;
+
+    if (p->pps_grid_have)
+    {
+        int64_t k = p->pps_grid_kb - p->pps_grid_ka;
+        double per = k ? (double) (p->pps_grid_b - p->pps_grid_a) / (double) k : nominal;
+        double grow = (k ? 1e-6 * rate / (double) k : MIRISDR_PPS_GRID_PPM * 1e-6 * nominal) + 2e-7 * per;
+
+        if (mirisdr_pps_grid_fits((double) (at - p->pps_grid_b), per, tol, grow,
+                                  (label - p->pps_grid_lb) & (MIRISDR_PPS_LABELS - 1), &n))
+        {
+            p->pps_grid_b = at;
+            p->pps_grid_lb = label;
+            p->pps_grid_kb += (int64_t) n;
+            p->pps_grid_off = 0;
+
+            /* the line's far end moves up a half span at a time */
+            if ((double) (p->pps_grid_b - p->pps_grid_m) >= span / 2)
+            {
+                if ((double) (p->pps_grid_b - p->pps_grid_a) >= span)
+                {
+                    p->pps_grid_a = p->pps_grid_m;
+                    p->pps_grid_ka = p->pps_grid_km;
+                }
+                p->pps_grid_m = p->pps_grid_b;
+                p->pps_grid_km = p->pps_grid_kb;
+            }
+            return 0;
+        }
+
+        /* edges off it that keep agreeing with each other start it again */
+        if (p->pps_grid_off && mirisdr_pps_grid_fits((double) (at - p->pps_grid_cand), per, tol, grow,
+                                                     (label - p->pps_grid_lc) & (MIRISDR_PPS_LABELS - 1), &n))
+            p->pps_grid_off++;
+        else
+            p->pps_grid_off = 1;
+        p->pps_grid_cand = at;
+        p->pps_grid_lc = label;
+
+        if (p->pps_grid_off >= 3) mirisdr_pps_grid_start(p, at, at, label, 0);
+        return 1;
+    }
+
+    /* no line yet: an edge that agrees with the one before starts it */
+    if (p->pps_grid_off && mirisdr_pps_grid_fits((double) (at - p->pps_grid_cand), nominal, tol,
+                                                 MIRISDR_PPS_GRID_PPM * 1e-6 * nominal,
+                                                 (label - p->pps_grid_lc) & (MIRISDR_PPS_LABELS - 1), &n))
+    {
+        mirisdr_pps_grid_start(p, p->pps_grid_cand, at, label, (int64_t) n);
+        return 0;
+    }
+
+    p->pps_grid_cand = at;
+    p->pps_grid_lc = label;
+    p->pps_grid_off = 1;
+    return 1;
 }
 
 int mirisdr_get_pps (mirisdr_dev_t *p, mirisdr_pps_t *out)
@@ -369,12 +480,30 @@ int mirisdr_get_pps (mirisdr_dev_t *p, mirisdr_pps_t *out)
     at = p->pps_base + (int64_t) (edge * group)
        + (int64_t) ((turns * (double) group) / expect);
 
+    /* once an edge, which repeated reads of it then share */
+    if (p->pps_src_sof)
+    {
+        if (!p->pps_chk_valid || (t.edges != p->pps_chk_edges) || (t.edge_packet != p->pps_chk_packet))
+        {
+            if (expect != p->pps_chk_expect) mirisdr_pps_checks_reset(p, expect);
+
+            p->pps_chk_guard = (!t.guard && mirisdr_pps_grid(p, at, (((int) t.frame << 3) | t.microframe)
+                                                                        & (MIRISDR_PPS_LABELS - 1)))
+                             ? MIRISDR_PPS_GUARD_GRID : 0;
+            p->pps_chk_edges = t.edges;
+            p->pps_chk_packet = t.edge_packet;
+            p->pps_chk_valid = 1;
+        }
+        if (!t.guard) t.guard = p->pps_chk_guard;
+    }
+
     memset(out, 0, sizeof *out);
     out->sample  = at < 0 ? 0 : (uint64_t) at;
     out->edges   = t.edges;
     out->trusted = !t.guard;
     out->guard   = t.guard;
     out->frame   = t.frame;
+    out->microframe = p->pps_src_sof ? t.microframe : 0;
 
     /* any gap, one gap fill covered too: the device's count went on without the stream */
     {

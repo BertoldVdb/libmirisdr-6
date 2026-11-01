@@ -283,9 +283,22 @@ struct mirisdr_dev {
     uint32_t            pps_irq_high;
     uint8_t             pps_anchor_valid;
     int                 pps_src_sof;    /* watch USB frames, not GPIO_0 */
-    int                 pps_div;        /* latch every Nth edge, 1 to 255 */
     uint8_t             pps_seen;       /* an interval matching the clock has been seen */
     double              pps_k_min;      /* least a SOF handler was seen to cost */
+    /* the SOF source's line in pps.c: edges on it, the oldest, one between and the last,
+       with their microframes counted from the oldest */
+    int                 pps_grid_have;
+    int                 pps_grid_off;   /* edges off it in a row */
+    int64_t             pps_grid_a, pps_grid_m, pps_grid_b;
+    int64_t             pps_grid_ka, pps_grid_km, pps_grid_kb;
+    int                 pps_grid_lb;    /* the last edge's frame and microframe */
+    int64_t             pps_grid_cand;  /* the last edge off it, and its */
+    int                 pps_grid_lc;
+    double              pps_chk_expect; /* the packet interval the grid is for */
+    int                 pps_chk_valid;  /* the last edge checked, and what was found */
+    uint8_t             pps_chk_edges;
+    uint32_t            pps_chk_packet;
+    uint8_t             pps_chk_guard;
     /* the blocks an anchor may have damaged, see mirisdr_anchor_open() */
     int                 anc_open;       /* anchors asked for, by the control thread */
     int                 anc_known;      /* the last of them placed in the count */

@@ -2597,26 +2597,25 @@ static tres_t t_pps (void)
 
 static tres_t t_sof (void)
 {
-    static int64_t d[400];
+    static double k[1000], y[1000];
     mirisdr_pps_t q;
-    uint64_t last = 0;
     uint8_t edges = 0;
-    int seen = 0, have = 0, n = 0, trusted = 0, nd = 0, i;
-    double t0, worst = 0, ppm;
-    int64_t med;
+    int seen = 0, n = 0, nk = 0, i, label, last_label = -1;
+    double t0, worst = 0, ppm, sk = 0, sy = 0, skk = 0, sky = 0, a, b, at = 0;
 
     if (!fw_ours) { say("needs our firmware"); return T_SKIP; }
 
     if (stream_setup("BULK", "504_S8", 2000000) < 0) return T_FAIL;
 
-    if (mirisdr_set_pps_source(dev, 1, 25) < 0) { say("could not select the frame source"); return T_FAIL; }
+    if (mirisdr_set_pps_source(dev, 1) < 0) { say("could not select the frame source"); return T_FAIL; }
 
     if (mirisdr_enable_pps(dev, 1) < 0) {
-        mirisdr_set_pps_source(dev, 0, 1);
+        mirisdr_set_pps_source(dev, 0);
         say("could not enable");
         return T_FAIL;
     }
 
+    /* each read asks for the next edge: about one every 5 ms, each a SOF that says which */
     t0 = now();
 
     while (now() - t0 < 3.0)
@@ -2627,39 +2626,47 @@ static tres_t t_sof (void)
         if (seen && q.edges == edges) continue;
 
         n++;
+        label = ((q.frame << 3) | q.microframe) & 16383;
+        if (last_label >= 0) at += (label - last_label) & 16383;
+        last_label = label;
 
-        if (q.trusted && q.gapless) {
-            trusted++;
-            if (have && (uint8_t) (q.edges - edges) == 1 && nd < 400) d[nd++] = (int64_t) (q.sample - last);
-            last = q.sample;
-            have = 1;
+        if (q.trusted && q.gapless && nk < 1000) {
+            k[nk] = at;
+            y[nk] = (double) q.sample;
+            nk++;
         }
-        else have = 0;
 
         edges = q.edges;
         seen = 1;
     }
 
     mirisdr_enable_pps(dev, 0);
-    mirisdr_set_pps_source(dev, 0, 1);
+    mirisdr_set_pps_source(dev, 0);
 
-    if (n < 40) { say("%d captures in 3 s, expected about 60", n); return T_FAIL; }
-    if (nd < 10) { say("%d captures, only %d trusted", n, trusted); return T_FAIL; }
+    if (n < 200) { say("%d captures in 3 s, expected about 500", n); return T_FAIL; }
+    if (nk < 50) { say("%d captures, only %d trusted", n, nk); return T_FAIL; }
 
-    qsort(d, nd, sizeof d[0], cmp_i64);
-    med = d[nd / 2];
+    /* the samples against the microframes they came on: the line's slope is the device's
+       clock against the host's, and every edge should be on it */
+    for (i = 0; i < nk; i++) {
+        double kk = k[i] - k[0], yy = y[i] - y[0];
 
-    for (i = 0; i < nd; i++) {
-        double dev_us = (double) (d[i] - med) / 2.0;    /* 2 Msps: a sample is 0.5 us */
+        sk += kk; sy += yy; skk += kk * kk; sky += kk * yy;
+    }
+    b = (nk * sky - sk * sy) / (nk * skk - sk * sk);
+    a = (sy - b * sk) / nk;
+
+    for (i = 0; i < nk; i++) {
+        double dev_us = (y[i] - y[0] - (a + b * (k[i] - k[0]))) / 2.0;     /* 2 Msps: a sample is 0.5 us */
 
         if (fabs(dev_us) > worst) worst = fabs(dev_us);
     }
 
-    /* 25 odd frames are 50 ms of the host's frame clock */
-    ppm = ((double) med - 100000.0) / 100000.0 * 1e6;
+    /* a microframe is 125 us of the host's frame clock, 250 samples */
+    ppm = (b - 250.0) / 250.0 * 1e6;
 
-    say("%d captures, %d trusted, %d deltas: median %lld samples per 50 ms (%+.1f ppm of the frame clock), worst %.1f us off",
-        n, trusted, nd, (long long) med, ppm, worst);
+    say("%d captures, %d trusted: %.4f samples a microframe (%+.1f ppm of the frame clock), worst %.1f us off",
+        n, nk, b, ppm, worst);
 
     /* a wrong tick wrap would be 51 us, a packet interrupt taken late 2 us */
     return (fabs(ppm) < 1000.0 && worst <= 5.0) ? T_PASS : T_FAIL;

@@ -490,7 +490,7 @@ A pulse on GPIO 0 can be time stamped in the stream's own samples. This needs th
 
   - `mirisdr_enable_pps(dev, 1)` starts it. This costs one damaged packet.
   - `mirisdr_get_pps()` gives the sample of the last rising edge, an edge counter, and two flags. Ignore the sample when `trusted` or `gapless` is 0. Both repair themselves.
-  - `mirisdr_set_pps_source(dev, 1, divider)` takes the edges from the USB frame clock instead of GPIO 0.
+  - `mirisdr_set_pps_source(dev, 1)` takes the edges from the USB frame clock instead of GPIO 0. Each `mirisdr_get_pps()` then asks for the next edge, the first SOF that nothing disturbs, and `frame` and `microframe` say which one.
 
 
 <h3>Scanning</h3>
