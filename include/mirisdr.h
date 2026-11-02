@@ -310,9 +310,9 @@ MIRISDR_API int mirisdr_set_gap_fill (mirisdr_dev_t *p, int on); /* extra */
  *
  * Bulk transfers max bandwidth is very host dependent, so only the receiver's own limit
  * (~56 MB/s) is enforced there. The automatic choice takes the format with the most
- * bits that fits a figure: usb_capacity, 32 MB/s by default in bulk, or an isochronous
- * mode's reservation. In bulk, if above 32MB/s, it takes the densest (8-bit samples,
- * 768_REAL for a single converter).
+ * bits that fits a figure: usb_capacity, 32 MB/s by default in bulk and never more than
+ * the receiver's limit, or an isochronous mode's reservation. In bulk, when none fits the
+ * figure, it takes the densest (8-bit samples, 768_REAL for a single converter).
  */
 typedef struct mirisdr_stream_config
 {
@@ -387,6 +387,13 @@ MIRISDR_API int mirisdr_set_stream (mirisdr_dev_t *p, const mirisdr_stream_confi
                                     mirisdr_stream_result_t *res); /* extra */
 MIRISDR_API int mirisdr_stream_check (mirisdr_dev_t *p, const mirisdr_stream_config_t *cfg,
                                       mirisdr_stream_result_t *res); /* extra */
+/* The rates mirisdr_stream_check() takes for cfg as if strict, its rate aside, on the tune
+ * in force: up to max stretches in range, each from the first up to the second, both
+ * included, from low to high. Returns how many, 0 for none. There is one, except under
+ * direct sampling AUTO, where the rate decides whether the tune stays on direct sampling.
+ * MIRISDR_RANGE_MAX is always enough */
+MIRISDR_API int mirisdr_stream_rates (mirisdr_dev_t *p, const mirisdr_stream_config_t *cfg,
+                                      uint32_t (*range)[2], int max); /* extra */
 MIRISDR_API int mirisdr_get_stream (mirisdr_dev_t *p, mirisdr_stream_config_t *cfg,
                                     mirisdr_stream_result_t *res); /* extra */
 

@@ -180,8 +180,8 @@ private:
         ~ReportScope() { if (!--d.reportDepth && d.reportOn) d.report(); d.devMutex.unlock(); }
     };
 
-    /* ranges found at open */
-    double freqMin, freqMax, rateMin, rateMax;
+    /* the rates the library takes for one tuner without baseband */
+    double rateMin, rateMax;
 
     /* stream */
     std::thread rxThread;
@@ -228,7 +228,7 @@ private:
     void notchInfo(SoapySDR::ArgInfoList &list, bool device) const;
     std::vector<uint32_t> bandwidthsFor(uint32_t ifHz) const;
     uint32_t pickBandwidth(uint32_t ifHz) const;
-    void probeRanges(void);
+    void probeRates(void);
     long long indexToNs(uint64_t index, uint32_t rate) const;
     void timeRebase(uint64_t index, uint32_t rate);
     uint32_t fixedIf(void) const;

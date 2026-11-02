@@ -4245,6 +4245,120 @@ static tres_t t_plan_tuners (void)
     return plan_bad ? T_FAIL : T_PASS;
 }
 
+/* mirisdr_stream_rates() against strict checks: its ends taken, a hertz past them
+   refused, and every 1 kHz to 40 Msps taken only inside them */
+static int rates_agree (mirisdr_dev_t *n, mirisdr_stream_config_t *s, const char *what, int want_n,
+                        uint32_t want_lo, uint32_t want_hi)
+{
+    uint32_t r[MIRISDR_RANGE_MAX][2], f;
+    int k = mirisdr_stream_rates(n, s, r, MIRISDR_RANGE_MAX), i, in, bad = 0;
+
+    s->strict = 1;
+    if (k != want_n) { say("%s: %d ranges, not %d", what, k, want_n); return 1; }
+    if (k && want_lo && (r[0][0] != want_lo || r[k - 1][1] != want_hi))
+    { say("%s: %u to %u, not %u to %u", what, r[0][0], r[k - 1][1], want_lo, want_hi); bad++; }
+    for (i = 0; i < k; i++)
+    {
+        s->rate = r[i][0];
+        if (mirisdr_stream_check(n, s, NULL) < 0) { say("%s: its least %u refused", what, r[i][0]); bad++; }
+        s->rate = r[i][1];
+        if (mirisdr_stream_check(n, s, NULL) < 0) { say("%s: its most %u refused", what, r[i][1]); bad++; }
+        s->rate = r[i][0] - 1;
+        if (r[i][0] > 1 && mirisdr_stream_check(n, s, NULL) == 0) { say("%s: %u under it taken", what, s->rate); bad++; }
+        s->rate = r[i][1] + 1;
+        if (r[i][1] < UINT32_MAX && mirisdr_stream_check(n, s, NULL) == 0) { say("%s: %u over it taken", what, s->rate); bad++; }
+    }
+    for (f = 1000; f <= 40000000 && bad < 4; f += 1000)
+    {
+        for (i = 0, in = 0; i < k; i++) in |= f >= r[i][0] && f <= r[i][1];
+        s->rate = f;
+        if ((mirisdr_stream_check(n, s, NULL) == 0) != in) { say("%s: %u %s", what, f, in ? "refused" : "taken"); bad++; }
+    }
+
+    return bad;
+}
+
+static tres_t t_plan_rates (void)
+{
+    mirisdr_dev_t *n;
+    mirisdr_tune_config_t c;
+    mirisdr_stream_config_t s;
+    int bad = 0;
+
+    if (mirisdr_open_null(&n, "252_S16") < 0) { say("no null device"); return T_FAIL; }
+
+    mirisdr_stream_config_default(&s);
+    s.transfer = "BULK";
+    bad += rates_agree(n, &s, "bulk", 1, 1300000, 27562500);
+
+    /* a capacity past the engine's limit plans on the limit: no format that would not fit it */
+    s.usb_capacity = 60000000;
+    bad += rates_agree(n, &s, "bulk planned on 60 MB/s", 1, 1300000, 27562500);
+    s.usb_capacity = 100000000;
+    bad += rates_agree(n, &s, "bulk planned on 100 MB/s", 1, 1300000, 27562500);
+    {
+        mirisdr_stream_result_t r;
+
+        s.rate = 14000000;
+        s.strict = 1;
+        if (mirisdr_stream_check(n, &s, &r) < 0 || r.usb_capacity != 56000000 || strcmp(r.format, "336_S16"))
+        { say("14 Msps planned on 100 MB/s: %s, planned on %u", r.format, r.usb_capacity); bad++; }
+    }
+    s.usb_capacity = 0;
+
+    s.transfer = "ISOC";
+    s.format = "504_S8";
+    bad += rates_agree(n, &s, "isochronous 504_S8", 1, 0, 0);
+    s.decimation_bypass = "ON";
+    s.format = "252_S16";
+    s.transfer = "ISOC1";
+    bad += rates_agree(n, &s, "a format past ISOC1 at the least rate", 0, 0, 0);
+
+    mirisdr_get_tune(n, 0, &c, NULL);
+    c.if_freq = 450000;
+    mirisdr_tune(n, 0, &c, NULL);
+    mirisdr_stream_config_default(&s);
+    s.transfer = "BULK";
+    s.baseband = 1;
+    bad += rates_agree(n, &s, "baseband at 450 kHz", 1, 3516, 27562500);
+
+    /* direct sampling AUTO at 1.5 MHz: on it up to 1 Msps, the tuner from 1.3 */
+    mirisdr_set_hw_flavour(n, MIRISDR_HW_RSPDXR2);
+    mirisdr_get_tune(n, 0, &c, NULL);
+    c.frequency = 1500000;
+    c.if_freq = 0;
+    c.frontend.direct_sampling = MIRISDR_DS_AUTO;
+    mirisdr_tune(n, 0, &c, NULL);
+    s.follow_tune = 1;
+    bad += rates_agree(n, &s, "direct sampling AUTO at 1.5 MHz", 2, 9376, 27562500);
+
+    /* near 500 kHz the 500 kHz low pass, then the 2 MHz one from a higher least */
+    c.frequency = 497000;
+    c.frontend.direct_sampling = MIRISDR_DS_ON;
+    mirisdr_tune(n, 0, &c, NULL);
+    bad += rates_agree(n, &s, "direct sampling at 497 kHz", 2, 2540, 15000000);
+
+    /* two tuners */
+    mirisdr_set_hw_flavour(n, MIRISDR_HW_RSPDUO);
+    mirisdr_get_tune(n, 0, &c, NULL);
+    c.frequency = 100000000;
+    c.if_freq = 450000;
+    mirisdr_tune(n, 0, &c, NULL);
+    c.frequency = 200000000;
+    c.if_freq = 2048000;
+    mirisdr_tune(n, 1, &c, NULL);
+    mirisdr_stream_config_default(&s);
+    s.transfer = "BULK";
+    s.baseband = 1;
+    s.tuners = 3;
+    bad += rates_agree(n, &s, "two tuners", 1, 13201, 13781250);
+
+    mirisdr_close(n);
+
+    say(bad ? "%d wrong" : "the rates listed are the ones a strict check takes, with direct sampling's gaps", bad);
+    return bad ? T_FAIL : T_PASS;
+}
+
 /* A board change: what the new board has not leaves both tuners' stored tunes, so the
    next tune is not refused for it */
 static tres_t t_plan_flavour_change (void)
@@ -7592,6 +7706,7 @@ static const struct {
 
     { "plan",     "tune config rules",          t_plan_tune           },
     { "plan",     "stream config rules",        t_plan_stream         },
+    { "plan",     "stream rates",               t_plan_rates          },
     { "plan",     "converter clock and bits",   t_plan_adc            },
     { "plan",     "two tuners",                 t_plan_tuners         },
     { "plan",     "tuners nothing hears rest",  t_plan_standby        },

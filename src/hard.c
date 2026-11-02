@@ -202,13 +202,18 @@ static int mirisdr_parse_format (const char *v, const char *dflt, int *fauto, in
 	return 0;
 }
 
-/* B/s the automatic choice plans on: what was asked for in bulk, the reservation (or
+/* B/s the automatic choice plans on: what was asked for in bulk, up to the engine's limit
+   (past it a format that fits the USB would not fit the engine), the reservation (or
    less) in an isochronous mode */
 static uint32_t mirisdr_stream_cap (int transfer, uint8_t alt, uint32_t usb_capacity)
 {
 	uint32_t res;
 
-	if (transfer == MIRISDR_TRANSFER_BULK) return usb_capacity ? usb_capacity : MIRISDR_BULK_CAPACITY;
+	if (transfer == MIRISDR_TRANSFER_BULK)
+	{
+		if (!usb_capacity) return MIRISDR_BULK_CAPACITY;
+		return (usb_capacity > MIRISDR_ENGINE_BLOCK_RATE) ? (uint32_t) MIRISDR_ENGINE_BLOCK_RATE : usb_capacity;
+	}
 
 	res = 1024 * mirisdr_alt_burst(alt) * 8000;
 
@@ -1032,22 +1037,140 @@ int mirisdr_set_stream (mirisdr_dev_t *p, const mirisdr_stream_config_t *cfg, mi
 	return mirisdr_stream_apply(p, cfg, 0, res);
 }
 
+/* The plan a check makes of cfg, on the tuner it streams first. The low pass direct sampling
+   takes (0 for the tuner) in *ds_edge */
+static int mirisdr_stream_plan_check (mirisdr_dev_t *p, const mirisdr_stream_config_t *cfg, uint32_t *ds_edge,
+                                      mirisdr_stream_plan_t *pl)
+{
+	uint32_t if_hz;
+	int iq, r;
+
+	mirisdr_tuner_select(p, (cfg->tuners && !(cfg->tuners & 1) && (mirisdr_tuners_of(p) > 1)) ? 1 : 0);
+	if_hz = mirisdr_stream_tune_of(p, cfg, ds_edge, &iq);
+	r = mirisdr_stream_plan(p, cfg, 0, iq, if_hz, *ds_edge, pl);
+	mirisdr_tuner_select(p, mirisdr_tuner_primary(p));
+
+	return r;
+}
+
+/* The check of cfg at rate, strict or snapping */
+static int mirisdr_stream_plan_rate (mirisdr_dev_t *p, const mirisdr_stream_config_t *cfg, uint32_t rate, int strict,
+                                     uint32_t *ds_edge, mirisdr_stream_plan_t *pl)
+{
+	mirisdr_stream_config_t c = *cfg;
+
+	c.rate = rate;
+	c.strict = strict;
+
+	return mirisdr_stream_plan_check(p, &c, ds_edge, pl);
+}
+
+/* The path a stream of cfg at rate takes: the low pass under direct sampling, 0 the tuner */
+static uint32_t mirisdr_stream_path_at (mirisdr_dev_t *p, const mirisdr_stream_config_t *cfg, uint32_t rate)
+{
+	mirisdr_stream_config_t c = *cfg;
+	uint32_t ds_edge;
+	int iq;
+
+	c.rate = rate;
+	mirisdr_tuner_select(p, (c.tuners && !(c.tuners & 1) && (mirisdr_tuners_of(p) > 1)) ? 1 : 0);
+	mirisdr_stream_tune_of(p, &c, &ds_edge, &iq);
+	mirisdr_tuner_select(p, mirisdr_tuner_primary(p));
+
+	return ds_edge;
+}
+
+/* The rates a stream of cfg takes, strictly. On one path they are a single stretch, so a
+   path's start is snapped to its least and the ends are found by halving. Under direct
+   sampling AUTO the rate picks the path, each path then giving its own stretch */
+int mirisdr_stream_rates (mirisdr_dev_t *p, const mirisdr_stream_config_t *cfg, uint32_t (*range)[2], int max)
+{
+	mirisdr_stream_plan_t pl;
+	uint32_t from = 1, to, lo, hi, mid, seed, path, e;
+	int n = 0, i, ok;
+
+	if (!p || !cfg || !range || (max < 1)) return -1;
+	p->checking = 1;
+
+	for (;;)
+	{
+		/* the rates from `from` on the same path */
+		path = mirisdr_stream_path_at(p, cfg, from);
+		to = UINT32_MAX;
+		if (mirisdr_stream_path_at(p, cfg, to) != path)
+		{
+			for (lo = from, hi = to; hi - lo > 1; )
+			{
+				mid = lo + (hi - lo) / 2;
+				if (mirisdr_stream_path_at(p, cfg, mid) == path) lo = mid; else hi = mid;
+			}
+			to = lo;
+		}
+
+		/* one rate it takes: the start, or where a snapping plan takes it, until that holds */
+		seed = from;
+		for (i = 0, ok = 0; (i < 4) && !ok; i++)
+		{
+			if (mirisdr_stream_plan_rate(p, cfg, seed, 1, &e, &pl) == 0) ok = 1;
+			else if ((mirisdr_stream_plan_rate(p, cfg, seed, 0, &e, &pl) < 0) || (pl.cfg.rate <= seed) ||
+			         (pl.cfg.rate > to)) break;
+			else seed = pl.cfg.rate;
+		}
+
+		if (ok)
+		{
+			/* the least, between the start and the seed */
+			lo = from;
+			if (mirisdr_stream_plan_rate(p, cfg, lo, 1, &e, &pl) < 0)
+			{
+				for (hi = seed; hi - lo > 1; )
+				{
+					mid = lo + (hi - lo) / 2;
+					if (mirisdr_stream_plan_rate(p, cfg, mid, 1, &e, &pl) == 0) hi = mid; else lo = mid;
+				}
+				lo = hi;
+			}
+
+			/* the most, between the seed and the end */
+			hi = to;
+			if (mirisdr_stream_plan_rate(p, cfg, hi, 1, &e, &pl) < 0)
+			{
+				while (hi - seed > 1)
+				{
+					mid = seed + (hi - seed) / 2;
+					if (mirisdr_stream_plan_rate(p, cfg, mid, 1, &e, &pl) == 0) seed = mid; else hi = mid;
+				}
+				hi = seed;
+			}
+
+			/* joined to the last where they meet */
+			if (n && (range[n - 1][1] + 1 == lo)) range[n - 1][1] = hi;
+			else if (n < max)
+			{
+				range[n][0] = lo;
+				range[n][1] = hi;
+				n++;
+			}
+		}
+
+		if (to == UINT32_MAX) break;
+		from = to + 1;
+	}
+
+	p->checking = 0;
+
+	return n;
+}
+
 int mirisdr_stream_check (mirisdr_dev_t *p, const mirisdr_stream_config_t *cfg, mirisdr_stream_result_t *res)
 {
 	mirisdr_stream_plan_t pl;
+	uint32_t ds_edge;
 	int r;
 
 	if (!p || !cfg) return -1;
 	p->checking = 1;
-	mirisdr_tuner_select(p, (cfg->tuners && !(cfg->tuners & 1) && (mirisdr_tuners_of(p) > 1)) ? 1 : 0);
-	{
-		uint32_t ds_edge;
-		int iq;
-		uint32_t if_hz = mirisdr_stream_tune_of(p, cfg, &ds_edge, &iq);
-
-		r = mirisdr_stream_plan(p, cfg, 0, iq, if_hz, ds_edge, &pl);
-	}
-	mirisdr_tuner_select(p, mirisdr_tuner_primary(p));
+	r = mirisdr_stream_plan_check(p, cfg, &ds_edge, &pl);
 	p->checking = 0;
 	if (r < 0) return -1;
 

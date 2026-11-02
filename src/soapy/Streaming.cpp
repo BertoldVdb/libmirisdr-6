@@ -271,7 +271,6 @@ int SoapyMiriSDR::activateStream(SoapySDR::Stream *stream, const int flags, cons
     rxEnded = false;
     rxResult = 0;
 
-    mirisdr_reset_buffer(dev);
     rxThread = std::thread([this]() {
         /* a stop before the library runs: the callback catches one after */
         /* an error the callback recorded stays */

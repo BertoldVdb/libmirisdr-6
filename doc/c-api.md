@@ -53,8 +53,14 @@ int main(void)
     mirisdr_tune_result_t tr;
     mirisdr_stream_config_t sc;
     mirisdr_stream_result_t sr;
+    mirisdr_receiver_t rx;
+    mirisdr_open_config_t oc;
 
-    if (mirisdr_open(&dev, 0) < 0)
+    if (mirisdr_list_receivers(NULL, NULL, &rx, 1) < 1)
+        return 1;
+    mirisdr_open_config_default(&oc);
+    oc.usb_port = rx.usb_port;
+    if (mirisdr_open_ex(&dev, &oc) < 0)
         return 1;
 
     mirisdr_get_tune(dev, 0, &tc, NULL);
@@ -75,7 +81,6 @@ int main(void)
     printf("%u samples/s from %u, LO %u Hz, bandwidth %u Hz\n",
            sr.rate, sr.adc_rate, tr.lo, tr.bandwidth);
 
-    mirisdr_reset_buffer(dev);
     mirisdr_read_async(dev, callback, NULL, 0, 0);
     mirisdr_close(dev);
     return 0;
@@ -87,9 +92,27 @@ It prints `810000 samples/s from 6480000, LO 435120000 Hz, bandwidth 1536000 Hz`
 
 <h3>Opening a receiver</h3>
 
-`mirisdr_open(&dev, index)` opens a receiver by its place in the list. `mirisdr_get_device_count()`, `mirisdr_get_device_name()` and `mirisdr_get_device_usb_strings()` describe the receivers found. `mirisdr_list_receivers()` gives them all from one look at the USB, each with its serial, USB port and board model, without opening them, so there is no index to go stale. Open one of them by its serial or port, as below. `mirisdr_get_index_by_serial()` finds one by its serial, or by the USB port it is listed at when it has none (`1:3`). The USB port keeps working once it has a serial. `mirisdr_get_device_port()` gives the port of any receiver in the list, and the serial it reports, empty when it reports none. `mirisdr_get_index_by_serial_port()` finds one by serial, port or both, the way `mirisdr_open_ex()` does. `mirisdr_device_known()` says whether the library takes a USB VID:PID as a receiver. None of these open a receiver, so one in use by another program is not disturbed: the serial is the copy the system keeps, from libusb 1.0.30 on or from sysfs on Linux. Only with an older libusb on other systems is each receiver opened for a moment to read its serial. A port alone and `mirisdr_get_device_usb_strings()` with `serial` NULL never do.
+`mirisdr_list_receivers()` gives every receiver the library takes, from one look at the USB, without opening any of them. Each entry has:
 
-For more control use `mirisdr_open_ex()`. Fill the config with `mirisdr_open_config_default()` first and change only what you need.
+  - `vid` and `pid`: the USB ids.
+  - `serial`: the serial it reports, empty when it reports none, as after a power cycle when it runs from its ROM.
+  - `usb_port`: the USB port it is in, such as `1:3`. It stays the same while the receiver stays in that port, and is the way to name a receiver without a serial.
+  - `manufacturer`, `product` and `name`: from the library's table, `product` the board's model (as `mirisdr_get_board_name()` gives it) and `name` the long name, such as "SDRplay RSPdx".
+  - `hw_flavour`: the board the library opens it as by default.
+
+It fills up to `max` entries and returns how many receivers there are, which can be more than `max`: call it again with more room. It returns -1 when the USB cannot be listed. With `serial` or `usb_port` it lists only the receiver an open with them would take.
+
+```c
+mirisdr_receiver_t rx[8];
+int i, n = mirisdr_list_receivers(NULL, NULL, rx, 8);
+
+for (i = 0; i < n && i < 8; i++)
+    printf("%s, serial %s, port %s\n", rx[i].name, rx[i].serial, rx[i].usb_port);
+```
+
+A receiver in use by another program is not disturbed: the serial is the copy the system keeps, from libusb 1.0.30 on or from sysfs on Linux. Only with an older libusb on other systems is each receiver opened for a moment to read it. `mirisdr_device_known()` says whether the library takes a USB VID:PID as a receiver.
+
+Open a receiver with `mirisdr_open_ex()`, by its serial or USB port. Fill the config with `mirisdr_open_config_default()` first and change only what you need.
 
 ```c
 mirisdr_open_config_t cfg;
@@ -101,13 +124,15 @@ if (mirisdr_open_ex(&dev, &cfg) < 0)
 
 The fields you are most likely to use:
 
-  - `index`, `serial`, `usb_port` or `fd`: which receiver. A serial or port wins over the index. `serial` also takes the USB port a receiver is listed at, such as `1:3`. `fd` takes a USB file descriptor that is already open, as on Android. A receiver opened that way still running the stock firmware gets the library's loaded, reboots and the open returns `MIRISDR_REOPEN`: the application opens it again with the new descriptor. The stock firmware is not kept, as it tends to lock up after a while and then needs a replug.
+  - `serial`, `usb_port` or `fd`: which receiver. `serial` also takes the USB port a receiver is listed at, such as `1:3`. `fd` takes a USB file descriptor that is already open, as on Android. A receiver opened that way still running the stock firmware gets the library's loaded, reboots and the open returns `MIRISDR_REOPEN`: the application opens it again with the new descriptor. The stock firmware is not kept, as it tends to lock up after a while and then needs a replug.
 
-With both `serial` and `usb_port`, the receiver with that serial is taken, in whatever port. When none has it, the receiver in `usb_port` is taken, but only if it reports no serial, as one running from its ROM after a power cycle. One that reports another serial is not.
+    With both `serial` and `usb_port`, the receiver with that serial is taken, in whatever port. When none has it, the receiver in `usb_port` is taken, but only if it reports no serial, as one running from its ROM after a power cycle. One that reports another serial is not.
 
-Avoid opening based on an index: a receiver plugged in or out shifts the index of the others. With `serial` or `usb_port`, the receiver is matched in the same device list it is opened from, so another one cannot take its place. `mirisdr_get_index_by_serial()` followed by `mirisdr_open()` leaves a moment for that to happen. While the firmware loads, the receiver reboots and is opened again by its USB port, whichever way it was chosen.
+    The receiver is matched in the same device list it is opened from, so a receiver plugged in or out meanwhile cannot take its place. While the firmware loads, the receiver reboots and is opened again by its USB port, whichever way it was chosen.
   - `hw_flavour`: the kind of board. `MIRISDR_HW_AUTO`, the default, tells from the USB ids. Other values are `MIRISDR_HW_DEFAULT` (plain boards and the RSP1), `MIRISDR_HW_SDRPLAY` (the original libmirisdr's SDRplay plan, for a board that is not known), `MIRISDR_HW_RSP1B`, `MIRISDR_HW_RSPDXR2`, `MIRISDR_HW_RSPDUO`, `MIRISDR_HW_MIRICSTV` (the Mirics TV reference design, which TV sticks such as the Hauppauge WinTV 133559LF, the AverMedia A859, the IO-DATA GV-TV100 and the Logitec LDT-1S310U/J follow), `MIRISDR_HW_RSP2` (the RSP2 and RSP2pro) and `MIRISDR_HW_RSP1A`. A wrong value can switch things the board does not have, such as a bias-T.
   - `firmware`, `firmware_path` and `keep_running`: the library loads its own firmware into the receiver by default, and replaces a different one that is running. Give another image, or set `keep_running` to use what runs.
+
+The index based functions (`mirisdr_open()`, `mirisdr_get_device_count()` and the others taking an index) are kept for existing programs. A receiver plugged in or out shifts the index of the others, so new programs should not use them.
 
 `mirisdr_close()` stops any stream and frees everything. It also puts the tuners in standby and switches off the bias-T and the front end's amplifiers, pads and notches. On the RSPduo it takes the ports apart. On the RSP2 it also switches off the reference output and the test oscillator, on the RSP1A the test oscillator.
 
@@ -311,7 +336,7 @@ The USB data rate is `rate x 1024 / samples per packet` bytes a second. Complex 
 
 Isochronous transfers reserve their bandwidth on the USB, so their capacity is a hard limit. A rate that does not fit is refused, with or without `strict`.
 
-Bulk transfers take whatever the computer gives them. The automatic format plans on 32 MB/s in bulk, which every computer tried so far reaches. Above that it still accepts the rate and uses the 8-bit format. If the computer cannot keep up, samples go missing and show up as gaps. Only the receiver's own limit of about 56 MB/s applies: a rate past it is taken down to it, or refused with `strict`. Set `usb_capacity` if you know your computer does better or worse than 32 MB/s.
+Bulk transfers take whatever the computer gives them. The automatic format plans on 32 MB/s in bulk, which every computer tried so far reaches. Above that it still accepts the rate and uses the 8-bit format. If the computer cannot keep up, samples go missing and show up as gaps. Only the receiver's own limit of about 56 MB/s applies: a rate past it is taken down to it, or refused with `strict`. Set `usb_capacity` if you know your computer does better or worse than 32 MB/s. The automatic format plans on at most the receiver's limit, so a higher figure counts as about 56 MB/s, and the result reports that.
 
 <h4>Decimation bypass</h4>
 
@@ -336,6 +361,13 @@ The receiver normally samples at twice the rate and filters down. Its clock reac
 
 `mirisdr_stream_check()` gives the result without changing anything.
 
+`mirisdr_stream_rates()` lists the rates a config takes, as `mirisdr_stream_check()` would with `strict` set, whatever its `rate`. They depend on the format, the transfer, the decimation bypass, the tuners, baseband and its IF, and the USB capacity. It fills up to `max` ranges, each from the first value up to the second, both included, and returns how many. There is one range, except under direct sampling AUTO, where the rate decides whether the tune stays on direct sampling.
+
+```c
+uint32_t rates[MIRISDR_RANGE_MAX][2];
+int n = mirisdr_stream_rates(dev, &cfg, rates, MIRISDR_RANGE_MAX);
+```
+
 <h4>Changing the stream while it runs</h4>
 
 You can apply a new stream config while samples are flowing. The stream restarts with a short gap. The buffer being filled at that moment is dropped, so a buffer never mixes two formats.
@@ -350,7 +382,7 @@ You can apply a new stream config while samples are flowing. The stream restarts
   - `num` is the number of USB transfers in flight. 0 means 32.
   - `len` is the buffer length in bytes. 0 means the buffers come as the USB delivers them, which is the best choice for most programs. A fixed length gathers samples into buffers of exactly that size. It has to be a multiple of 8, so a buffer holds whole samples in every format.
 
-Call `mirisdr_reset_buffer()` before you start. Stop with `mirisdr_cancel_async()`, from the callback or from another thread. A cancel counts from the moment `mirisdr_read_async()` is entered, even before the first transfer runs. A cancel made before that is lost, so keep a flag of your own and check it in the callback.
+Stop with `mirisdr_cancel_async()`, from the callback or from another thread. A cancel counts from the moment `mirisdr_read_async()` is entered, even before the first transfer runs. A cancel made before that is lost, so keep a flag of your own and check it in the callback.
 
 Keep the callback short. If it blocks, the USB transfers run dry and samples are lost.
 

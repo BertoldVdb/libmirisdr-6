@@ -97,7 +97,7 @@ uint32_t SoapyMiriSDR::fixedIf(void) const
 SoapyMiriSDR::SoapyMiriSDR(const SoapySDR::Kwargs &args):
     dev(nullptr), flavour(MIRISDR_HW_DEFAULT), ifFreq(0), ifMode("auto"), converters(MIRISDR_IQ_BOTH),
     baseband(true), wantRate(2048000), wantBw{ 0, 0 }, argBw(0), bandGainRanges(false),
-    reportOn(false), reportDepth(0), freqMin(0), freqMax(0), rateMin(0), rateMax(0),
+    reportOn(false), reportDepth(0), rateMin(0), rateMax(0),
     stopping(false), rxDone(true), rxEnded(false), rxResult(0), outFormat(0),
     ringHead(0), ringTail(0), ringCount(0), dropPending(false), pairOpen(false), slotPos(0), gapPos(0),
     timeOffsetNs(0), lastIndex(0), lastRate(0), timeBaseNs(0), timeBaseIndex(0), timeBaseRate(0),
@@ -184,7 +184,7 @@ SoapyMiriSDR::SoapyMiriSDR(const SoapySDR::Kwargs &args):
     }
     applyTune(tc);
 
-    probeRanges();
+    probeRates();
     configure(wantRate);
 
     } catch (...) {
@@ -244,57 +244,26 @@ void SoapyMiriSDR::applyTune(const mirisdr_tune_config_t &cfg)
                       cfg.frequency, cfg.if_freq, cfg.bandwidth);
 }
 
-/* what the library accepts, found once by asking it */
-void SoapyMiriSDR::probeRanges(void)
+/* the rates the library takes for one tuner without baseband */
+void SoapyMiriSDR::probeRates(void)
 {
     std::lock_guard<std::recursive_mutex> lock(devMutex);
-    mirisdr_tune_config_t tc;
     mirisdr_stream_config_t sc;
-    double lo, hi, mid;
-    int i;
+    uint32_t r[MIRISDR_RANGE_MAX][2];
 
-    mirisdr_get_tune(dev, tunerSel, &tc, NULL);
-    tc.gain.mode = MIRISDR_GAIN_KEEP;
-
-    /* from where the board's first stretch starts, the Mirics TV design's at 45 MHz */
-    freqMin = std::max(1000.0, (double) caps[tunerSel < 2 ? tunerSel : 0].range[0][0]);
-    for (; freqMin < 100e6; freqMin *= 2)
-    {
-        tc.frequency = (uint32_t) freqMin;
-        if (mirisdr_tune_check(dev, tunerSel, &tc, NULL) == 0) break;
-    }
-    lo = 1e9; hi = 4e9;
-    for (i = 0; i < 40; i++)
-    {
-        mid = std::floor((lo + hi) / 2);
-        tc.frequency = (uint32_t) mid;
-        if (mirisdr_tune_check(dev, tunerSel, &tc, NULL) == 0) lo = mid; else hi = mid;
-    }
-    freqMax = lo;
-
-    /* one tuner without baseband: two tuners need it, and their low IF rates come from
-       lowIfRange() */
+    /* two tuners need baseband, and their low IF rates come from lowIfRange() */
     mirisdr_get_stream(dev, &sc, NULL);
     if (sc.tuners == 3) sc.tuners = 0;
     sc.baseband = 0;
     sc.follow_tune = 0;
-    sc.strict = 1;      /* refused out of reach, not snapped */
-    lo = 1; hi = 4e6;
-    for (i = 0; i < 40; i++)
+    if (mirisdr_stream_rates(dev, &sc, r, MIRISDR_RANGE_MAX) < 1)
     {
-        mid = std::floor((lo + hi) / 2);
-        sc.rate = (uint32_t) mid;
-        if (mirisdr_stream_check(dev, &sc, NULL) == 0) hi = mid; else lo = mid;
+        SoapySDR_log(SOAPY_SDR_ERROR, "mirisdr: no sample rate for this stream");
+        rateMin = rateMax = 0;
+        return;
     }
-    rateMin = hi;
-    lo = 4e6; hi = 100e6;
-    for (i = 0; i < 40; i++)
-    {
-        mid = std::floor((lo + hi) / 2);
-        sc.rate = (uint32_t) mid;
-        if (mirisdr_stream_check(dev, &sc, NULL) == 0) lo = mid; else hi = mid;
-    }
-    rateMax = lo;
+    rateMin = r[0][0];
+    rateMax = r[0][1];
 }
 
 /*******************************************************************
@@ -977,13 +946,9 @@ SoapySDR::RangeList SoapyMiriSDR::getFrequencyRange(const int direction, const s
     const mirisdr_frontend_caps_t &c = caps[channel < 2 ? channel : 0];
     SoapySDR::RangeList list;
 
-    /* the board's stretches, within what the input in use takes (the Hi-Z ends at 30 MHz) */
+    /* the board's stretches, each up to the next one's start */
     for (int i = 0; i < c.range_count; i++)
-    {
-        double lo = std::max(freqMin, (double) c.range[i][0]), hi = std::min(freqMax, (double) c.range[i][1] - 1);
-        if (lo <= hi) list.push_back(SoapySDR::Range(lo, hi));
-    }
-    if (list.empty()) list.push_back(SoapySDR::Range(freqMin, freqMax));
+        list.push_back(SoapySDR::Range(c.range[i][0], (double) c.range[i][1] - 1));
 
     return list;
 }
@@ -1370,7 +1335,7 @@ void SoapyMiriSDR::writeSetting(const std::string &key, const std::string &value
         if (key == "decimation_bypass" && !s.empty() && (!now.decimation_bypass || s != now.decimation_bypass)) s = was;
 
         /* the rates a format and transfer reach differ */
-        probeRanges();
+        probeRates();
         configure(wantRate);
     }
     else if (key == "gap_fill")
