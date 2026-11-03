@@ -27,7 +27,7 @@
 #if !defined (_WIN32) || defined(__MINGW32__)
 #include <unistd.h>
 #else
-#include <Windows.h>
+#include "getopt/getopt.h"
 #endif
 /* the console handler and binary stdout, MinGW too */
 #if defined (_WIN32)
@@ -50,11 +50,6 @@ static mirisdr_dev_t *dev = NULL;
 
 void usage(void)
 {
-#if defined (_WIN32) && !defined(__MINGW32__)
-	fprintf(stderr,
-		"Usage:\t miri_sdr.exe [device_index] [samplerate in kHz] "
-		"[gain] [frequency in Hz] [filename]\n");
-	#else
 	fprintf(stderr,
 		"Usage:\t -f frequency_to_tune_to [Hz]\n"
 		"\t[-m sample format (default: auto]\n"
@@ -123,7 +118,6 @@ void usage(void)
 		"\t    in the real modes this chooses which converter is digitised\n"
 		"\t[-S force sync output (default: async), not with -B; needs BULK]\n"
 		"\tfilename (a '-' dumps samples to stdout)\n\n");
-#endif
 	exit(1);
 }
 
@@ -238,7 +232,6 @@ int main(int argc, char **argv)
 	mirisdr_hw_flavour_t hw_flavour = MIRISDR_HW_AUTO;
 	int intval;
 
-#if !defined (_WIN32) || defined(__MINGW32__)
 	while ((opt = getopt(argc, argv, "b:Bd:D:T:e:f:g:G:i:m:qs:w:S::")) != -1) {
 		switch (opt) {
 		case 'b':
@@ -353,20 +346,6 @@ int main(int argc, char **argv)
 	} else {
 		filename = argv[optind];
 	}
-#else
-	if(argc <6)
-		usage();
-	dev_index = atoi(argv[1]);
-	samp_rate = parse_u32(argv[2], "samplerate");
-	if (samp_rate > 4294967295u / 1000) {
-		fprintf(stderr, "samplerate: %s kHz is too high.\n", argv[2]);
-		exit(2);
-	}
-	samp_rate *= 1000;
-	gain=(int)(atof(argv[3]) * 10 + 0.5); /* dB */
-	frequency = parse_u32(argv[4], "frequency");
-	filename = argv[5];
-#endif
 	if(out_block_size < MINIMAL_BUF_LENGTH ||
 	   out_block_size > MAXIMAL_BUF_LENGTH ){
 		fprintf(stderr,

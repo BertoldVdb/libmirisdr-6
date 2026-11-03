@@ -137,38 +137,25 @@ struct option
    arguments to the option '\0'.  This behavior is specific to the GNU
    `getopt'.  */
 
-#if (defined __STDC__ && __STDC__) || defined __cplusplus
-# ifdef __GNU_LIBRARY__
-/* Many other libraries have conflicting prototypes for getopt, with
-   differences in the consts, in stdlib.h.  To avoid compilation
-   errors, only prototype getopt for the GNU C library.  */
-extern int getopt (int __argc, char *const *__argv, const char *__shortopts);
-# else /* not __GNU_LIBRARY__ */
-extern int getopt ();
-# endif /* __GNU_LIBRARY__ */
+/* Full prototypes everywhere: without them, C23 reads getopt () as taking no
+   arguments, and MSVC does not define __STDC__ unless asked to. Only MSVC builds
+   use this copy, and its C library has no getopt of its own to clash with. The
+   parameters have plain names, as MSVC's stdlib.h makes __argc and __argv macros */
+extern int getopt (int argc, char *const *argv, const char *shortopts);
 
 # ifndef __need_getopt
-extern int getopt_long (int __argc, char *const *__argv, const char *__shortopts,
-		        const struct option *__longopts, int *__longind);
-extern int getopt_long_only (int __argc, char *const *__argv,
-			     const char *__shortopts,
-		             const struct option *__longopts, int *__longind);
+extern int getopt_long (int argc, char *const *argv, const char *shortopts,
+		        const struct option *longopts, int *longind);
+extern int getopt_long_only (int argc, char *const *argv,
+			     const char *shortopts,
+		             const struct option *longopts, int *longind);
 
 /* Internal only.  Users should not call this directly.  */
-extern int _getopt_internal (int __argc, char *const *__argv,
-			     const char *__shortopts,
-		             const struct option *__longopts, int *__longind,
-			     int __long_only);
+extern int _getopt_internal (int argc, char *const *argv,
+			     const char *shortopts,
+		             const struct option *longopts, int *longind,
+			     int long_only);
 # endif
-#else /* not __STDC__ */
-extern int getopt ();
-# ifndef __need_getopt
-extern int getopt_long ();
-extern int getopt_long_only ();
-
-extern int _getopt_internal ();
-# endif
-#endif /* __STDC__ */
 
 #ifdef	__cplusplus
 }

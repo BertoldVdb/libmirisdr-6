@@ -1,0 +1,156 @@
+name: Windows build
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  msvc:
+    name: MSVC (${{ matrix.name }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Ninja
+            generator: Ninja
+          - name: Visual Studio
+            generator: ""
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Fetch libusb, install pthreads4w
+        shell: pwsh
+        run: |
+          curl.exe -sSfLo libusb.7z https://github.com/libusb/libusb/releases/download/v1.0.29/libusb-1.0.29.7z
+          7z x -y -olibusb libusb.7z > $null
+          vcpkg install pthreads --triplet x64-windows
+      - name: Configure (no build type given)
+        shell: pwsh
+        run: |
+          $w = $pwd.Path.Replace('\','/')
+          $v = $env:VCPKG_INSTALLATION_ROOT.Replace('\','/')
+          $g = if ('${{ matrix.generator }}') { @('-G', '${{ matrix.generator }}') } else { @('-A', 'x64') }
+          cmake -S . -B build @g -DENABLE_SOAPY=OFF "-DCMAKE_INSTALL_PREFIX=$w/inst" "-DLIBUSB_ROOT=$w/libusb" "-DTHREADS_PTHREADS_INCLUDE_DIR=$v/installed/x64-windows/include"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Select-String -Path build/CMakeCache.txt -Pattern '^(CMAKE_GENERATOR|CMAKE_BUILD_TYPE|LIBUSB_LIBRARIES|THREADS_PTHREADS_WIN32_LIBRARY):'
+      - name: Build
+        run: cmake --build build --config Release
+      - name: Install
+        run: cmake --install build --config Release
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          Copy-Item libusb/VS2022/MS64/dll/libusb-1.0.dll, "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/pthreadVC3.dll" inst/bin
+          Get-ChildItem -Recurse inst | Select-Object -ExpandProperty FullName
+          function Check($exe, $argv, $want) {
+            $out = & "inst/bin/$exe" @argv 2>&1 | Out-String
+            "== $exe $argv : exit $LASTEXITCODE"; $out
+            if ($out -notmatch $want) { "missing: $want"; exit 1 }
+          }
+          Check miri_eeprom.exe @('probe') 'no miri device'
+          Check miri_fm.exe @('-h') 'miri_fm, a simple'
+          Check miri_sdr.exe @('-h') 'frequency_to_tune_to'
+          Check miri_sdr.exe @('-b', '1', 'out.bin') 'Output block size wrong value'
+          exit 0
+      - name: miri_test, the groups without a receiver
+        shell: pwsh
+        run: |
+          $bad = 0
+          foreach ($g in 'decode', 'plan', 'baseband', 'regress') {
+            "== miri_test -g $g"
+            & inst/bin/miri_test.exe -g $g
+            if ($LASTEXITCODE) { "miri_test -g ${g}: exit $LASTEXITCODE"; $bad = 1 }
+          }
+          exit $bad
+
+  vcpkg:
+    name: MSVC (vcpkg libusb + pthreads4w)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Install libusb and pthreads with vcpkg
+        run: vcpkg install libusb pthreads --triplet x64-windows
+      - name: Configure
+        shell: pwsh
+        run: |
+          $w = $pwd.Path.Replace('\','/')
+          $v = $env:VCPKG_INSTALLATION_ROOT.Replace('\','/')
+          cmake -S . -B build -G Ninja -DENABLE_SOAPY=OFF "-DCMAKE_INSTALL_PREFIX=$w/inst" "-DCMAKE_TOOLCHAIN_FILE=$v/scripts/buildsystems/vcpkg.cmake" -DVCPKG_TARGET_TRIPLET=x64-windows
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Select-String -Path build/CMakeCache.txt -Pattern '^(CMAKE_BUILD_TYPE|LIBUSB_INCLUDE_DIR|LIBUSB_LIBRARIES|THREADS_PTHREADS_INCLUDE_DIR|THREADS_PTHREADS_WIN32_LIBRARY):'
+      - name: Build
+        run: cmake --build build
+      - name: Install and smoke test
+        shell: pwsh
+        run: |
+          cmake --install build
+          Copy-Item "$env:VCPKG_INSTALLATION_ROOT/installed/x64-windows/bin/*.dll" inst/bin
+          function Check($exe, $argv, $want) {
+            $out = & "inst/bin/$exe" @argv 2>&1 | Out-String
+            "== $exe $argv : exit $LASTEXITCODE"; $out
+            if ($out -notmatch $want) { "missing: $want"; exit 1 }
+          }
+          Check miri_eeprom.exe @('probe') 'no miri device'
+          Check miri_fm.exe @('-h') 'miri_fm, a simple'
+          Check miri_sdr.exe @('-b', '1', 'out.bin') 'Output block size wrong value'
+          exit 0
+      - name: miri_test, the groups without a receiver
+        shell: pwsh
+        run: |
+          $bad = 0
+          foreach ($g in 'decode', 'plan', 'baseband', 'regress') {
+            "== miri_test -g $g"
+            & inst/bin/miri_test.exe -g $g
+            if ($LASTEXITCODE) { "miri_test -g ${g}: exit $LASTEXITCODE"; $bad = 1 }
+          }
+          exit $bad
+
+  msys2:
+    name: MSYS2 UCRT64 (with SoapySDR)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          install: >-
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-libusb
+            mingw-w64-ucrt-x86_64-soapysdr
+      - name: Configure
+        run: |
+          gcc --version | head -1
+          cmake -S . -B build -G Ninja -DCMAKE_INSTALL_PREFIX=$PWD/inst
+          grep -E '^(CMAKE_BUILD_TYPE|LIBUSB_LIBRARIES):' build/CMakeCache.txt
+      - name: Build
+        run: cmake --build build
+      - name: Install and smoke test
+        run: |
+          cmake --install build
+          find inst -type f | sort
+          ./inst/bin/miri_eeprom.exe probe 2>&1 | tee out.txt || true
+          grep -q 'no miri device' out.txt
+          ./inst/bin/miri_sdr.exe -b 1 out.bin 2>&1 | tee out.txt || true
+          grep -q 'Output block size wrong value' out.txt
+          # the module needs libmirisdr.dll, which a real install puts on PATH
+          export PATH=$PWD/inst/bin:$PATH
+          export SOAPY_SDR_PLUGIN_PATH=$(dirname $(find inst -name '*mirisdr*' -path '*SoapySDR*' | head -1))
+          echo "SOAPY_SDR_PLUGIN_PATH=$SOAPY_SDR_PLUGIN_PATH"
+          SoapySDRUtil --check=mirisdr
+          SoapySDRUtil --find=driver=mirisdr || true   # no receiver on the runner
+      - name: miri_test, the groups without a receiver
+        run: |
+          export PATH=$PWD/inst/bin:$PATH
+          bad=0
+          for g in decode plan baseband regress; do
+            echo "== miri_test -g $g"
+            miri_test.exe -g $g || { echo "miri_test -g ${g}: exit $?"; bad=1; }
+          done
+          exit $bad

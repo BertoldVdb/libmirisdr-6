@@ -4,6 +4,9 @@
  * gcc -O2 -o miri_test miri_test.c -lmirisdr -lpthread -lm
  */
 
+/* M_PI from MSVC's math.h, which hides it without this */
+#define _USE_MATH_DEFINES
+
 #include <mirisdr.h>
 
 #include <math.h>
@@ -13,9 +16,26 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <unistd.h>
-#include <sys/wait.h>
 #include <fcntl.h>
+#ifdef _WIN32
+#include <windows.h>
+/* rpcndr.h, which windows.h can pull in, makes small a macro for char */
+#undef small
+#else
+#include <sys/wait.h>
+#endif
+#if !defined(_WIN32) || defined(__MINGW32__)
+#include <unistd.h>
+#else
+#include <io.h>
+typedef unsigned int useconds_t;
+/* MSVC has no usleep: Sleep in whole milliseconds, rounded up so a short wait still waits */
+static void win_usleep (unsigned us)
+{
+    Sleep((us + 999) / 1000);
+}
+#define usleep(us) win_usleep(us)
+#endif
 
 /* ------------------------------------------------------------------ */
 /* harness                                                             */
@@ -76,11 +96,20 @@ static void *xcalloc (size_t n, size_t size)
 
 static double now (void)
 {
+#ifdef _WIN32
+    LARGE_INTEGER f, c;
+
+    QueryPerformanceFrequency(&f);
+    QueryPerformanceCounter(&c);
+
+    return (double) c.QuadPart / (double) f.QuadPart;
+#else
     struct timespec t;
 
     clock_gettime(CLOCK_MONOTONIC, &t);
 
     return t.tv_sec + t.tv_nsec / 1e9;
+#endif
 }
 
 /* ------------------------------------------------------------------ */
@@ -1590,6 +1619,10 @@ static tres_t t_open_fd (void)
     unsigned num = 0, now = 0;
     int i, k, fd, r = -1, opens = 0, ours = 0;
 
+#ifdef _WIN32
+    say("opening by file descriptor is for Linux and Android");
+    return T_SKIP;
+#endif
     if (opt_rom) { say("loads the firmware"); return T_SKIP; }
     if (mirisdr_get_usb_position(dev, NULL, NULL, port, sizeof port) < 0) { say("no usb position"); return T_SKIP; }
 
@@ -1753,8 +1786,10 @@ static int list_stopped (void)
 static tres_t t_list_left_running (void)
 {
     static const mirisdr_list_entry_t e[2] = { { MIRISDR_LIST_WAIT_IRQ, 1 }, { MIRISDR_LIST_REPEAT, 0 } };
+#ifndef _WIN32
     pid_t pid;
     int status;
+#endif
 
     if (!fw_ours) { say("needs our firmware, which runs the lists"); return T_SKIP; }
 
@@ -1764,6 +1799,11 @@ static tres_t t_list_left_running (void)
     if (device_reopen() < 0) { say("no device after a close with the list running"); return T_FAIL; }
     if (!list_stopped()) { say("the list still runs after a close"); return T_FAIL; }
 
+#ifdef _WIN32
+    /* the died process half needs fork */
+    say("a list left at a close is stopped, the died process half needs fork, not on Windows");
+    return T_PASS;
+#else
     mirisdr_close(dev);
     dev = NULL;
 
@@ -1784,6 +1824,7 @@ static tres_t t_list_left_running (void)
     say("registers write after a close and after a died process, with a list left running");
 
     return T_PASS;
+#endif
 }
 
 static int pll_candidates (uint32_t rate)

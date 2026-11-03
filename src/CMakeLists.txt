@@ -38,7 +38,8 @@ add_library(mirisdr_static STATIC
     libmirisdr.c
 )
 
-if(WIN32)
+# getopt for MSVC, whose C library has none. MinGW has its own in unistd.h
+if(WIN32 AND NOT MINGW)
 add_library(libgetopt_static STATIC
     getopt/getopt.c
 )
@@ -70,11 +71,8 @@ add_executable(miri_fm miri_fm.c)
 add_executable(miri_eeprom miri_eeprom.c)
 set(INSTALL_TARGETS mirisdr_shared mirisdr_static miri_sdr miri_fm miri_eeprom)
 
-# the tests run groups in child processes, with fork, so not on Windows
-if(NOT WIN32)
 add_executable(miri_test miri_test.c)
 list(APPEND INSTALL_TARGETS miri_test)
-endif()
 
 target_link_libraries(miri_sdr mirisdr_shared
     ${LIBUSB_LIBRARIES}
@@ -91,12 +89,11 @@ target_link_libraries(miri_eeprom mirisdr_shared
     ${CMAKE_THREAD_LIBS_INIT}
 )
 
-if(NOT WIN32)
 target_link_libraries(miri_test mirisdr_shared
     ${LIBUSB_LIBRARIES}
     ${CMAKE_THREAD_LIBS_INIT}
 )
-endif()
+# the soapy group finds the module by its Unix paths, so not on Windows yet
 if(MIRISDR_SOAPY AND NOT WIN32)
     # the soapy group: the module from this build, else the installed one. Its own
     # library keeps SoapySDR's C++ compile options off the C sources
@@ -115,23 +112,30 @@ target_link_libraries(miri_fm m)
 target_link_libraries(miri_test m)
 endif()
 
-if(WIN32)
+if(WIN32 AND NOT MINGW)
 target_link_libraries(miri_sdr libgetopt_static)
 target_link_libraries(miri_fm libgetopt_static)
+endif()
+
+if(WIN32)
 set_property(TARGET miri_sdr APPEND PROPERTY COMPILE_DEFINITIONS "mirisdr_STATIC" )
 set_property(TARGET miri_fm APPEND PROPERTY COMPILE_DEFINITIONS "mirisdr_STATIC" )
 endif()
 
-# miri_fm's threads: winpthread on MinGW, where the threads check finds none
+# miri_fm's and miri_test's threads: winpthread on MinGW, where the threads check
+# finds none
 if(MINGW)
 target_link_libraries(miri_fm pthread)
+target_link_libraries(miri_test pthread)
 endif()
 
 # and with MSVC pthreads-win32 or pthreads4w, which the threads check found. Their
 # pthread.h declares struct timespec too, unless told the UCRT already has it
 if(MSVC AND THREADS_PTHREADS_INCLUDE_DIR)
-target_include_directories(miri_fm PRIVATE ${THREADS_PTHREADS_INCLUDE_DIR})
-target_compile_definitions(miri_fm PRIVATE HAVE_STRUCT_TIMESPEC)
+foreach(_t miri_fm miri_test)
+target_include_directories(${_t} PRIVATE ${THREADS_PTHREADS_INCLUDE_DIR})
+target_compile_definitions(${_t} PRIVATE HAVE_STRUCT_TIMESPEC)
+endforeach()
 endif()
 
 ########################################################################
