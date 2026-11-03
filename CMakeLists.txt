@@ -21,6 +21,15 @@
 # Project setup
 ########################################################################
 cmake_minimum_required(VERSION 3.12)
+
+# Release by default, for the optimisation flags. This has to come before project(),
+# because with MSVC project() sets Debug itself. Visual Studio builds pick theirs with
+# --config instead.
+if(NOT CMAKE_BUILD_TYPE)
+   set(CMAKE_BUILD_TYPE "Release" CACHE STRING "" FORCE)
+   message(STATUS "Build type not specified: defaulting to release.")
+endif()
+
 project(mirisdr C)
 
 ########################################################################
@@ -48,13 +57,6 @@ endif()
 # add the automatically determined parts of the RPATH
 # which point to directories outside the build tree to the install RPATH
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
-
-#select the release build type by default to get optimization flags
-if(NOT CMAKE_BUILD_TYPE)
-   set(CMAKE_BUILD_TYPE "Release")
-   message(STATUS "Build type not specified: defaulting to release.")
-endif(NOT CMAKE_BUILD_TYPE)
-set(CMAKE_BUILD_TYPE ${CMAKE_BUILD_TYPE} CACHE STRING "")
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake/Modules)
 

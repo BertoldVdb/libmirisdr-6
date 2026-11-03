@@ -37,10 +37,29 @@ find_path(LIBUSB_INCLUDE_DIR
     include/libusb-1.0
 )
 
+# Where an unpacked Windows release keeps the library for this compiler. Each compiler
+# only searches its own folders, so an MSVC build never picks the MinGW libusb-1.0.a.
+# MSVC takes the import library of a VS20xx build (they all link the same, the newest
+# is tried first), and the oldest releases had MS64/dll at the top. MinGW takes the
+# MinGW64 or MinGW32 ones.
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+  set(_libusb_bits 64)
+else()
+  set(_libusb_bits 32)
+endif()
+set(_libusb_suffixes lib)
+if(MSVC)
+  foreach(_vs VS2022 VS2019 VS2017 VS2015 VS2013)
+    list(APPEND _libusb_suffixes ${_vs}/MS${_libusb_bits}/dll)
+  endforeach()
+  list(APPEND _libusb_suffixes MS${_libusb_bits}/dll)
+elseif(MINGW)
+  list(APPEND _libusb_suffixes MinGW${_libusb_bits}/static MinGW${_libusb_bits}/dll)
+endif()
+
 # usb-1.0:        the Unix name (libusb-1.0.so / .a)
 # libusb-1.0:     the import/static name shipped by the Windows releases
 #                 (libusb-1.0.dll.a for MinGW, libusb-1.0.lib for MSVC)
-# the MinGW/MSVC releases keep the import library under MinGW64/static, MS64/dll, etc.
 find_library(LIBUSB_LIBRARIES
   NAMES usb-1.0 libusb-1.0 libusb
   HINTS
@@ -51,13 +70,7 @@ find_library(LIBUSB_LIBRARIES
     /usr/lib
     /usr/local/lib
   PATH_SUFFIXES
-    lib
-    MinGW64/static
-    MinGW64/dll
-    MinGW32/static
-    MinGW32/dll
-    MS64/dll
-    MS32/dll
+    ${_libusb_suffixes}
 )
 
 # A path given by hand (-DLIBUSB_INCLUDE_DIR / -DLIBUSB_LIBRARIES) is taken as-is by

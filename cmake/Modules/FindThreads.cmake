@@ -82,23 +82,30 @@ ELSEIF(_Threads_ptwin32)
 
   FIND_PATH(THREADS_PTHREADS_INCLUDE_DIR pthread.h)
 
-  # Determine the library filename
+  # Determine the library filename: pthreads-win32 (2) or pthreads4w (3), as vcpkg has
   IF(MSVC)
     SET(_Threads_pthreads_libname
-        pthreadV${THREADS_PTHREADS_WIN32_EXCEPTION_SCHEME}2)
+        pthreadV${THREADS_PTHREADS_WIN32_EXCEPTION_SCHEME}2
+        pthreadV${THREADS_PTHREADS_WIN32_EXCEPTION_SCHEME}3)
   ELSEIF(MINGW)
     SET(_Threads_pthreads_libname
-        pthreadG${THREADS_PTHREADS_WIN32_EXCEPTION_SCHEME}2)
+        pthreadG${THREADS_PTHREADS_WIN32_EXCEPTION_SCHEME}2
+        pthreadG${THREADS_PTHREADS_WIN32_EXCEPTION_SCHEME}3)
   ELSE()
     MESSAGE(FATAL_ERROR "This should never happen")
   ENDIF()
 
-  # Use the include path to help find the library if possible
+  # Use the include path to help find the library if possible. The prebuilt
+  # pthreads-win32 keeps it under lib/x64 or lib/x86
   SET(_Threads_lib_paths "")
   IF(THREADS_PTHREADS_INCLUDE_DIR)
      GET_FILENAME_COMPONENT(_Threads_root_dir
                             ${THREADS_PTHREADS_INCLUDE_DIR} PATH)
-     SET(_Threads_lib_paths ${_Threads_root_dir}/lib)
+     IF(CMAKE_SIZEOF_VOID_P EQUAL 8)
+       SET(_Threads_lib_paths ${_Threads_root_dir}/lib ${_Threads_root_dir}/lib/x64)
+     ELSE()
+       SET(_Threads_lib_paths ${_Threads_root_dir}/lib ${_Threads_root_dir}/lib/x86)
+     ENDIF()
   ENDIF()
   FIND_LIBRARY(THREADS_PTHREADS_WIN32_LIBRARY
                NAMES ${_Threads_pthreads_libname}

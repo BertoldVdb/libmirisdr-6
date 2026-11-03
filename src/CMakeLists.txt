@@ -127,6 +127,13 @@ if(MINGW)
 target_link_libraries(miri_fm pthread)
 endif()
 
+# and with MSVC pthreads-win32 or pthreads4w, which the threads check found. Their
+# pthread.h declares struct timespec too, unless told the UCRT already has it
+if(MSVC AND THREADS_PTHREADS_INCLUDE_DIR)
+target_include_directories(miri_fm PRIVATE ${THREADS_PTHREADS_INCLUDE_DIR})
+target_compile_definitions(miri_fm PRIVATE HAVE_STRUCT_TIMESPEC)
+endif()
+
 ########################################################################
 # Install built library files & utilities
 ########################################################################
