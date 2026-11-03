@@ -30,6 +30,15 @@
 #include <unistd.h>
 #endif
 
+/* for the functions that end the program, so the compiler knows they do not come back */
+#if defined(__GNUC__) || defined(__clang__)
+#define MIRI_NORETURN __attribute__((noreturn))
+#elif defined(_MSC_VER)
+#define MIRI_NORETURN __declspec(noreturn)
+#else
+#define MIRI_NORETURN
+#endif
+
 #define EE_IDS              0xB4
 #define EE_IMAGE            0xD2
 #define EE_IDLE             0xFF
@@ -44,7 +53,7 @@ static int ee_fit;                      /* the part as measured, 0 until then */
 static int force;
 static char backup_name[160];
 
-static void usage (void)
+static MIRI_NORETURN void usage (void)
 {
     fprintf(stderr,
         "usage: miri_eeprom [-d index] <command> [options]\n\n"
@@ -1057,7 +1066,7 @@ static int number (const char *s, int hex, long lo, long hi, long *out)
     return 0;
 }
 
-static void bad_arg (const char *what, const char *s)
+static MIRI_NORETURN void bad_arg (const char *what, const char *s)
 {
     fprintf(stderr, "miri_eeprom: %s '%s' is not valid\n\n", what, s ? s : "");
     usage();
