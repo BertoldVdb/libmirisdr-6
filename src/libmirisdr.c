@@ -23,6 +23,8 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+/* MSVC's <math.h> hides M_PI (used below in baseband.c) without this */
+#define _USE_MATH_DEFINES
 #include <math.h>
 #include <time.h>
 
