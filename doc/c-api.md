@@ -304,7 +304,7 @@ printf("%u samples/s as %s, %u bytes/s on the USB\n", sr.rate, sr.format, sr.usb
   - `usb_capacity`: the bytes per second the automatic format may plan on. 0 is the default.
   - `baseband`: deliver complex float with the tune's frequency at 0 Hz, at any IF. This has its own section below.
   - `tuners`: the tuners to stream, bit n for tuner n. 0 means tuner 0 alone. The RSPduo also takes 2 (tuner 1 alone) and 3 (both). See Two tuners below.
-  - `strict`: 0 (the default) takes a rate out of reach to the nearest one there is, and the stream result says what is in force. That covers a rate outside the converters' range for the decimation setting, past the receiver's limit for the format, or outside the span a baseband IF takes. With 1 such a rate is refused instead. Either way a combination the receiver cannot do is refused: a rate past an isochronous mode's reservation, an unknown name, two tuners without baseband, and so on. A tune that changes the IF of a baseband stream still takes the rate to the nearest the new IF has, as below.
+  - `strict`: 0 (the default) takes a rate out of reach to the nearest one there is, and the stream result says what is in force. That covers a rate outside the converters' range for the decimation setting, past the receiver's limit for the format, or outside the span a baseband IF takes. With 1 such a rate is refused instead. Either way a combination the receiver cannot do is refused: a rate past an isochronous mode's reservation, an unknown name, two tuners in a real format, and so on. A tune that changes the IF of a baseband stream still takes the rate to the nearest the new IF has, as below.
 
 <h4>Sample formats</h4>
 
@@ -350,7 +350,7 @@ The receiver normally samples at twice the rate and filters down. Its clock reac
 
   - `rate`: the rate the sample clock really reached.
   - `format`: the format running, never an automatic one.
-  - `adc`: what is sampled, `MIRISDR_IQ_BOTH` for complex or `MIRISDR_IQ_ONLY_I` or `_ONLY_Q` for real.
+  - `adc`: what is sampled, `MIRISDR_IQ_BOTH` for complex or `MIRISDR_IQ_ONLY_I` or `_ONLY_Q` for real. `MIRISDR_IQ_DUAL` for two tuners without baseband (see Two tuners).
   - `decimation_bypassed`: whether the bypass is on.
   - `adc_clock`: the converters' clock in Hz, twice `adc_rate`, or `adc_rate` itself with the bypass on. Up to `MIRISDR_ADC_CLOCK_BEST` (15 MHz, so 7.5 Msps without the bypass) the converters are at their best. Above it their effective resolution drops, gradually, not at once. The library goes past it only when the rate asks for it, and the bundled tools and the SoapySDR module say so.
   - `bits`: the bits a sample keeps in the running format: 14, 12, 10 or 8. This is the USB limit, separate from the converter clock.
@@ -391,7 +391,7 @@ Keep the callback short. If it blocks, the USB transfers run dry and samples are
 Inside the callback, `mirisdr_get_buffer_info()` describes the buffer. It only works from inside the callback.
 
   - `type`: how each value is stored. `MIRISDR_SAMPLE_S16` is int16 with full scale 32768. `MIRISDR_SAMPLE_S8` is int8 with full scale 128. `MIRISDR_SAMPLE_F32` is float with full scale 1.0.
-  - `adc`: `MIRISDR_IQ_BOTH` for complex I, Q pairs, or `MIRISDR_IQ_ONLY_I` or `_ONLY_Q` for real samples.
+  - `adc`: `MIRISDR_IQ_BOTH` for complex I, Q pairs, or `MIRISDR_IQ_ONLY_I` or `_ONLY_Q` for real samples. `MIRISDR_IQ_DUAL` for two tuners without baseband: pairs of real samples, tuner 0's then tuner 1's (see Two tuners).
   - `rate`: samples per second.
   - `sample`: how many samples were delivered before this buffer.
   - `index`: the position of the first sample in time, counting lost samples too.
@@ -497,9 +497,11 @@ The stream config's `tuners` picks what is streamed:
 
   - 0 or 1: tuner 0 alone, as on any receiver. Its I and Q outputs go to the two converters.
   - 2: tuner 1 alone, the same way. The single setters then act on tuner 1.
-  - 3: both. Each tuner runs a low IF into a converter of its own, tuner 0 on I and tuner 1 on Q. This needs `baseband`, a low IF on both tunes and both outputs of each tuner (`iq` both). Otherwise it is refused.
+  - 3: both. Each tuner runs a low IF into a converter of its own, tuner 0 on I and tuner 1 on Q. This needs a low IF on both tunes and both outputs of each tuner (`iq` both), and no `swap_iq`. Otherwise it is refused. A tune that would break this while both are streamed is refused too.
 
-With both, the library runs two baseband chains, one per converter, each the one output path. Each takes its tuner's IF to 0 Hz, so both deliver complex float at the stream's rate. The callback gets each tuner's buffers labelled in `tuner`: tuner 0's buffer, then tuner 1's for the same stretch, with the same `sample` positions. The stream result reports `MIRISDR_BASEBAND_DUAL` and `tuners` 3.
+Without `baseband` the stream is the converters' samples as they come, in a complex format (a real one is refused): each pair is one sample of tuner 0, then one of tuner 1, taken at the same instant. Each is a real signal at its tuner's IF, the way a single output is, and the tune result's `offset` and `inverted` say where (the IF, mirrored when the LO is above the frequency). The buffer info's and stream result's `adc` say `MIRISDR_IQ_DUAL`, `tuner` is 0, and `sample`, `index`, gaps, events and PPS count pairs. The rate is the converters' and has to hold both IFs: at least 2.4 times the IF plus half its widest filter, for the higher one (450 kHz: 1.8 Msps, 1620 kHz: 5.7312 Msps, 2048 kHz: 6.7584 Msps). A lower rate is raised to that, or refused with `strict`, also when a tune moves a tuner to a higher IF. This costs no processing in the library: the application separates the two and does its own filtering.
+
+With both under `baseband`, the library runs two baseband chains, one per converter, each the one output path. Each takes its tuner's IF to 0 Hz, so both deliver complex float at the stream's rate. The callback gets each tuner's buffers labelled in `tuner`: tuner 0's buffer, then tuner 1's for the same stretch, with the same `sample` positions. The stream result reports `MIRISDR_BASEBAND_DUAL` and `tuners` 3.
 
 The two tuners may use different IFs. The converters then run at the rate the higher one needs, and each chain takes its own IF the rest of the way with the NCO. The rate has to suit both IFs: from the higher of their lowest rates (the table above) up to half the converters' most, as with one output. Above twice a tuner's IF its filter leaves nothing more to see (450 kHz IF: 900 ksps, 1620 kHz: 3.24 Msps). A rate outside that is taken to its nearest end, or refused with `strict`.
 

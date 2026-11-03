@@ -223,6 +223,14 @@ bool SoapyMiriSDR::applyStream(const mirisdr_stream_config_t &cfg, bool strict)
     c.follow_tune = !c.baseband;
     c.strict = strict ? 1 : 0;
 
+    /* two tuners raw come as pairs of real samples (MIRISDR_IQ_DUAL), which the stream here
+       does not take apart: they need baseband, as the library once asked of them all */
+    if ((c.tuners == 3) && !c.baseband)
+    {
+        SoapySDR_log(SOAPY_SDR_ERROR, "mirisdr: two tuners need baseband");
+        return false;
+    }
+
     if (mirisdr_set_stream(dev, &c, NULL) < 0)
     {
         SoapySDR_logf(SOAPY_SDR_ERROR, "mirisdr: stream refused (%u S/s, format %s, transfer %s)",

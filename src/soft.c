@@ -1390,6 +1390,8 @@ static void mirisdr_tune_result_ds (int ds, int lna, int lna_db, uint32_t edge, 
 
 static int mirisdr_tune_adc (mirisdr_dev_t *p, int iq)
 {
+    /* two tuners: each is one converter's, a single output, whatever the tune runs */
+    if (mirisdr_stream_tuners(p) == 3) return MIRISDR_IQ_DUAL;
     return p->stream.follow_tune ? iq : mirisdr_stream_adc(p);
 }
 
@@ -1466,9 +1468,11 @@ static int mirisdr_tune_apply_once (mirisdr_dev_t *p, const mirisdr_tune_config_
     if (mirisdr_tune_plan(p, c, flags, &pl) < 0) return -1;
 
     /* a stream following the tune changes kind or converter with it, in one restart; a
-       baseband one its rate too, to the nearest the new IF has. Only a tuner it takes.
-       Under the transfers' lock, as a setting of the stream (mirisdr_stream_pause) */
-    if ((p->stream.follow_tune || p->stream.baseband) && (mirisdr_stream_tuners(p) & (1 << p->tuner_cur)))
+       baseband one its rate too, to the nearest the new IF has. Only a tuner it takes. Two
+       tuners are planned again too: each needs a low IF the rate holds. Under the
+       transfers' lock, as a setting of the stream (mirisdr_stream_pause) */
+    if ((p->stream.follow_tune || p->stream.baseband || (mirisdr_stream_tuners(p) == 3)) &&
+        (mirisdr_stream_tuners(p) & (1 << p->tuner_cur)))
     {
         mirisdr_xfer_lock(p);
         held = 1;
@@ -1669,8 +1673,9 @@ static int mirisdr_tune_check_of (mirisdr_dev_t *p, const mirisdr_tune_config_t 
     p->checking = 1;
     r = mirisdr_tune_plan(p, cfg, 0, &pl);
 
-    /* a stream following the tune has to take it too, as mirisdr_tune() asks */
-    if ((r == 0) && (p->stream.follow_tune || p->stream.baseband) && (mirisdr_stream_tuners(p) & (1 << p->tuner_cur)))
+    /* a stream following the tune has to take it too, as mirisdr_tune() asks, and two tuners */
+    if ((r == 0) && (p->stream.follow_tune || p->stream.baseband || (mirisdr_stream_tuners(p) == 3)) &&
+        (mirisdr_stream_tuners(p) & (1 << p->tuner_cur)))
     {
         mirisdr_stream_plan_t spl;
 

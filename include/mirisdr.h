@@ -249,7 +249,9 @@ typedef struct mirisdr_buffer_info
 	uint32_t gaps_len;
 	mirisdr_gap_t gaps[MIRISDR_GAPS_MAX];
 	int      adc;           /* MIRISDR_IQ_BOTH for complex (I/Q pairs),
-	                           MIRISDR_IQ_ONLY_I or _ONLY_Q for real */
+	                           MIRISDR_IQ_ONLY_I or _ONLY_Q for real, MIRISDR_IQ_DUAL for two
+	                           tuners without baseband (pairs of tuner 0's and tuner 1's real
+	                           samples, see "two tuners" above; tuner is then 0) */
 	uint32_t rate;          /* samples per second */
 	int      type;          /* MIRISDR_SAMPLE_* */
 	int      tuner;         /* the tuner the samples are from: 0, or on an RSPduo streaming
@@ -308,6 +310,18 @@ MIRISDR_API int mirisdr_set_gap_fill (mirisdr_dev_t *p, int on); /* extra */
  * output it picks the converter, and two tuners refuse it.
  * mirisdr_read_sync() does not support baseband output, and needs the BULK transfer.
  *
+ * Two tuners (tuners 3, the RSPduo): each tuner runs a low IF with both its outputs, and
+ * the board puts tuner 0 on the I converter and tuner 1 on the Q converter, each as a single
+ * output would be (its tune result's offset is its real IF, inverted when mirrored). Under
+ * baseband each converter goes through its own MIRISDR_BASEBAND_REAL chain and buffers
+ * come labelled with their tuner (MIRISDR_BASEBAND_DUAL). Without baseband the stream is
+ * the converters' samples as they come, in a complex format: each pair is tuner 0's real
+ * sample, then tuner 1's, both of one instant, and buffer infos and the stream result say
+ * MIRISDR_IQ_DUAL. The rate is the converters', and has to hold both IFs (2.4 x (IF +
+ * half its widest filter) for the higher); a lower one is raised to it unless strict. Either
+ * way a tune of either tuner that leaves it at zero IF, under direct sampling or with one
+ * output is refused, and with I and Q swapped so is the stream.
+ *
  * Bulk transfers max bandwidth is very host dependent, so only the receiver's own limit
  * (~56 MB/s) is enforced there. The automatic choice takes the format with the most
  * bits that fits a figure: usb_capacity, 32 MB/s by default in bulk and never more than
@@ -329,14 +343,14 @@ typedef struct mirisdr_stream_config
 	int         baseband;           /* complex float centred on the tune's frequency, see above */
 	int         tuners;             /* the tuners streamed, bit n for tuner n, 0 is tuner 0 alone.
 	                                   The RSPduo also takes 2 (tuner 1 alone) and 3 (both, a low IF
-	                                   each on a converter of its own: see "two tuners" below) */
+	                                   each on a converter of its own: see "two tuners" above) */
 	int         strict;             /* 0, the default: a rate out of reach (outside the converters'
 	                                   range for the decimation setting, past the engine's limit
 	                                   for the format, outside the span a baseband IF takes) is
 	                                   taken to the nearest there is, and the result says what is in
 	                                   force. 1: such a rate is refused. Either way a combination
 	                                   the receiver cannot do (a rate past an isochronous mode's
-	                                   reservation, an unknown string, two tuners without baseband)
+	                                   reservation, an unknown string, two tuners with a real format)
 	                                   is refused. A tune that changes the IF of a baseband stream
 	                                   still takes the rate to the nearest the new IF has */
 	uint32_t reserved[MIRISDR_RESERVED];
@@ -346,7 +360,8 @@ typedef struct mirisdr_stream_result
 {
 	uint32_t    rate;               /* samples per second, as the sample clock reaches it */
 	const char *format;             /* the one running, never an AUTO one */
-	int         adc;                /* what is digitised: MIRISDR_IQ_BOTH, _ONLY_I or _ONLY_Q */
+	int         adc;                /* what is digitised: MIRISDR_IQ_BOTH, _ONLY_I or _ONLY_Q, or
+	                                   MIRISDR_IQ_DUAL: two tuners without baseband */
 	int         decimation_bypassed;
 	uint32_t    usb_bytes;          /* per second */
 	uint32_t    usb_capacity;       /* B/s the automatic choice planned on */
@@ -447,6 +462,9 @@ MIRISDR_API mirisdr_band_t mirisdr_get_band (mirisdr_dev_t *p);         /* extra
 #define MIRISDR_IQ_BOTH         0
 #define MIRISDR_IQ_ONLY_I       1
 #define MIRISDR_IQ_ONLY_Q       2
+/* Not a tune's: what a stream of two tuners without baseband digitises, tuner 0 on I and
+ * tuner 1 on Q, each a real signal at its IF (see "two tuners" above) */
+#define MIRISDR_IQ_DUAL         3
 
 /* The gain with a tune. TOTAL is split as mirisdr_set_tuner_gain() does, the front end
  * first so noise figure and IIP3 stay low, again for each band: the board's amplifier
