@@ -1,0 +1,113 @@
+name: Linux build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Ubuntu GCC
+            os: ubuntu-latest
+            cc: gcc
+          - name: Ubuntu Clang
+            os: ubuntu-latest
+            cc: clang
+          - name: Ubuntu arm64 GCC
+            os: ubuntu-24.04-arm
+            cc: gcc
+          - name: Debian bookworm GCC
+            os: ubuntu-latest
+            container: debian:bookworm
+            cc: gcc
+          - name: Debian trixie GCC
+            os: ubuntu-latest
+            container: debian:trixie
+            cc: gcc
+    env:
+      CC: ${{ matrix.cc }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the build dependencies
+        run: |
+          SUDO=$(command -v sudo || true)
+          $SUDO apt-get update -q
+          $SUDO env DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
+            build-essential cmake pkg-config libusb-1.0-0-dev libsoapysdr-dev soapysdr-tools ${{ matrix.cc == 'clang' && 'clang' || '' }}
+          $CC --version | head -1
+          cmake --version | head -1
+      - name: Configure (no build type given)
+        run: |
+          cmake -S . -B build -DCMAKE_INSTALL_PREFIX=$PWD/inst | tee configure.log
+          grep -q "Building the SoapySDR module" configure.log
+          grep -E '^(CMAKE_BUILD_TYPE|LIBUSB_LIBRARIES):' build/CMakeCache.txt
+          grep -q '^CMAKE_BUILD_TYPE:STRING=Release$' build/CMakeCache.txt
+      - name: Build
+        run: |
+          cmake --build build -j$(nproc) 2>&1 | tee build.log
+          n=$(grep -c 'warning:' build.log || true)
+          if [ "$n" != 0 ]; then echo "::warning::$n compiler warnings"; grep 'warning:' build.log; fi
+      - name: Install, and build a program against the installed library
+        run: |
+          cmake --install build
+          export PKG_CONFIG_PATH=$(dirname $(find $PWD/inst -name libmirisdr.pc))
+          echo "libmirisdr $(pkg-config --modversion libmirisdr): $(pkg-config --cflags --libs libmirisdr)"
+          printf '#include <mirisdr.h>\n#include <stdio.h>\nint main (void) { printf("%%u receivers\\n", mirisdr_get_device_count()); return 0; }\n' > consumer.c
+          $CC consumer.c -o consumer $(pkg-config --cflags --libs libmirisdr)
+          LD_LIBRARY_PATH=$(pkg-config --variable=libdir libmirisdr) ./consumer
+      - name: Smoke test
+        run: |
+          check () { want=$1; shift; out=$("$@" 2>&1 || true); echo "== $*"; echo "$out"; echo "$out" | grep -q "$want" || { echo "missing: $want"; exit 1; }; }
+          check 'no miri device' inst/bin/miri_eeprom probe
+          check 'miri_fm, a simple' inst/bin/miri_fm -h
+          check 'frequency_to_tune_to' inst/bin/miri_sdr -h
+          check 'Output block size wrong value' inst/bin/miri_sdr -b 1 /dev/null
+      - name: miri_test, the groups without a receiver
+        run: |
+          bad=0
+          for g in decode plan baseband regress; do
+            echo "== miri_test -g $g"
+            inst/bin/miri_test -g $g || { echo "miri_test -g ${g}: exit $?"; bad=1; }
+          done
+          exit $bad
+      - name: SoapySDR module
+        run: |
+          export SOAPY_SDR_PLUGIN_PATH=$(dirname $(find $PWD/inst -name '*mirisdrSupport*'))
+          echo "SOAPY_SDR_PLUGIN_PATH=$SOAPY_SDR_PLUGIN_PATH"
+          SoapySDRUtil --check=mirisdr | tee soapy.log
+          grep -q "Checking driver 'mirisdr'... PRESENT" soapy.log
+          SoapySDRUtil --find=driver=mirisdr || true   # no receiver on the runner
+
+  sanitize:
+    name: Ubuntu GCC, AddressSanitizer and UBSan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the build dependencies
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends build-essential cmake pkg-config libusb-1.0-0-dev
+      - name: Configure and build
+        run: |
+          san="-fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer"
+          cmake -S . -B build -DENABLE_SOAPY=OFF -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCMAKE_C_FLAGS="$san" \
+            -DCMAKE_EXE_LINKER_FLAGS="$san" -DCMAKE_SHARED_LINKER_FLAGS="$san"
+          cmake --build build -j$(nproc)
+      - name: miri_test, the groups without a receiver
+        env:
+          ASAN_OPTIONS: detect_leaks=1
+          UBSAN_OPTIONS: print_stacktrace=1
+        run: |
+          bad=0
+          for g in decode plan baseband regress; do
+            echo "== miri_test -g $g"
+            build/src/miri_test -g $g || { echo "miri_test -g ${g}: exit $?"; bad=1; }
+          done
+          exit $bad
