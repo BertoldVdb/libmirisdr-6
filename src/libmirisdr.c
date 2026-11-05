@@ -137,7 +137,7 @@ static int mirisdr_setup (mirisdr_dev_t **out_dev, mirisdr_dev_t *dev) {
     /* a register list our firmware still runs (a process that ended inside a scan) makes it
        refuse every register write, a USB reset included: stop it first. The ROM, which has no
        such request, refuses it, which is fine */
-    libusb_control_transfer(dev->dh, 0x42, 0x5A /* CMD_REG_LIST */, 0, 0, NULL, 0, 1000);
+    libusb_control_transfer(dev->dh, 0x40, 0x5A /* CMD_REG_LIST */, 0, 0, NULL, 0, 1000);
 
     /* the reset is needed, otherwise the device at times refuses to communicate */
     mirisdr_reset(dev);

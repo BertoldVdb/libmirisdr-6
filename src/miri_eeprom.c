@@ -475,7 +475,7 @@ static libusb_device_handle *sd_dh;
 
 static int sd_wreg (uint8_t reg, uint32_t val)
 {
-    return (libusb_control_transfer(sd_dh, 0x42, 0x41, (uint16_t) ((val & 0xff) << 8 | reg),
+    return (libusb_control_transfer(sd_dh, 0x40, 0x41, (uint16_t) ((val & 0xff) << 8 | reg),
                                     (uint16_t) (val >> 8), NULL, 0, SD_TIMEOUT) < 0) ? -1 : 0;
 }
 

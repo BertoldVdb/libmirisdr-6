@@ -52,6 +52,16 @@ target_link_libraries(mirisdr_static
 
 set_property(TARGET mirisdr_static APPEND PROPERTY COMPILE_DEFINITIONS "mirisdr_STATIC" )
 
+# On ELF platforms a mirisdr_* name resolves to the first library that has it, so with
+# libmirisdr-4 loaded first (gr-osmosdr links it) the library's calls to its own functions
+# would reach that one. Bind them inside the library. Windows and macOS name the library
+# with each import, so they need nothing
+if(NOT WIN32 AND NOT APPLE)
+target_link_libraries(mirisdr_shared -Wl,-Bsymbolic-functions)
+# the SoapySDR module links the static library into itself, see src/soapy
+set_target_properties(mirisdr_static PROPERTIES POSITION_INDEPENDENT_CODE ON)
+endif()
+
 # the baseband NCO's sine and cosine
 if(UNIX)
 target_link_libraries(mirisdr_shared m)

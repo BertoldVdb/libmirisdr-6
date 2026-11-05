@@ -72,7 +72,7 @@ static int mirisdr_batch_flush (mirisdr_dev_t *p)
     /* a list replaces a running one: let the last tune's finish first */
     if (p->batch_running) mirisdr_batch_wait(p);
 
-    if (libusb_control_transfer(p->dh, 0x42, CMD_REG_LIST, 0, 0, p->batch, (uint16_t) (n * 4),
+    if (libusb_control_transfer(p->dh, 0x40, CMD_REG_LIST, 0, 0, p->batch, (uint16_t) (n * 4),
                                 CTRL_TIMEOUT) == n * 4)
     {
         p->batch_running = 1;
@@ -121,7 +121,7 @@ int mirisdr_load_list (mirisdr_dev_t *p, int bank, int flags, const mirisdr_list
     p->tuner_valid = 0;
     p->reg8_valid = 0;
 
-    return (libusb_control_transfer(p->dh, 0x42, CMD_REG_LIST,
+    return (libusb_control_transfer(p->dh, 0x40, CMD_REG_LIST,
                                     (uint16_t) (bank | ((flags & MIRISDR_LIST_QUEUE) ? 2 : 0)),
                                     (uint16_t) ((flags >> 8) & 0xff), n ? buf : NULL, (uint16_t) (4 * n),
                                     CTRL_TIMEOUT) == 4 * n) ? 0 : -1;
@@ -219,7 +219,9 @@ int mirisdr_write_reg (mirisdr_dev_t *p, uint8_t reg, uint32_t val) {
     else
     {
         if (p->batch_running) mirisdr_batch_wait(p);
-        r = p->dh ? libusb_control_transfer(p->dh, 0x42, 0x41, value, index, NULL, 0, CTRL_TIMEOUT) : 0;
+        /* vendor requests go to the device (0x40). WinUSB refuses one to an endpoint
+           unless wIndex names an endpoint, and here wIndex carries the value */
+        r = p->dh ? libusb_control_transfer(p->dh, 0x40, 0x41, value, index, NULL, 0, CTRL_TIMEOUT) : 0;
     }
 
     if (reg == 0x09) mirisdr_tuner_track(p, val, r >= 0);
