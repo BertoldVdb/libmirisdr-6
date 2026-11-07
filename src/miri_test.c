@@ -3465,6 +3465,171 @@ static void ir_test_feed (unsigned char *buf, uint32_t len, void *ctx)
     (void) buf; (void) len; (void) ctx;
 }
 
+/* Change reports: tunes on the null device with a change callback set, and blocks
+   whose headers show their marker flips where the test puts them */
+typedef struct { uint32_t kind, flags, tag; uint64_t index; uint32_t settle_us; int result; } chg_seen_t;
+static chg_seen_t chg_seen[64];
+static int chg_seen_n;
+
+static void chg_test_cb (const mirisdr_change_t *c, void *ctx)
+{
+    (void) ctx;
+    if (chg_seen_n < 64) {
+        chg_seen_t *s = &chg_seen[chg_seen_n++];
+
+        s->kind = c->kind; s->flags = c->flags; s->tag = c->tag; s->index = c->index;
+        s->settle_us = c->settle_us; s->result = c->result != NULL;
+    }
+}
+
+/* blocks k0..k1-1 (their indices k * DEC_STEP), the marker high from block hi on until lo */
+static void chg_feed (mirisdr_dev_t *d, int k0, int k1, const int *flips, int nflips)
+{
+    uint8_t b[1024];
+    int k, i, j;
+
+    for (k = k0; k < k1; k++) {
+        uint64_t idx = (uint64_t) k * DEC_STEP;
+        int level = 0;
+        uint16_t w;
+
+        for (j = 0; j < nflips; j++) if (k >= flips[j]) level = !level;
+        w = level ? (1 << 11) : 0;
+        memset(b, 0, sizeof b);
+        b[0] = (uint8_t) idx; b[1] = (uint8_t) (idx >> 8); b[2] = (uint8_t) (idx >> 16); b[3] = (uint8_t) (idx >> 24);
+        b[4] = (uint8_t) w; b[5] = (uint8_t) (w >> 8);
+        memcpy(b + 8, "BVDB", 4);
+        for (i = 0; i < DEC_STEP; i++) {
+            b[16 + 2 * i] = (uint8_t) (idx + i);
+            b[17 + 2 * i] = (uint8_t) ((idx + i) >> 8);
+        }
+        mirisdr_feed_bulk(d, dec_cb, d, 0, b, sizeof b);
+    }
+}
+
+static int chg_find (uint32_t kind, uint32_t tag)
+{
+    int i;
+
+    for (i = 0; i < chg_seen_n; i++) if ((chg_seen[i].kind == kind) && (chg_seen[i].tag == tag)) return i;
+    return -1;
+}
+
+/* the settling the clean of tag gives, 0 none */
+static uint32_t chg_settle (uint32_t tag)
+{
+    int i = chg_find(MIRISDR_CHANGE_CLEAN, tag);
+
+    return (i < 0) ? 0 : chg_seen[i].settle_us;
+}
+
+static tres_t t_dec_changes (void)
+{
+    mirisdr_dev_t *d;
+    mirisdr_tune_config_t c;
+    mirisdr_tune_result_t r[8];
+    mirisdr_stream_result_t sr;
+    /* the marker's flips in the stream: block numbers */
+    int flips[16], nf = 0, bad = 0, i, a, b;
+    uint64_t rate, S = DEC_STEP;
+    uint32_t freq[8] = { 100000000, 100000000, 100100000, 100100000, 100200000, 100300000 };
+    int gain[8] = { 40, 30, 30, 20, 20, 20 };
+
+    memset(&dec, 0, sizeof dec);
+    chg_seen_n = 0;
+    if (mirisdr_open_null(&d, "504_S8") < 0) { say("no null device"); return T_FAIL; }
+    mirisdr_set_gap_fill(d, 0);
+    mirisdr_get_stream(d, NULL, &sr);
+    rate = sr.adc_rate;
+    mirisdr_set_change_callback(d, chg_test_cb, NULL);
+    mirisdr_get_tune(d, 0, &c, NULL);
+
+#define CHG_TUNE(k) do { c.frequency = freq[k]; c.gain.mode = MIRISDR_GAIN_TOTAL; c.gain.total = gain[k]; \
+        c.change_tag = (k) + 1; \
+        if (mirisdr_tune(d, 0, &c, &r[k]) < 0) { bad++; say("tune %d failed", k); } } while (0)
+    /* the clean a packet after the marker's packet start plus the settling its report gives */
+#define CLEAN_AT(k, blk) ((uint64_t) (blk) * S + ((uint64_t) chg_settle((k) + 1) * rate + 999999) / 1000000)
+
+    /* one tune, its flip in block 12: dirty from block 11, clean from 12 plus its settling */
+    chg_feed(d, 0, 10, flips, nf);
+    CHG_TUNE(0);
+    flips[nf++] = 12;
+    chg_feed(d, 10, 20, flips, nf);
+    a = chg_find(MIRISDR_CHANGE_DIRTY, 1); b = chg_find(MIRISDR_CHANGE_CLEAN, 1);
+    if (a < 0 || b < 0 || chg_seen[a].index != 11 * S || chg_seen[b].index != CLEAN_AT(0, 12) ||
+        chg_seen[a].flags || chg_seen[b].flags || !chg_seen[b].result || !chg_settle(1)) {
+        bad++; say("one tune: dirty %lld, clean %lld (settle %u us)", a < 0 ? -1LL : (long long) chg_seen[a].index,
+                   b < 0 ? -1LL : (long long) chg_seen[b].index, chg_settle(1));
+    }
+
+    /* two back to back (the second's flip a packet later at least), in blocks 25 and 27 */
+    CHG_TUNE(1);
+    CHG_TUNE(2);
+    flips[nf++] = 25; flips[nf++] = 27;
+    chg_feed(d, 20, 35, flips, nf);
+    for (i = 1; i <= 2; i++) {
+        int blk = i == 1 ? 25 : 27;
+
+        a = chg_find(MIRISDR_CHANGE_DIRTY, i + 1); b = chg_find(MIRISDR_CHANGE_CLEAN, i + 1);
+        if (a < 0 || b < 0 || chg_seen[a].index != (uint64_t) (blk - 1) * S || chg_seen[b].index != CLEAN_AT(i, blk) ||
+            chg_seen[a].flags || chg_seen[b].flags) {
+            bad++; say("back to back, tune %d: dirty %lld, clean %lld", i, a < 0 ? -1LL : (long long) chg_seen[a].index,
+                       b < 0 ? -1LL : (long long) chg_seen[b].index);
+        }
+    }
+
+    /* two whose flips fall in packets lost (blocks 40-43): the level after is the level
+       before, so neither shows. Dirty at once from the block before the gap, uncertain;
+       clean once the marker has been quiet, from where the stream is then */
+    CHG_TUNE(3);
+    CHG_TUNE(4);
+    flips[nf++] = 41; flips[nf++] = 42;
+    chg_feed(d, 35, 40, flips, nf);
+    chg_feed(d, 44, 50, flips, nf);
+    for (i = 3; i <= 4; i++) {
+        a = chg_find(MIRISDR_CHANGE_DIRTY, i + 1);
+        if (a < 0 || chg_seen[a].index != 39 * S || !(chg_seen[a].flags & MIRISDR_CHANGE_UNCERTAIN) ||
+            chg_find(MIRISDR_CHANGE_CLEAN, i + 1) >= 0) {
+            bad++; say("hidden in a gap, tune %d: dirty %lld (flags %x), clean too early %d", i,
+                       a < 0 ? -1LL : (long long) chg_seen[a].index, a < 0 ? 0 : chg_seen[a].flags,
+                       chg_find(MIRISDR_CHANGE_CLEAN, i + 1) >= 0);
+        }
+    }
+    usleep(300000);
+    chg_feed(d, 50, 52, flips, nf);
+    for (i = 3; i <= 4; i++) {
+        b = chg_find(MIRISDR_CHANGE_CLEAN, i + 1);
+        /* (the parser takes a block when the next comes: the quiet is seen at block 49's) */
+        if (b < 0 || chg_seen[b].index != CLEAN_AT(i, 50) || !(chg_seen[b].flags & MIRISDR_CHANGE_UNCERTAIN)) {
+            bad++; say("hidden in a gap, tune %d: clean %lld (flags %x), %lld expected", i,
+                       b < 0 ? -1LL : (long long) chg_seen[b].index, b < 0 ? 0 : chg_seen[b].flags,
+                       (long long) CLEAN_AT(i, 50));
+        }
+    }
+
+    /* and the next is matched again */
+    CHG_TUNE(5);
+    flips[nf++] = 55;
+    chg_feed(d, 52, 60, flips, nf);
+    a = chg_find(MIRISDR_CHANGE_DIRTY, 6); b = chg_find(MIRISDR_CHANGE_CLEAN, 6);
+    if (a < 0 || b < 0 || chg_seen[a].index != 54 * S || chg_seen[b].index != CLEAN_AT(5, 55) || chg_seen[a].flags) {
+        bad++; say("after the gap: dirty %lld, clean %lld", a < 0 ? -1LL : (long long) chg_seen[a].index,
+                   b < 0 ? -1LL : (long long) chg_seen[b].index);
+    }
+
+#undef CHG_TUNE
+#undef CLEAN_AT
+
+    mirisdr_set_change_callback(d, NULL, NULL);
+    mirisdr_close(d);
+    for (i = 0; i < chg_seen_n; i++)
+        note("tag %u %s at %llu (block %.2f) flags %x settle %u", chg_seen[i].tag,
+             chg_seen[i].kind == MIRISDR_CHANGE_DIRTY ? "dirty" : "clean", (unsigned long long) chg_seen[i].index,
+             (double) chg_seen[i].index / S, chg_seen[i].flags, chg_seen[i].settle_us);
+    if (!bad) say("%d reports, settling %u/%u/%u us", chg_seen_n, chg_settle(1), chg_settle(2), chg_settle(3));
+    return bad ? T_FAIL : T_PASS;
+}
+
 static tres_t t_dec_ir (void)
 {
     mirisdr_dev_t *d;
@@ -5545,7 +5710,7 @@ static tres_t t_plan_reserved (void)
 
     mirisdr_get_tune(n, 0, &c, NULL);
     plan_tune(n, "a tune config as it came", &c, 1, &r);
-    c.reserved[MIRISDR_RESERVED - 1] = 1;
+    c.reserved[sizeof c.reserved / sizeof c.reserved[0] - 1] = 1;   /* the last */
     plan_tune(n, "a tune config with reserved set", &c, 0, &r);
     mirisdr_get_tune(n, 0, &c, NULL);
     c.gain.reserved[0] = 1;
@@ -6157,6 +6322,105 @@ static tres_t t_scan_run (void)
 
 /* A feeder far too slow: the list runs dry, starts again with the next chunk, and the
    reports still come in order, the restarts flagged */
+/* Change reports from a scan: each hop a DIRTY its lead before its register 2's packet, and a
+   CLEAN its settling after the toggle, with its tag */
+#define SCAN_CHG_MAX    8192
+static mirisdr_change_t scan_chg[SCAN_CHG_MAX];
+static volatile uint32_t scan_chg_n;
+
+static void scan_chg_cb (const mirisdr_change_t *c, void *ctx)
+{
+    (void) ctx;
+    if (scan_chg_n < SCAN_CHG_MAX) scan_chg[scan_chg_n] = *c;
+    scan_chg_n++;
+}
+
+static tres_t t_scan_changes (void)
+{
+    static mirisdr_tune_config_t h[300];
+    mirisdr_stream_config_t sc;
+    mirisdr_scan_t *s;
+    mirisdr_scan_hop_t hi;
+    uint32_t nh, k, passes = 2, bad = 0, unusable = 0, flagged = 0;
+    int64_t packet = -1;
+    int fr = 1, loops = 0;
+    tres_t res = T_PASS;
+
+    pump_stop();
+
+    mirisdr_stream_config_default(&sc);
+    sc.transfer = "BULK";
+    sc.rate = 8000000;
+    if (mirisdr_set_stream(dev, &sc, NULL) < 0) { say("8 Msps bulk refused"); return T_FAIL; }
+
+    /* 52 to 900 MHz in 8 MHz hops (below L band), those the board takes; tag = hop + 1 */
+    nh = scan_hops(h, 300, 52000000, 900000000, 8000000, 6);
+    for (k = 0, passes = 0; k < nh; k++) if (board_takes(h[k].frequency)) h[passes++] = h[k];
+    nh = passes;
+    passes = 2;
+    for (k = 0; k < nh; k++) h[k].change_tag = k + 1;
+
+    if (mirisdr_scan_compile(dev, 0, h, nh, 8, &s) < 0) { say("compile refused"); return T_FAIL; }
+
+    scan_logged = 0;
+    scan_chg_n = 0;
+    mirisdr_set_change_callback(dev, scan_chg_cb, NULL);
+    if (pump_start() < 0) { mirisdr_set_change_callback(dev, NULL, NULL); mirisdr_scan_free(s); say("stream did not start"); return T_FAIL; }
+    if (mirisdr_scan_start(dev, s, passes, scan_cb, NULL) < 0)
+    { pump_stop(); mirisdr_set_change_callback(dev, NULL, NULL); mirisdr_scan_free(s); say("scan did not start"); return T_FAIL; }
+
+    while ((fr = mirisdr_scan_feed(dev)) == 1 && loops++ < 20000) usleep(500);
+    usleep(50000);
+    mirisdr_scan_stop(dev);
+    pump_stop();
+    mirisdr_set_change_callback(dev, NULL, NULL);
+
+    /* each report: its DIRTY and CLEAN, in that order, before it */
+    for (k = 0; k < scan_logged && k < SCAN_LOG_MAX && 2 * k + 1 < scan_chg_n; k++) {
+        const mirisdr_scan_report_t *a = &scan_log[k];
+        const mirisdr_change_t *d = &scan_chg[2 * k], *c = &scan_chg[2 * k + 1];
+        int64_t lead, settle, pk;
+
+        if (a->flags) { flagged++; continue; }
+        mirisdr_scan_hop(s, a->hop, &hi);
+        lead = ((int64_t) hi.lead_us * 8000000 + 999999) / 1000000;
+        settle = ((int64_t) hi.settle_us * 8000000 + 999999) / 1000000;
+        pk = (int64_t) c->index - (int64_t) a->index - settle;
+        if (packet < 0) packet = pk;
+        if (d->kind != MIRISDR_CHANGE_DIRTY || c->kind != MIRISDR_CHANGE_CLEAN || d->tag != a->hop + 1 ||
+            c->tag != a->hop + 1 || d->flags || c->flags || !c->result || c->result->lo != hi.res.lo ||
+            (int64_t) d->index != (int64_t) a->index - lead || pk != packet || pk <= 0 || pk > 1024) {
+            if (!bad) note("report %u (hop %u): dirty %llu clean %llu, report at %llu, lead %u settle %u us",
+                           k, a->hop, (unsigned long long) d->index, (unsigned long long) c->index,
+                           (unsigned long long) a->index, hi.lead_us, hi.settle_us);
+            bad++;
+        }
+        if (k + 1 < scan_logged && 2 * k + 2 < scan_chg_n && scan_chg[2 * k + 2].index <= c->index) unusable++;
+    }
+
+    note("%u hops x %u passes: %u reports, %u changes; packet %lld samples; %u hops without usable samples",
+         nh, passes, scan_logged, scan_chg_n, (long long) packet, unusable);
+    for (k = 0; k < 4 && k < nh; k++) {
+        mirisdr_scan_hop(s, k, &hi);
+        note("hop %u at %u Hz: lead %u us, settle %u us", k, h[k].frequency, hi.lead_us, hi.settle_us);
+    }
+
+    mirisdr_scan_free(s);
+    mirisdr_stream_config_default(&sc);
+    sc.transfer = "BULK";
+    mirisdr_set_stream(dev, &sc, NULL);
+
+    if (fr != 0) { say("the feed ended with %d", fr); res = T_FAIL; }
+    else if (scan_logged != nh * passes) { say("%u reports for %u hops", scan_logged, nh * passes); res = T_FAIL; }
+    else if (scan_chg_n != 2 * scan_logged) { say("%u changes for %u reports", scan_chg_n, scan_logged); res = T_FAIL; }
+    else if (flagged) { say("%u reports flagged", flagged); res = T_FAIL; }
+    else if (bad) { say("%u hops reported wrongly", bad); res = T_FAIL; }
+    else say("%u hops x %u passes, each a dirty and a clean in place (packet %lld); %u without usable samples",
+             nh, passes, (long long) packet, unusable);
+
+    return res;
+}
+
 static tres_t t_scan_dry (void)
 {
     static mirisdr_tune_config_t h[300];
@@ -7878,6 +8142,7 @@ static const struct {
     { "decode",   "bulk slips",                 t_dec_slips           },
     { "decode",   "headers under an anchor",    t_dec_anchor          },
     { "decode",   "IR runs under a full count", t_dec_ir              },
+    { "decode",   "change reports",             t_dec_changes         },
 
     { "plan",     "tune config rules",          t_plan_tune           },
     { "plan",     "stream config rules",        t_plan_stream         },
@@ -7988,6 +8253,7 @@ static const struct {
     { "scan",     "learn and replay",           t_scan_learn          },
     { "scan",     "scan list run",              t_scan_run            },
     { "scan",     "scan list run dry",          t_scan_dry            },
+    { "scan",     "scan change reports",        t_scan_changes        },
 
     { "extras",   "eeprom size probe",          t_eeprom_probe        },
     { "extras",   "eeprom read",                t_eeprom_read         },

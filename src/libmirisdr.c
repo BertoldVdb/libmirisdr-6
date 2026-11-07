@@ -367,7 +367,7 @@ int mirisdr_close (mirisdr_dev_t *p) {
         /* no register list left running: the next open's writes would be refused */
         if (p->fw_ours)
         {
-            if (p->scan) mirisdr_scan_stop(p);
+            if (p->scan.run) mirisdr_scan_stop(p);
             mirisdr_load_list(p, 0, 0, NULL, 0);
         }
 

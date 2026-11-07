@@ -728,6 +728,8 @@ static int mirisdr_tune_send (mirisdr_dev_t *p, const mirisdr_tune_words_t *w, c
     uint16_t was0 = p->exp_iodir[0], was1 = p->exp_iodir[1];
     int valid = p->exp_valid & ~p->exp_stale;   /* a stale word may not be the chip's (a scan's wrap) */
 
+    /* front-end words: settling for the tune's report */
+    p->kind_us = MIRISDR_SETTLE_FRONTEND_US;
     if ((fe->fields & MIRISDR_FRONTEND_RAW_EXP1) &&
         ((mirisdr_duo_close(p, fe->expander[0]) < 0) || (mirisdr_sdrplay_send(p, 0, fe->expander[0]) < 0))) r = -1;
     if ((fe->fields & MIRISDR_FRONTEND_RAW_EXP2) && (mirisdr_sdrplay_send(p, 1, fe->expander[1]) < 0)) r = -1;
@@ -749,6 +751,7 @@ static int mirisdr_tune_send (mirisdr_dev_t *p, const mirisdr_tune_words_t *w, c
     p->reg8 = (w->row->band_select_word & ~0xFF00u) | ((uint32_t) fe->gpio_dir << 12) | ((uint32_t) fe->gpio_level << 8);
     p->fe_raw = raw;
     if (update_reg_8(p) < 0) r = -1;
+    p->kind_us = 0;
 
     p->band = w->band;
     p->dc_n = w->dc_n;
@@ -764,6 +767,7 @@ static int mirisdr_tune_send (mirisdr_dev_t *p, const mirisdr_tune_words_t *w, c
         if (mirisdr_tuner_write(p, 0, 0, 0) < 0) r = -1;
         p->tuner_valid &= 1;
         p->lna_cal_mhz = 0;
+        p->call_lo = 0;
         p->tuner_regd = w->regd;
         return r;
     }
@@ -791,7 +795,11 @@ static int mirisdr_tune_send (mirisdr_dev_t *p, const mirisdr_tune_words_t *w, c
         synth |= (s[2] = mirisdr_tuner_write(p, 3, w->reg3, 0)) != 0;
         synth |= (s[3] = mirisdr_tuner_write(p, 0, w->reg0, 0)) != 0;
         synth |= (s[4] = mirisdr_tuner_write(p, 5, w->reg5, 0)) != 0;
+        /* synthesizer settling: a large jump, a held VCO, or a normal search */
+        p->synth_us = (!p->call_lo || (llabs((long long) w->lo_real - (long long) p->call_lo) > MIRISDR_SETTLE_JUMP_HZ)) ?
+                      MIRISDR_SETTLE_JUMP_US : (p->tuner_ovr14 & 1) ? MIRISDR_SETTLE_HELD_US : MIRISDR_SETTLE_SYNTH_US;
         s[5] = mirisdr_tuner_write(p, 2, w->reg2, synth);
+        if (s[5] > 0) p->call_lo = w->lo_real;
         p->tuner_regd = w->regd;
         s[6] = mirisdr_tuner_write(p, 13, mirisdr_reg13(p), 0);
 
@@ -1501,6 +1509,13 @@ static int mirisdr_tune_apply_once (mirisdr_dev_t *p, const mirisdr_tune_config_
     mirisdr_filter_learn(p, pl.w.row);
     mirisdr_batch_begin(p);
 
+    /* the marker goes first, so it shows no later than the change */
+    if (p->call_mark && !p->call_marked)
+    {
+        if (mirisdr_mark_write(p, MIRISDR_MARK_FLIP) < 0) r = -1;
+        else p->call_marked = 1;
+    }
+
     /* the holds go out in the same list, and a held LNA code skips its calibration */
     p->tuner_ovr13 = pl.ovr13;
     p->tuner_ovr14 = pl.ovr14;
@@ -1640,12 +1655,34 @@ void mirisdr_tune_config_default (mirisdr_tune_config_t *cfg)
 int mirisdr_tune (mirisdr_dev_t *p, int tuner, const mirisdr_tune_config_t *cfg, mirisdr_tune_result_t *res)
 {
     int r;
+    uint32_t settle;
+    mirisdr_tune_result_t own;
 
     if (!p || (tuner < 0) || (tuner >= mirisdr_tuners_of(p))) return -1;
 
+    /* the report needs the result */
+    if (!res) res = &own;
+
+    p->call_marked = 0;
     mirisdr_tuner_select(p, tuner);
+    /* reported (with a marker flip) only while a change callback is set */
+    mirisdr_ev_lock(p);
+    p->call_mark = p->chg.req = p->chg.cb != NULL;
+    p->chg.tag = cfg ? cfg->change_tag : 0;
+    p->chg.slot = -1;
+    mirisdr_ev_unlock(p);
+    /* time the words from the marker */
+    p->call_ref_ns = p->call_ready_ns = 0;
+    p->call_lo = mirisdr_tuner_asleep(p) ? 0 : p->tune_lo;
+    p->call_on = 1;
     r = mirisdr_tune_apply(p, cfg, 0, res);
+    p->call_on = 0;
     mirisdr_tuner_select(p, mirisdr_tuner_primary(p));
+    p->call_mark = 0;
+
+    /* settling time from the marker, for the report */
+    settle = p->call_ref_ns ? (uint32_t) ((p->call_ready_ns - p->call_ref_ns + 999) / 1000) : 0;
+    mirisdr_chg_done(p, r >= 0, res, settle);
 
     return r;
 }

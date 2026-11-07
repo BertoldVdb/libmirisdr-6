@@ -60,9 +60,62 @@ static void mirisdr_batch_wait (mirisdr_dev_t *p)
     p->batch_running = 0;
 }
 
+/* Settling time after each kind of word, measured on an RSP1B and an nRSP-ST, 30 MHz to
+   1.9 GHz (with margin) */
+#define MIRISDR_SETTLE_GAIN_US      100
+#define MIRISDR_SETTLE_SYNTH_US     250
+#define MIRISDR_SETTLE_HELD_US      150
+#define MIRISDR_SETTLE_JUMP_US      300
+#define MIRISDR_SETTLE_JUMP_HZ      1000000     /* retunes further than this use JUMP */
+#define MIRISDR_SETTLE_FRONTEND_US  400
+
+static uint32_t mirisdr_settle_of (mirisdr_dev_t *p, uint8_t reg, uint32_t val)
+{
+    if (reg == 0x09)
+    {
+        if ((val & 15) == 1) return MIRISDR_SETTLE_GAIN_US;
+        if ((val & 15) == 2) return p->synth_us;
+        return 0;
+    }
+
+    return (reg == MIRISDR_LIST_WAIT_US) ? 0 : p->kind_us;
+}
+
+/* The firmware's time for a list entry (MSI2500-PPS, measured 2026-11-07): a register write,
+   a tuner word with its gap after, the SPI master's transfer waited for; a wait runs 1/15 long */
+#define MIRISDR_LIST_ENTRY_US       5
+#define MIRISDR_LIST_TUNER_US       9
+#define MIRISDR_LIST_SPI_US         9
+#define MIRISDR_LIST_WAIT_LONG      15
+
+static uint32_t mirisdr_list_entry_us (uint8_t reg, uint32_t val)
+{
+    if (reg == MIRISDR_LIST_WAIT_US) return val + val / MIRISDR_LIST_WAIT_LONG;
+    if (reg == 0x09) return MIRISDR_LIST_TUNER_US;
+    if (reg == MIRISDR_LIST_WAIT_SPI) return MIRISDR_LIST_SPI_US;
+    return MIRISDR_LIST_ENTRY_US;
+}
+
+/* A tune's words reached the device now; track when they will have settled */
+static void mirisdr_settle_at (mirisdr_dev_t *p, uint32_t ref_us, uint32_t us)
+{
+    uint64_t now = mirisdr_now_ns();
+
+    if (!p->call_ref_ns) p->call_ref_ns = now + (uint64_t) ref_us * 1000;
+    if (now + (uint64_t) us * 1000 > p->call_ready_ns) p->call_ready_ns = now + (uint64_t) us * 1000;
+}
+
+static void mirisdr_chg_fail (mirisdr_dev_t *p, int slot);   /* events.c */
+
 static int mirisdr_batch_flush (mirisdr_dev_t *p)
 {
-    int n = p->batch_n;
+    int n = p->batch_n, timed = p->batch_timed, mark = p->batch_mark, flip = p->mark_pending;
+    uint32_t ready = p->batch_ready_us, mark_us = p->batch_mark_us;
+
+    p->batch_us = p->batch_ready_us = 0;
+    p->batch_timed = p->batch_mark = 0;
+    p->batch_mark_us = 0;
+    p->mark_pending = 0;
 
     if (!n) return 0;
     p->batch_n = 0;
@@ -76,8 +129,14 @@ static int mirisdr_batch_flush (mirisdr_dev_t *p)
                                 CTRL_TIMEOUT) == n * 4)
     {
         p->batch_running = 1;
+        /* settling counts from the marker */
+        if (timed && p->call_on) mirisdr_settle_at(p, mark ? mark_us : 0, ready);
+        if (flip) p->mark_sent_ns = mirisdr_now_ns() + (uint64_t) mark_us * 1000;
         return 0;
     }
+
+    /* the list may have held a marker flip */
+    if (flip) mirisdr_chg_fail(p, -1);
 
     /* what went out is not known */
     p->tuner_valid = 0;
@@ -189,20 +248,20 @@ int mirisdr_write_reg (mirisdr_dev_t *p, uint8_t reg, uint32_t val) {
     fprintf( stderr, "write reg: 0x%02x, val 0x%08x\n", reg, val);
 #endif
 
-    if (p->rec)
+    if (p->scan.rec)
     {
         /* a scan being compiled: the entry is kept, nothing goes out */
-        if (p->rec_n == p->rec_max)
+        if (p->scan.rec_n == p->scan.rec_max)
         {
-            mirisdr_list_entry_t *e = realloc(p->rec, (p->rec_max * 2 + 64) * sizeof *e);
+            mirisdr_list_entry_t *e = realloc(p->scan.rec, (p->scan.rec_max * 2 + 64) * sizeof *e);
 
             if (!e) goto failed;
-            p->rec = e;
-            p->rec_max = p->rec_max * 2 + 64;
+            p->scan.rec = e;
+            p->scan.rec_max = p->scan.rec_max * 2 + 64;
         }
 
-        p->rec[p->rec_n].reg = reg;
-        p->rec[p->rec_n++].val = val;
+        p->scan.rec[p->scan.rec_n].reg = reg;
+        p->scan.rec[p->scan.rec_n++].val = val;
         r = 0;
     }
     /* images before the list block take lists too, but cannot say when one is done */
@@ -214,6 +273,22 @@ int mirisdr_write_reg (mirisdr_dev_t *p, uint8_t reg, uint32_t val) {
         e[1] = (uint8_t) val;
         e[2] = (uint8_t) (val >> 8);
         e[3] = (uint8_t) (val >> 16);
+
+        /* the list runs on the device: settling counts its entries' time, waits included, to
+           where each takes effect */
+        if (p->call_on)
+        {
+            uint32_t us = mirisdr_settle_of(p, reg, val);
+
+            p->batch_us += mirisdr_list_entry_us(reg, val);
+            if ((reg != MIRISDR_LIST_WAIT_US) && (p->batch_us + us > p->batch_ready_us))
+                p->batch_ready_us = p->batch_us + us;
+            if ((reg == MIRISDR_MARK_REG) && !p->batch_mark) {
+                p->batch_mark = 1;
+                p->batch_mark_us = p->batch_us;
+            }
+            p->batch_timed = 1;
+        }
         r = (++p->batch_n == MIRISDR_LIST_MAX) ? mirisdr_batch_flush(p) : 0;
     }
     else
@@ -222,6 +297,7 @@ int mirisdr_write_reg (mirisdr_dev_t *p, uint8_t reg, uint32_t val) {
         /* vendor requests go to the device (0x40). WinUSB refuses one to an endpoint
            unless wIndex names an endpoint, and here wIndex carries the value */
         r = p->dh ? libusb_control_transfer(p->dh, 0x40, 0x41, value, index, NULL, 0, CTRL_TIMEOUT) : 0;
+        if (p->call_on && (r >= 0)) mirisdr_settle_at(p, 0, mirisdr_settle_of(p, reg, val));
     }
 
     if (reg == 0x09) mirisdr_tuner_track(p, val, r >= 0);
@@ -239,6 +315,51 @@ int mirisdr_write_reg (mirisdr_dev_t *p, uint8_t reg, uint32_t val) {
 
 failed:
     return -1;
+}
+
+static int mirisdr_chg_push (mirisdr_dev_t *p, int level);    /* events.c */
+
+#define MIRISDR_MARK_FLIP       (-1)
+#define MIRISDR_MARK_SPACE_US   20      /* margin on top of one packet between flips */
+
+/* Write the stream marker (0, 1 or MIRISDR_MARK_FLIP). Flips are kept for the change reports,
+   and spaced at least one packet apart: two flips in one packet would cancel out */
+static int mirisdr_mark_write (mirisdr_dev_t *p, int level)
+{
+    int listed = p->batch_depth && p->fw_ours && p->fw_list_at, slot = -1, flip, r = 0;
+    uint32_t wait = 0;
+
+    if (p->scan.rec) return mirisdr_write_reg(p, MIRISDR_MARK_REG, (level > 0) ? MIRISDR_MARK_BIT : 0);
+
+    mirisdr_ev_lock(p);
+    if (level < 0) level = !p->mark_level;
+    flip = level != p->mark_level;
+    if (flip) {
+        uint32_t packet = p->rate ? (uint32_t) ((uint64_t) p->addr_step * 1000000 / p->rate) : 0;
+        uint32_t space = packet + packet / 10 + MIRISDR_MARK_SPACE_US;
+        uint64_t now = mirisdr_now_ns();
+
+        if (packet && p->mark_pending) wait = space;
+        else if (packet && p->mark_sent_ns && (now < p->mark_sent_ns + (uint64_t) space * 1000))
+            wait = (uint32_t) ((p->mark_sent_ns + (uint64_t) space * 1000 - now + 999) / 1000);
+        slot = mirisdr_chg_push(p, level);
+        p->mark_level = level;
+    }
+    mirisdr_ev_unlock(p);
+
+    if (wait) {
+        if (listed) r = mirisdr_write_reg(p, MIRISDR_LIST_WAIT_US, wait);
+        else usleep(wait);
+    }
+    if (mirisdr_write_reg(p, MIRISDR_MARK_REG, level ? MIRISDR_MARK_BIT : 0) < 0) r = -1;
+
+    if (flip) {
+        if (listed) p->mark_pending = 1;
+        else p->mark_sent_ns = mirisdr_now_ns();
+        if (r < 0) mirisdr_chg_fail(p, slot);
+    }
+
+    return r;
 }
 
 static int update_reg_8 (mirisdr_dev_t *p);

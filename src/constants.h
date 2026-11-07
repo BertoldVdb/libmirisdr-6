@@ -26,3 +26,7 @@
 
 /* Hz of each MIRISDR_IF_* mode */
 static const uint32_t mirisdr_if_hz[] = { 0, 450000, 1620000, 2048000 };
+
+/* The stream marker: MMIO register 0x10 bit 21, which does nothing else (events.c) */
+#define MIRISDR_MARK_REG        0x10
+#define MIRISDR_MARK_BIT        (1UL << 21)

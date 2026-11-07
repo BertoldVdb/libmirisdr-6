@@ -53,6 +53,8 @@ int mirisdr_read_sync (mirisdr_dev_t *p, void *buf, int len, int *n_read) {
         p->bulk_wait = 0;
         p->gap_track = 0;
         p->ev_valid = 0;
+        p->ev_mark_base = p->mark_level;
+        mirisdr_chg_restart(p);
         p->sync_len = p->sync_pos = 0;
         p->sync_xlen = DEFAULT_BULK_BUFFER;
         p->sync_ready = 1;

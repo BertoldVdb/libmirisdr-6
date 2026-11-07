@@ -600,7 +600,9 @@ typedef struct mirisdr_tune_config
 	                           a part or mode the board does not have (a notch, an antenna, a
 	                           flag, pads on a board without them, an IF, a combination it cannot
 	                           do) is refused */
-	uint32_t reserved[MIRISDR_RESERVED];
+	uint32_t change_tag;    /* returned in this tune's change reports (mirisdr_set_change_callback),
+	                           so the caller knows which tune a report belongs to */
+	uint32_t reserved[MIRISDR_RESERVED - 1];
 } mirisdr_tune_config_t;
 
 #define MIRISDR_DC_AUTO         0       /* at a low IF, not at zero IF, where it is the band's centre */
@@ -1083,7 +1085,9 @@ typedef struct mirisdr_scan_hop
 	uint16_t pre_us;         /* and waits, us: the front end settling after its word changed,
 	                            200 us unless the hop holds its tuner codes */
 	mirisdr_tune_result_t res;
-	uint32_t reserved[MIRISDR_RESERVED];
+	uint32_t lead_us;        /* from its first entry to its register 2 */
+	uint32_t settle_us;      /* from its register 2 until settled */
+	uint32_t reserved[MIRISDR_RESERVED - 2];
 } mirisdr_scan_hop_t;
 
 #define MIRISDR_SCAN_MISSED     0x01    /* packets were lost since the hop before */
@@ -1091,6 +1095,10 @@ typedef struct mirisdr_scan_hop
 #define MIRISDR_SCAN_LOST       0x04    /* tune events and hops disagree: the count resyncs at
                                            the next chunk */
 
+/* With a change callback set, each hop is also reported as a change (DIRTY, CLEAN) with its
+ * tune config's change_tag. A hop whose CLEAN comes after the next hop's DIRTY had no usable
+ * samples. After lost packets the hops until the next chunk cannot be told apart: one
+ * UNCERTAIN DIRTY covers them, without a CLEAN. */
 typedef struct mirisdr_scan_report
 {
 	uint32_t hop;            /* index into the hops compiled */
@@ -1161,6 +1169,37 @@ typedef struct mirisdr_stream_event
 typedef void (*mirisdr_stream_event_cb_t) (const mirisdr_stream_event_t *ev, void *ctx);
 
 MIRISDR_API int mirisdr_set_stream_events (mirisdr_dev_t *p, mirisdr_stream_event_cb_t cb, void *ctx); /* extra */
+
+/* Change reports. While a change callback is set, every mirisdr_tune() flips the stream marker
+ * and is reported twice, with its change_tag:
+ *   DIRTY  samples from index on are unusable (the change started there)
+ *   CLEAN  samples from index on are usable again, with result in force
+ * Indices count stream samples at the ADC rate, lost ones included; either may already have
+ * been delivered. Calls come from the stream thread, between buffers. Without a callback the
+ * marker is left alone. */
+#define MIRISDR_CHANGE_DIRTY        1
+#define MIRISDR_CHANGE_CLEAN        2
+
+#define MIRISDR_CHANGE_UNCERTAIN    0x01    /* marker not seen (lost packets): a safe, wider window */
+#define MIRISDR_CHANGE_RESTARTED    0x02    /* the stream restarted: index counts from its start */
+#define MIRISDR_CHANGE_FAILED       0x04    /* the tune failed: result is NULL */
+
+typedef struct mirisdr_change
+{
+	uint32_t size;          /* sizeof, for later extension */
+	uint32_t kind;          /* MIRISDR_CHANGE_DIRTY or _CLEAN */
+	uint32_t flags;         /* MIRISDR_CHANGE_* */
+	uint32_t tag;           /* the tune's change_tag */
+	int32_t  tuner;
+	uint32_t settle_us;     /* CLEAN: settling time from the marker */
+	uint64_t index;
+	const mirisdr_tune_result_t *result;    /* CLEAN: the tune in force, else NULL */
+	uint32_t reserved[MIRISDR_RESERVED];
+} mirisdr_change_t;
+
+typedef void (*mirisdr_change_cb_t) (const mirisdr_change_t *c, void *ctx);
+
+MIRISDR_API int mirisdr_set_change_callback (mirisdr_dev_t *p, mirisdr_change_cb_t cb, void *ctx); /* extra */
 MIRISDR_API int mirisdr_set_stream_mark (mirisdr_dev_t *p, int on);     /* extra */
 
 /*

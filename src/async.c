@@ -1025,6 +1025,10 @@ static int mirisdr_read_async_run (mirisdr_dev_t *p, mirisdr_read_async_cb_t cb,
     p->cb_lost = 0;
     p->ev_valid = 0;
     p->sync_ready = 0;
+    /* marker low at stream start: the first packet is compared with it */
+    mirisdr_mark_write(p, 0);
+    p->ev_mark_base = 0;
+    mirisdr_chg_restart(p);
 #if MIRISDR_DEBUG >= 1
     fprintf( stderr, ", transfer: %s\n", (p->transfer == MIRISDR_TRANSFER_BULK) ? "bulk" : "isochronous");
 #endif

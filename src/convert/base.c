@@ -67,16 +67,16 @@ static uint64_t mirisdr_gap_note (mirisdr_dev_t *p, uint64_t missing) {
 
 /* 1 while this block may be one an anchor damaged, see mirisdr_anchor_open() */
 static int mirisdr_anchor_suspect (mirisdr_dev_t *p) {
-    int open = mirisdr_atomic_add(&p->anc_open, 0);
+    int open = mirisdr_atomic_add(&p->anc.open, 0);
 
-    if (!p->addr_valid || (open == p->anc_shut)) return 0;
+    if (!p->addr_valid || (open == p->anc.shut)) return 0;
     /* taken, not yet read back: any block may be the one */
-    if (mirisdr_atomic_add(&p->anc_known, 0) != open) return 1;
-    if ((int32_t) (p->addr - p->anc_to) > 0) {
-        p->anc_shut = open;
+    if (mirisdr_atomic_add(&p->anc.known, 0) != open) return 1;
+    if ((int32_t) (p->addr - p->anc.to) > 0) {
+        p->anc.shut = open;
         return 0;
     }
-    return (int32_t) (p->addr - p->anc_from) >= 0;
+    return (int32_t) (p->addr - p->anc.from) >= 0;
 }
 
 /* Called once per 1024 byte block with its header, which carries the sample
@@ -103,9 +103,9 @@ static int mirisdr_addr_next (mirisdr_dev_t *p, const uint8_t *hdr, uint32_t ste
 
         /* a window placed in the stream before ends with it */
         {
-            int open = mirisdr_atomic_add(&p->anc_open, 0);
+            int open = mirisdr_atomic_add(&p->anc.open, 0);
 
-            if (mirisdr_atomic_add(&p->anc_known, 0) == open) p->anc_shut = open;
+            if (mirisdr_atomic_add(&p->anc.known, 0) == open) p->anc.shut = open;
         }
     }
 

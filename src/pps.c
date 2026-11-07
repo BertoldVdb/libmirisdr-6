@@ -69,7 +69,7 @@ static uint16_t mirisdr_pps_wvalue (mirisdr_dev_t *p, int run)
 {
     uint16_t v = run ? 3 : 0;               /* bit 0 run, bit 1 take an anchor */
 
-    if (p->pps_src_sof) v |= 8;             /* edges from the SOF interrupt */
+    if (p->pps.src_sof) v |= 8;             /* edges from the SOF interrupt */
 
     return v;
 }
@@ -78,7 +78,7 @@ int mirisdr_set_pps_source (mirisdr_dev_t *p, int sof)
 {
     if (!p) return -1;
 
-    p->pps_src_sof = sof ? 1 : 0;
+    p->pps.src_sof = sof ? 1 : 0;
 
     return 0;
 }
@@ -105,15 +105,15 @@ static void mirisdr_pps_count (mirisdr_dev_t *p, uint64_t *index, uint32_t *addr
    count over the headers, and leaves their events and IR byte alone */
 static void mirisdr_anchor_open (mirisdr_dev_t *p)
 {
-    mirisdr_atomic_add(&p->anc_open, 1);
+    mirisdr_atomic_add(&p->anc.open, 1);
 }
 
 /* The blocks from..to may be damaged, the rest of the window is not */
 static void mirisdr_anchor_place (mirisdr_dev_t *p, uint32_t from, uint32_t to)
 {
-    p->anc_from = from;
-    p->anc_to = to;
-    mirisdr_atomic_xchg(&p->anc_known, mirisdr_atomic_add(&p->anc_open, 0));
+    p->anc.from = from;
+    p->anc.to = to;
+    mirisdr_atomic_xchg(&p->anc.known, mirisdr_atomic_add(&p->anc.open, 0));
 }
 
 /* No anchor to place the window by: it ends at the next block */
@@ -166,21 +166,21 @@ static int mirisdr_pps_anchor (mirisdr_dev_t *p)
                          c[newest] + MIRISDR_ANCHOR_SPREAD * p->addr_step);
 
     mirisdr_pps_count(p, &index, &addr, &gaps);
-    p->pps_base = (int64_t) index + (int32_t) (c[newest] - MIRISDR_PPS_ANCHOR_BACK * p->addr_step - addr);
+    p->pps.base = (int64_t) index + (int32_t) (c[newest] - MIRISDR_PPS_ANCHOR_BACK * p->addr_step - addr);
 
-    p->pps_gaps0 = gaps;
-    p->pps_anchor_valid = 1;
-    p->pps_seen = 0;
-    p->pps_k_min = 0;
-    p->pps_irq_last = 0;
-    p->pps_irq_high = 0;
+    p->pps.gaps0 = gaps;
+    p->pps.anchor_valid = 1;
+    p->pps.seen = 0;
+    p->pps.k_min = 0;
+    p->pps.irq_last = 0;
+    p->pps.irq_high = 0;
 
     /* whatever is latched now was captured against the count this anchor has
        just reset, so it is not placeable until the next pulse */
     if (!p->fw_pps_at || mirisdr_read_mem(p, p->fw_pps_at, b, PPS_TIME_LEN, MIRISDR_MEM_IRAM) < 0) return -1;
 
-    p->pps_edge0 = b[14];
-    p->pps_stale = 1;
+    p->pps.edge0 = b[14];
+    p->pps.stale = 1;
 
     return 0;
 }
@@ -220,9 +220,9 @@ int mirisdr_enable_pps (mirisdr_dev_t *p, int run)
 
     if (!p || !p->dh || !p->fw_ours) return -1;
 
-    if (run && !p->pps_src_sof) mirisdr_set_gpio_direction(p, 0, 0);
+    if (run && !p->pps.src_sof) mirisdr_set_gpio_direction(p, 0, 0);
 
-    p->pps_anchor_valid = 0;
+    p->pps.anchor_valid = 0;
     mirisdr_pps_checks_reset(p, 0);
 
     /* bit 1 asks for the anchor, which the next streaming interrupt takes */
@@ -309,21 +309,21 @@ static void mirisdr_pps_unpack (const uint8_t *b, mirisdr_pps_time_t *t)
 
 static void mirisdr_pps_checks_reset (mirisdr_dev_t *p, double expect)
 {
-    p->pps_chk_expect = expect;
-    p->pps_chk_valid = 0;
-    p->pps_grid_have = 0;
-    p->pps_grid_off = 0;
+    p->pps.chk_expect = expect;
+    p->pps.chk_valid = 0;
+    p->pps.grid_have = 0;
+    p->pps.grid_off = 0;
 }
 
 static void mirisdr_pps_grid_start (mirisdr_dev_t *p, int64_t from, int64_t at, int label, int64_t microframes)
 {
-    p->pps_grid_a = p->pps_grid_m = from;
-    p->pps_grid_ka = p->pps_grid_km = 0;
-    p->pps_grid_b = at;
-    p->pps_grid_kb = microframes;
-    p->pps_grid_lb = label;
-    p->pps_grid_have = 1;
-    p->pps_grid_off = 0;
+    p->pps.grid_a = p->pps.grid_m = from;
+    p->pps.grid_ka = p->pps.grid_km = 0;
+    p->pps.grid_b = at;
+    p->pps.grid_kb = microframes;
+    p->pps.grid_lb = label;
+    p->pps.grid_have = 1;
+    p->pps.grid_off = 0;
 }
 
 /* d is n microframes, n at least one and what the labels dl apart say, within tol and
@@ -342,59 +342,59 @@ static int mirisdr_pps_grid (mirisdr_dev_t *p, int64_t at, int label)
     double rate = p->rate, nominal = 0.000125 * rate;
     double tol = MIRISDR_PPS_GRID_US * 1e-6 * rate, span = MIRISDR_PPS_GRID_SPAN_S * rate, n;
 
-    if (p->pps_grid_have)
+    if (p->pps.grid_have)
     {
-        int64_t k = p->pps_grid_kb - p->pps_grid_ka;
-        double per = k ? (double) (p->pps_grid_b - p->pps_grid_a) / (double) k : nominal;
+        int64_t k = p->pps.grid_kb - p->pps.grid_ka;
+        double per = k ? (double) (p->pps.grid_b - p->pps.grid_a) / (double) k : nominal;
         double grow = (k ? 1e-6 * rate / (double) k : MIRISDR_PPS_GRID_PPM * 1e-6 * nominal) + 2e-7 * per;
 
-        if (mirisdr_pps_grid_fits((double) (at - p->pps_grid_b), per, tol, grow,
-                                  (label - p->pps_grid_lb) & (MIRISDR_PPS_LABELS - 1), &n))
+        if (mirisdr_pps_grid_fits((double) (at - p->pps.grid_b), per, tol, grow,
+                                  (label - p->pps.grid_lb) & (MIRISDR_PPS_LABELS - 1), &n))
         {
-            p->pps_grid_b = at;
-            p->pps_grid_lb = label;
-            p->pps_grid_kb += (int64_t) n;
-            p->pps_grid_off = 0;
+            p->pps.grid_b = at;
+            p->pps.grid_lb = label;
+            p->pps.grid_kb += (int64_t) n;
+            p->pps.grid_off = 0;
 
             /* the line's far end moves up a half span at a time */
-            if ((double) (p->pps_grid_b - p->pps_grid_m) >= span / 2)
+            if ((double) (p->pps.grid_b - p->pps.grid_m) >= span / 2)
             {
-                if ((double) (p->pps_grid_b - p->pps_grid_a) >= span)
+                if ((double) (p->pps.grid_b - p->pps.grid_a) >= span)
                 {
-                    p->pps_grid_a = p->pps_grid_m;
-                    p->pps_grid_ka = p->pps_grid_km;
+                    p->pps.grid_a = p->pps.grid_m;
+                    p->pps.grid_ka = p->pps.grid_km;
                 }
-                p->pps_grid_m = p->pps_grid_b;
-                p->pps_grid_km = p->pps_grid_kb;
+                p->pps.grid_m = p->pps.grid_b;
+                p->pps.grid_km = p->pps.grid_kb;
             }
             return 0;
         }
 
         /* edges off it that keep agreeing with each other start it again */
-        if (p->pps_grid_off && mirisdr_pps_grid_fits((double) (at - p->pps_grid_cand), per, tol, grow,
-                                                     (label - p->pps_grid_lc) & (MIRISDR_PPS_LABELS - 1), &n))
-            p->pps_grid_off++;
+        if (p->pps.grid_off && mirisdr_pps_grid_fits((double) (at - p->pps.grid_cand), per, tol, grow,
+                                                     (label - p->pps.grid_lc) & (MIRISDR_PPS_LABELS - 1), &n))
+            p->pps.grid_off++;
         else
-            p->pps_grid_off = 1;
-        p->pps_grid_cand = at;
-        p->pps_grid_lc = label;
+            p->pps.grid_off = 1;
+        p->pps.grid_cand = at;
+        p->pps.grid_lc = label;
 
-        if (p->pps_grid_off >= 3) mirisdr_pps_grid_start(p, at, at, label, 0);
+        if (p->pps.grid_off >= 3) mirisdr_pps_grid_start(p, at, at, label, 0);
         return 1;
     }
 
     /* no line yet: an edge that agrees with the one before starts it */
-    if (p->pps_grid_off && mirisdr_pps_grid_fits((double) (at - p->pps_grid_cand), nominal, tol,
+    if (p->pps.grid_off && mirisdr_pps_grid_fits((double) (at - p->pps.grid_cand), nominal, tol,
                                                  MIRISDR_PPS_GRID_PPM * 1e-6 * nominal,
-                                                 (label - p->pps_grid_lc) & (MIRISDR_PPS_LABELS - 1), &n))
+                                                 (label - p->pps.grid_lc) & (MIRISDR_PPS_LABELS - 1), &n))
     {
-        mirisdr_pps_grid_start(p, p->pps_grid_cand, at, label, (int64_t) n);
+        mirisdr_pps_grid_start(p, p->pps.grid_cand, at, label, (int64_t) n);
         return 0;
     }
 
-    p->pps_grid_cand = at;
-    p->pps_grid_lc = label;
-    p->pps_grid_off = 1;
+    p->pps.grid_cand = at;
+    p->pps.grid_lc = label;
+    p->pps.grid_off = 1;
     return 1;
 }
 
@@ -407,7 +407,7 @@ int mirisdr_get_pps (mirisdr_dev_t *p, mirisdr_pps_t *out)
     double first, expect, fullc, turns;
     uint8_t wrap;
 
-    if (!p || !p->dh || !out || !p->fw_ours || !p->pps_anchor_valid) return -1;
+    if (!p || !p->dh || !out || !p->fw_ours || !p->pps.anchor_valid) return -1;
 
     /* the block the firmware keeps, read as one snapshot */
     if (!p->fw_pps_at || mirisdr_read_mem(p, p->fw_pps_at, b, PPS_TIME_LEN, MIRISDR_MEM_IRAM) < 0) return -1;
@@ -421,11 +421,11 @@ int mirisdr_get_pps (mirisdr_dev_t *p, mirisdr_pps_t *out)
 
     /* The packet count wraps after about thirty hours at the fastest the chip
        streams: track it from the free running half, which is read every time. */
-    if (t.packets < p->pps_irq_last) p->pps_irq_high++;
-    p->pps_irq_last = t.packets;
+    if (t.packets < p->pps.irq_last) p->pps.irq_high++;
+    p->pps.irq_last = t.packets;
 
-    now  = t.packets     | ((uint64_t) p->pps_irq_high << 32);
-    edge = t.edge_packet | ((uint64_t) p->pps_irq_high << 32);
+    now  = t.packets     | ((uint64_t) p->pps.irq_high << 32);
+    edge = t.edge_packet | ((uint64_t) p->pps.irq_high << 32);
     if (edge > now) edge-= 0x100000000ULL;      /* latched before the wrap */
 
     /* Where the edge sits in its interval: on SOF the interval's first SOF
@@ -433,7 +433,7 @@ int mirisdr_get_pps (mirisdr_dev_t *p, mirisdr_pps_t *out)
        took, so no SOF is involved. */
     first = t.first_tick;
 
-    if (!p->pps_src_sof) {
+    if (!p->pps.src_sof) {
         first      = t.edge_tick;
         t.edge_sof = 0;
         t.carry    = (t.edge_tick & 0xFF) ? 0 : PPS_CARRY_EDGE | PPS_CARRY_FIRST;
@@ -453,19 +453,19 @@ int mirisdr_get_pps (mirisdr_dev_t *p, mirisdr_pps_t *out)
            any more - it only says how much a handler is stalling. */
         double ke = t.sofs ? (fullc - t.full) / t.sofs : 0;
 
-        p->pps_seen = 1;
+        p->pps.seen = 1;
 
-        if (ke > 4.0 && ke < 60.0 && (p->pps_k_min <= 0 || ke < p->pps_k_min))
-            p->pps_k_min = ke;
+        if (ke > 4.0 && ke < 60.0 && (p->pps.k_min <= 0 || ke < p->pps.k_min))
+            p->pps.k_min = ke;
     }
-    if (!p->pps_seen || fullc <= 0) return -1;   /* no interval seen yet */
+    if (!p->pps.seen || fullc <= 0) return -1;   /* no interval seen yet */
 
     wrap = t.edge_sof == 0 ? PPS_CARRY_EDGE : PPS_CARRY_EDGE | PPS_CARRY_FIRST;
 
     if (!t.guard && (t.carry & wrap))
         t.guard = MIRISDR_PPS_GUARD_CARRY;
 
-    if (!t.guard && p->pps_src_sof && first >= MIRISDR_PPS_UFRAME_TURNS)
+    if (!t.guard && p->pps.src_sof && first >= MIRISDR_PPS_UFRAME_TURNS)
         t.guard = MIRISDR_PPS_GUARD_CARRY;
 
     if (!t.guard && (t.carry & PPS_CARRY_USB))
@@ -477,24 +477,24 @@ int mirisdr_get_pps (mirisdr_dev_t *p, mirisdr_pps_t *out)
 
     turns = first + MIRISDR_PPS_UFRAME_TURNS * t.edge_sof + MIRISDR_PPS_STREAM_TURNS;
 
-    at = p->pps_base + (int64_t) (edge * group)
+    at = p->pps.base + (int64_t) (edge * group)
        + (int64_t) ((turns * (double) group) / expect);
 
     /* once an edge, which repeated reads of it then share */
-    if (p->pps_src_sof)
+    if (p->pps.src_sof)
     {
-        if (!p->pps_chk_valid || (t.edges != p->pps_chk_edges) || (t.edge_packet != p->pps_chk_packet))
+        if (!p->pps.chk_valid || (t.edges != p->pps.chk_edges) || (t.edge_packet != p->pps.chk_packet))
         {
-            if (expect != p->pps_chk_expect) mirisdr_pps_checks_reset(p, expect);
+            if (expect != p->pps.chk_expect) mirisdr_pps_checks_reset(p, expect);
 
-            p->pps_chk_guard = (!t.guard && mirisdr_pps_grid(p, at, (((int) t.frame << 3) | t.microframe)
+            p->pps.chk_guard = (!t.guard && mirisdr_pps_grid(p, at, (((int) t.frame << 3) | t.microframe)
                                                                         & (MIRISDR_PPS_LABELS - 1)))
                              ? MIRISDR_PPS_GUARD_GRID : 0;
-            p->pps_chk_edges = t.edges;
-            p->pps_chk_packet = t.edge_packet;
-            p->pps_chk_valid = 1;
+            p->pps.chk_edges = t.edges;
+            p->pps.chk_packet = t.edge_packet;
+            p->pps.chk_valid = 1;
         }
-        if (!t.guard) t.guard = p->pps_chk_guard;
+        if (!t.guard) t.guard = p->pps.chk_guard;
     }
 
     memset(out, 0, sizeof *out);
@@ -503,20 +503,20 @@ int mirisdr_get_pps (mirisdr_dev_t *p, mirisdr_pps_t *out)
     out->trusted = !t.guard;
     out->guard   = t.guard;
     out->frame   = t.frame;
-    out->microframe = p->pps_src_sof ? t.microframe : 0;
+    out->microframe = p->pps.src_sof ? t.microframe : 0;
 
     /* any gap, one gap fill covered too: the device's count went on without the stream */
     {
-        uint64_t index = 0, gaps = p->pps_gaps0;
+        uint64_t index = 0, gaps = p->pps.gaps0;
         uint32_t addr = 0;
 
         mirisdr_pps_count(p, &index, &addr, &gaps);
-        if ((gaps != p->pps_gaps0) && (mirisdr_pps_reanchor(p) < 0)) return -1;
+        if ((gaps != p->pps.gaps0) && (mirisdr_pps_reanchor(p) < 0)) return -1;
     }
 
-    if (p->pps_stale && (out->edges != p->pps_edge0)) p->pps_stale = 0;
+    if (p->pps.stale && (out->edges != p->pps.edge0)) p->pps.stale = 0;
 
-    out->gapless = !p->pps_stale;
+    out->gapless = !p->pps.stale;
 
     /* Edge before the anchor? */
     if (at < 0) return -1;
