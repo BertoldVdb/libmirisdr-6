@@ -68,6 +68,11 @@ static int mirisdr_reserved_set (const uint32_t *r, size_t n)
 #define MIRISDR_RESERVED_SET(s) mirisdr_reserved_set((s).reserved, sizeof (s).reserved / sizeof (s).reserved[0])
 #define MIRISDR_RESERVED_MSG    "%s sets fields this libmirisdr does not have: the program needs a newer one\n"
 
+/* The flags this library knows. Another one set is refused like a reserved field */
+#define MIRISDR_LIST_FLAGS      (MIRISDR_LIST_PROBE_SERIAL)
+#define MIRISDR_OPEN_FLAGS      (MIRISDR_OPEN_PROBE_SERIAL | MIRISDR_OPEN_ROM_ON_CLOSE)
+#define MIRISDR_FLAGS_MSG       "%s sets flags 0x%x this libmirisdr does not have: the program needs a newer one\n"
+
 #include "reg.c"
 #include "debug.c"
 #include "gpio.c"
@@ -122,7 +127,8 @@ static int mirisdr_setup (mirisdr_dev_t **out_dev, mirisdr_dev_t *dev) {
         dev->driver_active = 0;
     }
 
-    if ((r = libusb_claim_interface(dev->dh, 0)) < 0) {
+    /* nothing is sent before the interface is held, see mirisdr_claim_wait() */
+    if ((r = mirisdr_claim_wait(dev->dh, MIRISDR_CLAIM_WAIT_MS)) < 0) {
         fprintf(stderr, "failed to claim miri usb device %u with code %d: %s\n", dev->index, r, libusb_error_name(r));
         if (r == LIBUSB_ERROR_BUSY) {
             fprintf(stderr, "Verify that the SDRplay background service is not running by `sudo systemctl stop sdrplay` and try again.\n");
@@ -220,8 +226,10 @@ failed:
     return -1;
 }
 
+/* probe: a serial none declares is looked for in the EEPROMs, waiting that many ms for a
+   receiver held elsewhere, see mirisdr_pick() */
 static int mirisdr_open_raw (mirisdr_dev_t **p, uint32_t index, const char *serial, const char *usb_port,
-                             int external_tuner, uint8_t gpio_in, int flavour) {
+                             int probe, int external_tuner, uint8_t gpio_in, int flavour) {
     mirisdr_dev_t *dev = NULL;
     libusb_device **list, *device = NULL;
     ssize_t i_max;
@@ -253,7 +261,7 @@ static int mirisdr_open_raw (mirisdr_dev_t **p, uint32_t index, const char *seri
         goto failed;
     }
 
-    device = mirisdr_pick(list, i_max, index, serial, usb_port, &at);
+    device = mirisdr_pick(list, i_max, index, serial, usb_port, probe, NULL, &at);
     dev->index = (uint32_t) at;
 
     /* no device found */
@@ -266,7 +274,7 @@ static int mirisdr_open_raw (mirisdr_dev_t **p, uint32_t index, const char *seri
     }
 
     /* open the device */
-    if ((r = libusb_open(device, &dev->dh)) < 0) {
+    if ((r = mirisdr_open_wait(device, &dev->dh, MIRISDR_CLAIM_WAIT_MS)) < 0) {
         libusb_free_device_list(list, 1);
         fprintf( stderr, "failed to open miri usb device %u with code %d\n", dev->index, r);
         goto failed;
@@ -349,6 +357,9 @@ int mirisdr_open_fd (mirisdr_dev_t **p, int fd) {
 }
 
 int mirisdr_close (mirisdr_dev_t *p) {
+    mirisdr_fw_path_t path;
+    int rom = 0;
+
     if (!p) goto failed;
 
     /* stop the async read right away */
@@ -393,10 +404,19 @@ int mirisdr_close (mirisdr_dev_t *p) {
             update_reg_8(p);
         }
 
+        /* MIRISDR_OPEN_ROM_ON_CLOSE: asked here, for the systems that say nothing to the
+           receiver when its interface is released */
+        if (p->rom_on_close)
+        {
+            rom = p->rom_on_close;
+            mirisdr_fw_path_of(p, &path);
+            mirisdr_reboot(p, MIRISDR_BOOT_ROM);
+        }
+
         libusb_release_interface(p->dh, 0);
 
 #ifdef DETACH_KERNEL_DRIVER
-        if (p->driver_active) {
+        if (p->driver_active && !rom) {
             if (!libusb_attach_kernel_driver(p->dh, 0))
                 fprintf(stderr, "Reattached kernel driver\n");
             else
@@ -439,6 +459,10 @@ int mirisdr_close (mirisdr_dev_t *p) {
     mirisdr_xfer_lock_destroy(p);
     free(p);
 
+    /* until it is back on its ROM, as after the reboot of a firmware load: a list or an open
+       right after this finds it */
+    if ((rom == 2) && path.valid) mirisdr_fw_wait(&path, 0);
+
     return 0;
 
 failed:
@@ -461,6 +485,9 @@ int mirisdr_reset (mirisdr_dev_t *p) {
         fprintf( stderr, "failed to reset miri usb device %u with code %d\n", p->index, r);
         goto failed;
     }
+
+    /* the firmware forgets it at a bus reset */
+    if (p->rom_on_close) mirisdr_rom_arm_fw(p);
 
     return 0;
 

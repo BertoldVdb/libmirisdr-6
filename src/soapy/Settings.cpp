@@ -46,6 +46,19 @@ static bool isTrue(const std::string &v)
     return l == "true" || l == "1" || l == "on" || l == "yes";
 }
 
+/* A setting by the name another module has for it: SoapySDRPlay3's biasT_ctrl is biastee */
+static std::string settingKey(const std::string &key)
+{
+    return key == "biasT_ctrl" ? "biastee" : key;
+}
+
+/* the notch a setting names, 0 for any other setting */
+static int notchBit(const std::string &key)
+{
+    return key == "fm_notch" ? MIRISDR_NOTCH_FM : key == "mw_notch" ? MIRISDR_NOTCH_MW :
+           key == "dab_notch" ? MIRISDR_NOTCH_DAB : 0;
+}
+
 /* A direct sampling setting: off, on or auto (true and false as on and off), -1 otherwise */
 static int parseDs(const std::string &v)
 {
@@ -96,7 +109,7 @@ uint32_t SoapyMiriSDR::fixedIf(void) const
 
 SoapyMiriSDR::SoapyMiriSDR(const SoapySDR::Kwargs &args):
     dev(nullptr), flavour(MIRISDR_HW_DEFAULT), ifFreq(0), ifMode("auto"), converters(MIRISDR_IQ_BOTH),
-    baseband(true), wantRate(2048000), wantBw{ 0, 0 }, argBw(0), bandGainRanges(false),
+    baseband(true), wantRate(2048000), wantBw{ 0, 0 }, wantStage{}, argBw(0), bandGainRanges(false),
     reportOn(false), reportDepth(0), rateMin(0), rateMax(0),
     stopping(false), rxDone(true), rxEnded(false), rxResult(0), outFormat(0),
     ringHead(0), ringTail(0), ringCount(0), dropPending(false), pairOpen(false), slotPos(0), gapPos(0),
@@ -111,6 +124,9 @@ SoapyMiriSDR::SoapyMiriSDR(const SoapySDR::Kwargs &args):
     mirisdr_open_config_default(&cfg);
     if (args.count("serial")) cfg.serial = args.at("serial").c_str();
     if (args.count("usb_port")) cfg.usb_port = args.at("usb_port").c_str();
+    /* a serial listed from an EEPROM is found there again */
+    if (soapyMiriSDRProbeSerial(args)) cfg.flags |= MIRISDR_OPEN_PROBE_SERIAL;
+    if (soapyMiriSDRRomOnClose(args)) cfg.flags |= MIRISDR_OPEN_ROM_ON_CLOSE;
 
     if (mirisdr_open_ex(&dev, &cfg) < 0 || !dev)
         throw std::runtime_error("mirisdr: could not open the device");
@@ -172,20 +188,31 @@ SoapyMiriSDR::SoapyMiriSDR(const SoapySDR::Kwargs &args):
     tc.gain.total = 40;
     /* the RSPdx-R2 samples the antenna directly where the band fits under its 2 MHz low
        pass, unless the device string says otherwise */
-    if (caps[0].direct_sampling)
-    {
-        int ds = args.count("direct_sampling") ? parseDs(args.at("direct_sampling")) : MIRISDR_DS_AUTO;
-        if (ds < 0)
-        {
-            SoapySDR_logf(SOAPY_SDR_ERROR, "mirisdr: direct_sampling %s is not off, on or auto", args.at("direct_sampling").c_str());
-            ds = MIRISDR_DS_AUTO;
-        }
-        tc.frontend.direct_sampling = ds;
-    }
+    if (caps[0].direct_sampling) tc.frontend.direct_sampling = MIRISDR_DS_AUTO;
     applyTune(tc);
 
     probeRates();
     configure(wantRate);
+
+    /* Every other setting may come with the device too, for programs that only take a string.
+       The IF settings are in force already, taken together above. One this receiver does not
+       have is said, as nothing else would tell */
+    {
+        const SoapySDR::ArgInfoList have = getSettingInfo();
+
+        for (const auto &kv : args)
+        {
+            const std::string key = settingKey(kv.first);
+            bool offered = false;
+
+            if (key == "if_freq" || key == "converters" || key == "baseband") continue;
+            for (const auto &a : have) offered = offered || (a.key == key);
+            if (offered) writeSetting(key, kv.second);
+            else if (key == "biastee" || key == "direct_sampling" || key == "port_tie" || key == "ref_out" || notchBit(key))
+                SoapySDR_logf(SOAPY_SDR_WARNING, "mirisdr: %s in the device string, but this receiver has no such setting",
+                              kv.first.c_str());
+        }
+    }
 
     } catch (...) {
         mirisdr_close(dev);
@@ -246,10 +273,32 @@ bool SoapyMiriSDR::applyStream(const mirisdr_stream_config_t &cfg, bool strict)
 void SoapyMiriSDR::applyTune(const mirisdr_tune_config_t &cfg)
 {
     std::lock_guard<std::recursive_mutex> lock(devMutex);
+    mirisdr_tune_config_t c = cfg;
+    StageWant &w = wantStage[tunerSel];
 
-    if (mirisdr_tune(dev, tunerSel, &cfg, NULL) < 0)
+    /* a tune that leaves the gain alone: the stages asked by name, as its band has them.
+       Set again only where that differs from what the receiver has */
+    if (c.gain.mode == MIRISDR_GAIN_KEEP && w.set)
+    {
+        const StageRanges sr = stageRanges(c);
+        mirisdr_gain_config_t g = w.sent;
+
+        if (sr.valid) stagesFor(w, sr, g);
+        if (g.amp_bypass != w.sent.amp_bypass || g.lna != w.sent.lna || g.mixer != w.sent.mixer ||
+            g.mixbuffer != w.sent.mixbuffer || g.baseband != w.sent.baseband)
+        {
+            c.gain = g;
+            c.gain.mode = MIRISDR_GAIN_STAGES;
+        }
+    }
+
+    if (mirisdr_tune(dev, tunerSel, &c, NULL) < 0)
+    {
         SoapySDR_logf(SOAPY_SDR_ERROR, "mirisdr: tune refused (%u Hz, IF %u, bandwidth %u)",
-                      cfg.frequency, cfg.if_freq, cfg.bandwidth);
+                      c.frequency, c.if_freq, c.bandwidth);
+        return;
+    }
+    if (c.gain.mode == MIRISDR_GAIN_STAGES) w.sent = c.gain;
 }
 
 /* the rates the library takes for one tuner without baseband */
@@ -690,15 +739,32 @@ SoapySDR::Range SoapyMiriSDR::attRange(void) const
     return SoapySDR::Range(-c.attenuator[c.attenuator_count - 1], 0, step);
 }
 
+/* The most each stage reaches in any band: the LNA below band IV/V, the mixbuffer on
+   AM2, which never run together. The mixbuffer is 0 or 24 dB on AM2. The Hi-Z (the RSPduo's
+   and the RSP2's) runs on AM1, which steps it by 6 up to 18, so a channel with a Hi-Z steps by 6. The board's
+   amplifier, its best band's, comes from the library */
+#define MAX_LNA                 24
+#define MAX_MIX                 19
+#define MAX_MIXBUF              24
+#define MAX_BB                  59
+
 SoapyMiriSDR::StageRanges SoapyMiriSDR::stageRanges(void) const
 {
     std::lock_guard<std::recursive_mutex> lock(devMutex);
     mirisdr_tune_config_t tc;
-    mirisdr_tune_result_t r;
-    StageRanges sr = { 0, 0, 0, 0, { 0 } };
-    int base, v;
 
     mirisdr_get_tune(dev, tunerSel, &tc, NULL);
+    return stageRanges(tc);
+}
+
+/* in the band of a tune, which need not be the one in force */
+SoapyMiriSDR::StageRanges SoapyMiriSDR::stageRanges(mirisdr_tune_config_t tc) const
+{
+    std::lock_guard<std::recursive_mutex> lock(devMutex);
+    mirisdr_tune_result_t r;
+    StageRanges sr = { 0, 0, 0, 0, { 0 }, false };
+    int base, v;
+
     tc.gain.mode = MIRISDR_GAIN_STAGES;
     tc.gain.lna = tc.gain.mixer = tc.gain.mixbuffer = tc.gain.baseband = 0;
     tc.gain.amp_bypass = 1;
@@ -732,8 +798,25 @@ SoapyMiriSDR::StageRanges SoapyMiriSDR::stageRanges(void) const
     }
     /* none where it adds nothing: under direct sampling only the LNA counts */
     sr.baseband = (v > 0 && r.gain.total == base) ? 0 : v;
+    sr.valid = true;
 
     return sr;
+}
+
+/* the stages a band takes for what was asked: a stage it lacks off, the mixbuffer and the
+   baseband at the nearest it has */
+void SoapyMiriSDR::stagesFor(const StageWant &w, const StageRanges &sr, mirisdr_gain_config_t &g) const
+{
+    int best = 0;
+
+    for (int m : sr.mixbuffer)
+        if (std::abs(m - w.mixbuffer) < std::abs(best - w.mixbuffer)) best = m;
+
+    g.amp_bypass = (w.amp && sr.amp > 0) ? 0 : 1;
+    g.lna = (w.lna && sr.lna > 0) ? 1 : 0;
+    g.mixer = (w.mixer && sr.mixer > 0) ? 1 : 0;
+    g.mixbuffer = best;
+    g.baseband = std::min(std::max(w.baseband, 0), sr.baseband);
 }
 
 void SoapyMiriSDR::setGain(const int direction, const size_t channel, const double value)
@@ -742,6 +825,9 @@ void SoapyMiriSDR::setGain(const int direction, const size_t channel, const doub
     SOAPY_MIRISDR_CHANNEL(channel);
     std::lock_guard<std::recursive_mutex> lock(devMutex);
     mirisdr_tune_config_t tc;
+
+    /* the library splits a total over the stages, for each band again */
+    wantStage[tunerSel].set = false;
 
     mirisdr_get_tune(dev, tunerSel, &tc, NULL);
     tc.gain.mode = MIRISDR_GAIN_TOTAL;
@@ -756,7 +842,7 @@ void SoapyMiriSDR::setGain(const int direction, const size_t channel, const std:
     std::lock_guard<std::recursive_mutex> lock(devMutex);
     mirisdr_tune_config_t tc;
     mirisdr_tune_result_t r;
-    int v = (int) std::lround(value), best, d;
+    int v = (int) std::lround(value);
 
     if (name == "ATT" && cap().attenuator_count > 1)
     {
@@ -765,31 +851,41 @@ void SoapyMiriSDR::setGain(const int direction, const size_t channel, const std:
     }
 
     StageRanges sr = stageRanges();
+    StageWant &w = wantStage[tunerSel];
+    StageWant was = w;
 
-    /* the stages in force, then this one changed */
     mirisdr_get_tune(dev, tunerSel, &tc, &r);
-    tc.gain = r.gain;
-    tc.gain.mode = MIRISDR_GAIN_STAGES;
 
-    if (name == "AMP") tc.gain.amp_bypass = (sr.amp > 0 && 2 * v >= sr.amp) ? 0 : 1;
-    else if (name == "LNA") tc.gain.lna = (sr.lna > 0 && 2 * v >= sr.lna) ? 1 : 0;
-    else if (name == "MIX") tc.gain.mixer = (sr.mixer > 0 && 2 * v >= sr.mixer) ? 1 : 0;
-    else if (name == "BB") tc.gain.baseband = std::min(std::max(v, 0), sr.baseband);
-    else if (name == "MIXBUF")
+    /* after a total: the stages in force are the ones asked, then this one changed */
+    if (!w.set)
     {
-        best = 0;
-        for (int m : sr.mixbuffer)
-        {
-            d = std::abs(m - v);
-            if (d < std::abs(best - v)) best = m;
-        }
-        tc.gain.mixbuffer = best;
+        w.amp = !r.gain.amp_bypass;
+        w.lna = r.gain.lna != 0;
+        w.mixer = r.gain.mixer != 0;
+        w.mixbuffer = r.gain.mixbuffer;
+        w.baseband = r.gain.baseband;
     }
+
+    /* a stage that is on or off: on from half its gain, the band's, or where the band has
+       none the most the range offers */
+    auto on = [v](int band, int most) { return v > 0 && 2 * v >= (band > 0 ? band : most); };
+
+    if (name == "AMP") w.amp = on(sr.amp, cap().amp_max_db);
+    else if (name == "LNA") w.lna = on(sr.lna, cap().direct_sampling ? cap().ds_lna_db : MAX_LNA);
+    else if (name == "MIX") w.mixer = on(sr.mixer, MAX_MIX);
+    else if (name == "BB") w.baseband = std::max(v, 0);
+    else if (name == "MIXBUF") w.mixbuffer = std::max(v, 0);
     else
     {
+        w = was;
         SoapySDR_logf(SOAPY_SDR_ERROR, "mirisdr: no gain %s", name.c_str());
         return;
     }
+    w.set = true;
+
+    tc.gain = r.gain;
+    stagesFor(w, sr, tc.gain);
+    tc.gain.mode = MIRISDR_GAIN_STAGES;
     applyTune(tc);
 }
 
@@ -821,15 +917,6 @@ double SoapyMiriSDR::getGain(const int direction, const size_t channel, const st
     if (name == "MIX") return r.gain.mixer ? sr.mixer : 0;
     return 0;
 }
-
-/* The most each stage reaches in any band: the LNA below band IV/V, the mixbuffer on
-   AM2, which never run together. The mixbuffer is 0 or 24 dB on AM2. The Hi-Z (the RSPduo's
-   and the RSP2's) runs on AM1, which steps it by 6 up to 18, so a channel with a Hi-Z steps by 6. The board's
-   amplifier, its best band's, comes from the library */
-#define MAX_LNA                 24
-#define MAX_MIX                 19
-#define MAX_MIXBUF              24
-#define MAX_BB                  59
 
 SoapySDR::Range SoapyMiriSDR::getGainRange(const int direction, const size_t channel) const
 {
@@ -972,8 +1059,10 @@ void SoapyMiriSDR::setSampleRate(const int direction, const size_t channel, cons
     std::lock_guard<std::recursive_mutex> lock(devMutex);
     const uint32_t was = wantRate;
 
-    /* refused: the rate it had, and the IF that goes with it */
+    /* refused: the rate it had, and the IF that goes with it. A rate of 0, which some
+       programs send before the user has picked one, is taken as 2 Msps */
     wantRate = (uint32_t) std::llround(rate);
+    if (!wantRate) wantRate = 2000000;
     if (configure(wantRate)) return;
     wantRate = was;
     configure(wantRate);
@@ -1313,16 +1402,11 @@ void SoapyMiriSDR::setIfSetting(const std::string &key, const std::string &value
     configure(wantRate);
 }
 
-static int notchBit(const std::string &key)
-{
-    return key == "fm_notch" ? MIRISDR_NOTCH_FM : key == "mw_notch" ? MIRISDR_NOTCH_MW :
-           key == "dab_notch" ? MIRISDR_NOTCH_DAB : 0;
-}
-
-void SoapyMiriSDR::writeSetting(const std::string &key, const std::string &value)
+void SoapyMiriSDR::writeSetting(const std::string &name, const std::string &value)
 {
     ReportScope report_(*this);
     std::lock_guard<std::recursive_mutex> lock(devMutex);
+    const std::string key = settingKey(name);
 
     tunerSel = 0;
 
@@ -1388,9 +1472,10 @@ void SoapyMiriSDR::writeSetting(const std::string &key, const std::string &value
     else SoapySDR_logf(SOAPY_SDR_ERROR, "mirisdr: no setting %s", key.c_str());
 }
 
-std::string SoapyMiriSDR::readSetting(const std::string &key) const
+std::string SoapyMiriSDR::readSetting(const std::string &name) const
 {
     std::lock_guard<std::recursive_mutex> lock(devMutex);
+    const std::string key = settingKey(name);
     mirisdr_stream_config_t c;
 
     tunerSel = 0;

@@ -124,6 +124,52 @@ static int mirisdr_ds_lna_db (const mirisdr_dev_t *p)
     return p->ds_lna_db ? p->ds_lna_db : MIRISDR_DS_LNA_DB;
 }
 
+/* Interface 0 tells the programs on a receiver apart: whoever holds it has the receiver, and
+   nothing is sent to a receiver before it is held. The system refuses a second holder, though
+   not what a program sends without holding it, so the rule is what makes it a lock. Another
+   program holds it for a moment while it reads a serial from the EEPROM (mirisdr_probe_serial),
+   so a busy one is waited for a little while: an open far longer than such a read takes, a
+   listing only long enough for another read to end. Asked again every few ms, well within the
+   5 to 10 ms a read takes: with several programs reading in turn, one asking less often could
+   miss every gap between them */
+#define MIRISDR_CLAIM_WAIT_MS   500
+#define MIRISDR_PROBE_WAIT_MS   300
+#define MIRISDR_CLAIM_STEP_MS   2
+
+/* held by another program. Windows gives the device to one program at a time and refuses the
+   others access, at the open already */
+static int mirisdr_usb_busy (int r)
+{
+#ifdef _WIN32
+    if (r == LIBUSB_ERROR_ACCESS) return 1;
+#endif
+    return r == LIBUSB_ERROR_BUSY;
+}
+
+static int mirisdr_open_wait (libusb_device *d, libusb_device_handle **dh, int wait_ms)
+{
+    int r, waited;
+
+    for (waited = 0; ; waited += MIRISDR_CLAIM_STEP_MS)
+    {
+        r = libusb_open(d, dh);
+        if (!mirisdr_usb_busy(r) || (waited >= wait_ms)) return r;
+        usleep(MIRISDR_CLAIM_STEP_MS * 1000);
+    }
+}
+
+static int mirisdr_claim_wait (libusb_device_handle *dh, int wait_ms)
+{
+    int r, waited;
+
+    for (waited = 0; ; waited += MIRISDR_CLAIM_STEP_MS)
+    {
+        r = libusb_claim_interface(dh, 0);
+        if (!mirisdr_usb_busy(r) || (waited >= wait_ms)) return r;
+        usleep(MIRISDR_CLAIM_STEP_MS * 1000);
+    }
+}
+
 /* the USB devices, or -1 with nothing to free when libusb cannot start or list them */
 static ssize_t mirisdr_list_devices (libusb_context **ctx, libusb_device ***list)
 {
@@ -372,24 +418,52 @@ static int mirisdr_pick_is (libusb_device *d, const struct libusb_device_descrip
     return *have && !strcmp(have, want);
 }
 
-/* The receiver an open or a lookup takes from one device list. */
+/* The serial in the EEPROM of a receiver running from ROM, see firmware.c */
+static int mirisdr_probe_serial (libusb_device *d, const struct libusb_device_descriptor *dd, int wait_ms,
+                                 char *out, int len);
+
+/* The receiver an open or a lookup takes from one device list. In turn: the one in the port
+   given as serial, the one declaring the serial, with probe the one running from ROM whose
+   EEPROM holds the serial (the one in usb_port first: mostly it is that one, and the others
+   are then not opened), and last the one in usb_port. probe is how long, in ms, a receiver
+   held elsewhere is waited for, 0 for no reading of EEPROMs. probed (may be NULL,
+   MIRISDR_FW_SERIAL_MAX + 1 bytes) gets the serial when the EEPROM gave it, else it is left
+   empty */
 static libusb_device *mirisdr_pick (libusb_device **list, ssize_t n, uint32_t index,
-                                    const char *serial, const char *usb_port, int *at)
+                                    const char *serial, const char *usb_port, int probe, char *probed, int *at)
 {
     struct libusb_device_descriptor dd;
     char own[256];
     ssize_t i;
-    int j, pass, hit;
+    int j, pass, hit, here, other = 0;
 
-    for (pass = 0; pass < 3; pass++) {
-        if ((pass < 2) ? !serial : !usb_port) continue;
+    if (probed) *probed = 0;
+
+    /* a serial longer than the EEPROM read gives is in none */
+    if (serial && (strlen(serial) > MIRISDR_FW_SERIAL_MAX)) probe = 0;
+
+    for (pass = 0; pass < 5; pass++) {
+        if ((pass < 4) ? !serial : !usb_port) continue;
+        if (((pass == 2) || (pass == 3)) && !probe) continue;
+        if ((pass == 2) && !usb_port) continue;
 
         for (i = 0, j = 0; i < n; i++) {
             if (libusb_get_device_descriptor(list[i], &dd) < 0) continue;
             if (!mirisdr_device_get(dd.idVendor, dd.idProduct)) continue;
 
             if (pass < 2) hit = mirisdr_pick_is(list[i], &dd, pass, serial);
-            else hit = mirisdr_pick_is(list[i], &dd, 0, usb_port)
+            else if (pass < 4) {
+                /* pass 2 the receiver in usb_port, pass 3 the others */
+                here = usb_port && mirisdr_pick_is(list[i], &dd, 0, usb_port);
+                hit = 0;
+                if (((pass == 2) ? here : !here) && mirisdr_probe_serial(list[i], &dd, probe, own, sizeof own)) {
+                    hit = !strcmp(own, serial);
+                    /* the one in usb_port is another receiver: not taken for its port below */
+                    if (!hit && here) other = 1;
+                    if (hit && probed) strcpy(probed, own);
+                }
+            }
+            else hit = !other && mirisdr_pick_is(list[i], &dd, 0, usb_port)
                        && (!serial || !mirisdr_device_serial(list[i], dd.iSerialNumber, own, sizeof own));
 
             if (hit) {
@@ -429,7 +503,7 @@ int mirisdr_get_index_by_serial_port (const char *serial, const char *usb_port)
 
     if ((i_max = mirisdr_list_devices(&ctx, &list)) < 0) return -1;
 
-    if (!mirisdr_pick(list, i_max, 0, serial, usb_port, &found)) found = -1;
+    if (!mirisdr_pick(list, i_max, 0, serial, usb_port, 0, NULL, &found)) found = -1;
 
     libusb_free_device_list(list, 1);
     libusb_exit(ctx);
@@ -437,16 +511,29 @@ int mirisdr_get_index_by_serial_port (const char *serial, const char *usb_port)
     return found;
 }
 
-/* one receiver's entry */
-static void mirisdr_receiver_of (libusb_device *d, const struct libusb_device_descriptor *dd, mirisdr_receiver_t *r)
+/* one receiver's entry. probe: a serial it does not declare is read from its EEPROM, or
+   taken from probed when the pick has read it already */
+static void mirisdr_receiver_of (libusb_device *d, const struct libusb_device_descriptor *dd, int probe,
+                                 const char *probed, mirisdr_receiver_t *r)
 {
     mirisdr_device_t *board;
-    char port[256];
+    char port[256], own[MIRISDR_FW_SERIAL_MAX + 1];
 
     memset(r, 0, sizeof *r);
     r->vid = dd->idVendor;
     r->pid = dd->idProduct;
-    if (!mirisdr_device_serial(d, dd->iSerialNumber, r->serial, sizeof r->serial)) *r->serial = 0;
+    if (!mirisdr_device_serial(d, dd->iSerialNumber, r->serial, sizeof r->serial))
+    {
+        *r->serial = 0;
+        *own = 0;
+        if (probed && *probed) snprintf(own, sizeof own, "%s", probed);
+        else if (probe && !mirisdr_probe_serial(d, dd, probe, own, sizeof own)) *own = 0;
+        if (*own)
+        {
+            strcpy(r->serial, own);
+            r->serial_from_eeprom = 1;
+        }
+    }
     mirisdr_port_name(d, port);
     if (strlen(port) < sizeof r->usb_port) strcpy(r->usb_port, port);
     if ((board = mirisdr_board_get(dd->idVendor, dd->idProduct, r->serial)))
@@ -458,23 +545,42 @@ static void mirisdr_receiver_of (libusb_device *d, const struct libusb_device_de
     }
 }
 
-int mirisdr_list_receivers (const char *serial, const char *usb_port, mirisdr_receiver_t *out, int max)
+void mirisdr_list_config_default (mirisdr_list_config_t *cfg)
+{
+    if (cfg) memset(cfg, 0, sizeof *cfg);
+}
+
+int mirisdr_list_receivers_ex (const mirisdr_list_config_t *cfg, mirisdr_receiver_t *out, int max)
 {
     struct libusb_device_descriptor dd;
     libusb_context *ctx;
     libusb_device **list, *one;
+    char probed[MIRISDR_FW_SERIAL_MAX + 1];
     ssize_t i, i_max;
-    int n = 0;
+    int n = 0, probe;
 
-    if ((max < 0) || (max && !out)) return -1;
+    if (!cfg || (max < 0) || (max && !out)) return -1;
+    if (MIRISDR_RESERVED_SET(*cfg))
+    {
+        fprintf(stderr, "libmirisdr: " MIRISDR_RESERVED_MSG, "the list config");
+        return -1;
+    }
+    if (cfg->flags & ~MIRISDR_LIST_FLAGS)
+    {
+        fprintf(stderr, "libmirisdr: " MIRISDR_FLAGS_MSG, "the list config", cfg->flags & ~MIRISDR_LIST_FLAGS);
+        return -1;
+    }
+    probe = (cfg->flags & MIRISDR_LIST_PROBE_SERIAL) ? MIRISDR_PROBE_WAIT_MS : 0;
+
     if ((i_max = mirisdr_list_devices(&ctx, &list)) < 0) return -1;
 
     /* asked for: the one the open takes, by its rules */
-    if (serial || usb_port)
+    if (cfg->serial || cfg->usb_port)
     {
-        if ((one = mirisdr_pick(list, i_max, 0, serial, usb_port, NULL)) && (libusb_get_device_descriptor(one, &dd) == 0))
+        if ((one = mirisdr_pick(list, i_max, 0, cfg->serial, cfg->usb_port, probe, probed, NULL))
+            && (libusb_get_device_descriptor(one, &dd) == 0))
         {
-            if (max) mirisdr_receiver_of(one, &dd, out);
+            if (max) mirisdr_receiver_of(one, &dd, probe, probed, out);
             n = 1;
         }
     }
@@ -482,7 +588,7 @@ int mirisdr_list_receivers (const char *serial, const char *usb_port, mirisdr_re
     {
         if (libusb_get_device_descriptor(list[i], &dd) < 0) continue;
         if (!mirisdr_device_get(dd.idVendor, dd.idProduct)) continue;
-        if (n < max) mirisdr_receiver_of(list[i], &dd, &out[n]);
+        if (n < max) mirisdr_receiver_of(list[i], &dd, probe, NULL, &out[n]);
         n++;
     }
 
@@ -490,6 +596,17 @@ int mirisdr_list_receivers (const char *serial, const char *usb_port, mirisdr_re
     libusb_exit(ctx);
 
     return n;
+}
+
+int mirisdr_list_receivers (const char *serial, const char *usb_port, mirisdr_receiver_t *out, int max)
+{
+    mirisdr_list_config_t cfg;
+
+    mirisdr_list_config_default(&cfg);
+    cfg.serial = serial;
+    cfg.usb_port = usb_port;
+
+    return mirisdr_list_receivers_ex(&cfg, out, max);
 }
 
 int mirisdr_get_index_by_serial (const char *serial)

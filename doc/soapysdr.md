@@ -1,7 +1,7 @@
 Using libmirisdr receivers with SoapySDR
 ========================================
 
-The `mirisdr` SoapySDR module lets programs that use SoapySDR work with libmirisdr receivers. Examples are SDR++, CubicSDR, GQRX, GNU Radio and your own programs. It supports boards with the MSi2500 and MSi001 chips, such as the SDRplay RSP1, RSP1A, RSP1B, RSP2, RSPdx, RSPdx-R2, nRSP-ST and RSPduo. The RSPdx and nRSP-ST work as an RSPdx-R2.
+The `mirisdr` SoapySDR module lets programs that use SoapySDR work with libmirisdr receivers. Examples are SDR++, CubicSDR, GQRX, GNU Radio and your own programs. It supports boards with the MSi2500 and MSi001 chips, such as the SDRplay RSP1, RSP1A, RSP1B, RSP2, RSPdx(-R2), nRSP-ST and RSPduo. The nRSP-ST works as an RSPdx(-R2).
 
 This guide explains how to install the module, how to pick it, and what each setting does.
 
@@ -36,10 +36,12 @@ The device string can hold these keys:
   - `driver=mirisdr`: this module.
   - `serial=...`: a receiver by its serial, when more than one is plugged in. `SoapySDRUtil --find` lists the serials.
   - `usb_port=...`: a receiver by the USB port it is in, such as `1:3`. `SoapySDRUtil --find` lists the port of every receiver.
-  - `if_freq`, `converters`, `baseband` and `direct_sampling`: the settings of the same name, described below. They are here for programs that only let you type a device string. An example is `driver=mirisdr,if_freq=450000`.
+  - Any setting from the table under Settings below, such as `if_freq`, `transfer` or `biastee`. They are here for programs that only let you type a device string, and are applied when the receiver is opened. An example is `driver=mirisdr,if_freq=450000,biastee=true`. A setting the receiver does not have, such as `biastee` on a board without a bias-T, logs a warning and is ignored. The notches given here are channel 0's.
   - `bandwidth`: the tuner filter in Hz, for programs such as GQRX that have no field for it. See Bandwidth below.
   - `gain_ranges`: `max`, the default, or `band`. See Gain below.
   - `report`: `true` logs what the receiver runs, each time it changes. See Seeing what the receiver runs below.
+  - `probe_serial`: `true` or `false`, `true` by default. Whether the serial of a receiver running from its ROM is read from its EEPROM. See Receivers without firmware in their EEPROM below.
+  - `rom_on_close`: `true` or `false`, `false` by default. `true` puts the receiver back on its ROM when the program closes it, as after a power cycle, instead of leaving the firmware running. On Linux this also happens when the program ends without closing it. Closing then takes about a second, and the next open loads the firmware again. The receiver is then listed without a serial, so use it together with `probe_serial=true` to open by serial. The build option `-DSOAPY_ROM_ON_CLOSE=ON` makes it the module's default, which `rom_on_close=false` in the device string then switches off.
 
 When opened, the receiver is at 100 MHz with a total gain of 40 dB and a rate of 2.048 Msps.
 
@@ -47,36 +49,53 @@ Found by `serial=` or `usb_port=`, a receiver is listed under those same keys, a
 
 <h4>Receivers in use</h4>
 
-Listing receivers and finding one does not open them, so a receiver another program is using is listed with its serial too, and that program is not disturbed. The module opens only the receiver it is asked to open. The serial is the copy the system keeps from when the receiver was plugged in. libusb 1.0.30 and later give it on Linux, Windows and macOS. With an older libusb it is read from `/sys/bus/usb/devices` on Linux. Elsewhere the module still opens each receiver for a moment to read its serial: one in use may then not open and is listed without one, and a program opening it at that same moment may fail. `usb_port=` opens nothing anywhere.
+Listing receivers and finding one does not open a receiver that runs a firmware, so one another program is using is listed with its serial too, and that program is not disturbed. Apart from the receiver it is asked to open, the module opens only receivers still on their ROM, for a moment, to read their serial (see Reading the serial from the EEPROM below). The serial of the others is the copy the system keeps from when the receiver was plugged in. libusb 1.0.30 and later give it on Linux, Windows and macOS. With an older libusb it is read from `/sys/bus/usb/devices` on Linux. Elsewhere the module still opens each receiver for a moment to read its serial: one in use may then not open and is listed without one, and a program opening it at that same moment may fail. With `usb_port=` no receiver that runs a firmware is opened anywhere.
 
 <h4>Receivers without firmware in their EEPROM</h4>
 
-Most receivers start from the ROM in the chip. libmirisdr loads its own firmware into them when it opens them. The ROM does not report a serial, and the module does not open/update every receiver just to list it. So until a receiver has been opened once, `SoapySDRUtil --find` lists it with only its place on the USB:
+Most receivers start from the ROM in the chip. libmirisdr loads its own firmware into them when it opens them. The ROM does not report a serial. An SDRplay or a Mirics TV stick has its serial in its EEPROM all the same, and the module reads it from there while listing. So `SoapySDRUtil --find` lists such a receiver with its serial before the first open:
 
+    serial = 2405278B60
     usb_port = 1:3
 
-That is bus 1, port 3. Behind a hub more ports follow, for example `1:2.4`. `usb_port=1:3` picks the receiver for as long as it stays in that port.
+It is the same serial the receiver reports after the first open. A device string with only `serial=...` also opens a receiver that is still on its ROM.
 
-After the first open the firmware keeps running until the receiver loses power. From then on its serial is listed too, whichever program opened it. A program that saved the device string with both keys, `serial=...,usb_port=1:3`, finds the receiver either way:
+`usb_port` is the receiver's place on the USB, here bus 1, port 3. Behind a hub more ports follow, for example `1:2.4`. `usb_port=1:3` picks the receiver for as long as it stays in that port. A receiver on its ROM whose serial cannot be read is listed with only its port. That is one with no serial in its EEPROM, one another program holds, or any of them when the reading is turned off.
 
-  - by its serial, in whatever port, while the firmware runs
-  - after a power cycle, back on its ROM without a serial, as the receiver in that port. A receiver there that reports another serial is not taken in its place.
+After the first open the firmware keeps running until the receiver loses power, unless `rom_on_close` is set. From then on the receiver reports its serial itself, whichever program opened it. A program that saved the device string with both keys, `serial=...,usb_port=1:3`, finds the receiver either way:
+
+  - by its serial, in whatever port
+  - when no receiver has that serial, as the receiver in that port, if it is on its ROM and no serial could be read from it. A receiver there with another serial is not taken in its place.
 
 Older versions listed the port as `serial=1:3`. That still finds the receiver, also once it reports its serial.
 
-To have a fixed serial from the moment it is plugged in, write the firmware into the receiver's EEPROM. [Firmware in the EEPROM](eeprom.md) explains how, and how to back up what is there first.
+To have the receiver report its serial itself from the moment it is plugged in, write the firmware into its EEPROM. [Firmware in the EEPROM](eeprom.md) explains how, and how to back up what is there first.
+
+<h4>Reading the serial from the EEPROM</h4>
+
+The module has to open a receiver on its ROM for a moment to read its serial. That takes about 10 ms for each such receiver and drives its GPIO pins. Receivers in use are kept out of it:
+
+  - Only a receiver that reports no manufacturer, product or serial is opened, which only the ROM does. One running a firmware is left alone.
+  - A receiver that another program holds is not read. It is listed with its port, after a wait of 300 ms. This covers a program using an older libmirisdr on the ROM. A receiver the Linux kernel's `msi2500` driver holds is not read either.
+  - A program that opens the receiver in the moment it is being read finds it busy. libmirisdr-6 waits for that. Other software may fail once.
+
+The reading is on by default. There are three ways to turn it off or on. The first one set decides:
+
+  - `probe_serial=true` or `probe_serial=false` in the device string, for listing as well as for opening. `SoapySDRUtil --find="driver=mirisdr,probe_serial=false"` is an example.
+  - The environment variable `MIRISDR_PROBE_SERIAL`, set to `1` or `0`. This also reaches programs that list receivers without a device string.
+  - The build option `-DSOAPY_PROBE_SERIAL=OFF`, which makes off the module's default.
 
 
 <h3>Frequency</h3>
 
 The module reports a range of 1 kHz to 2400 MHz, which is what the library accepts. TV sticks on the Mirics TV reference design, such as the Hauppauge WinTV 133559LF, report 45 to 1100 MHz, as they have no input outside it. The frequency you set is at 0 Hz in the samples, at every IF. You never need to add or subtract an IF yourself.
 
-There is one tuning element, called `RF`, and one antenna, called `RX`. The RSPdx-R2 has three antennas instead, `A`, `B` and `C`, with `A` the default. The RSP2 has `A`, `B`, `Hi-Z` (below 30 MHz) and `TEST`, the board's own test signal: an oscillator near 9.35 MHz with harmonics up to 2 GHz. The RSP1A has `RX` and `TEST`, its test oscillator at 1.59 MHz added to the antenna's signal. The RSPduo's channel 0 also has `Hi-Z`, its Hi-Z input, below 30 MHz.
+There is one tuning element, called `RF`, and one antenna, called `RX`. The RSPdx(-R2) has three antennas instead, `A`, `B` and `C`, with `A` the default. The RSP2 has `A`, `B`, `Hi-Z` (below 30 MHz) and `TEST`, the board's own test signal: an oscillator near 9.35 MHz with harmonics up to 2 GHz. The RSP1A has `RX` and `TEST`, its test oscillator at 1.59 MHz added to the antenna's signal. The RSPduo's channel 0 also has `Hi-Z`, its Hi-Z input, below 30 MHz.
 
 
 <h3>Sample rates</h3>
 
-How a rate is made depends on whether it is above or below 1.3 Msps.
+How a rate is made depends on whether it is above or below 1.3 Msps. A rate of 0 is taken as 2 Msps, as some programs ask for 0 before a rate is chosen.
 
 <h4>From 1.3 Msps up</h4>
 
@@ -140,18 +159,18 @@ Some programs, have no field for the filter. For those, put it in the device str
 
 <h3>Gain</h3>
 
-Set the gain as one total, from 0 to 102 dB on most bands, plus the board's amplifier on the RSP1B, RSPdx-R2 and RSPduo. The library splits it over the stages in the way that works best, with the front end first so the noise stays low. It does this again when you tune to another band.
+Set the gain as one total, from 0 to 102 dB on most bands, plus the board's amplifier on the RSP1B, RSPdx(-R2) and RSPduo. The library splits it over the stages in the way that works best, with the front end first so the noise stays low. It does this again when you tune to another band.
 
 The stages can also be set one by one:
 
-  - `ATT`: RSP1B, RSPdx-R2, RSPduo, RSP2 and RSP1A. The pads before the tuner, against strong signals, as a negative gain: 0, -6, -13 or -19 dB on the RSP1B, RSPduo and RSP1A, 0 to -36 dB in steps of 3 on the RSPdx-R2, and 0, -5, -11, -15 or -20 dB on the RSP2. Another value takes the nearest pad. In L band they attenuate less, and `ATT` reads back what they give there. A Hi-Z input has none. `ATT` is not part of the total: the total is the gain of the receiver's own chain, and setting it leaves the pads as they are. So with pads in, the stages add up to more than the total.
-  - `AMP`: RSP1B, RSPdx-R2, RSPduo and RSP1A. 0 or the full gain of the amplifier before the tuner in the band tuned, up to about 25 dB: from 30 MHz on the RSP1B and RSPdx-R2, from 55 MHz on the RSPduo (not on its Hi-Z) and the RSP1A. A total turns it on first, and bypasses it only below its own gain.
+  - `ATT`: RSP1B, RSPdx(-R2), RSPduo, RSP2 and RSP1A. The pads before the tuner, against strong signals, as a negative gain: 0, -6, -13 or -19 dB on the RSP1B, RSPduo and RSP1A, 0 to -36 dB in steps of 3 on the RSPdx(-R2), and 0, -5, -11, -15 or -20 dB on the RSP2. Another value takes the nearest pad. In L band they attenuate less, and `ATT` reads back what they give there. A Hi-Z input has none. `ATT` is not part of the total: the total is the gain of the receiver's own chain, and setting it leaves the pads as they are. So with pads in, the stages add up to more than the total.
+  - `AMP`: RSP1B, RSPdx(-R2), RSPduo and RSP1A. 0 or the full gain of the amplifier before the tuner in the band tuned, up to about 25 dB: from 30 MHz on the RSP1B and RSPdx(-R2), from 55 MHz on the RSPduo (not on its Hi-Z) and the RSP1A. A total turns it on first, and bypasses it only below its own gain.
   - `LNA`: 0 or its full gain, which is 24 dB on most bands, 7 dB in band IV/V and about 4 dB in L band. The AM inputs have none.
   - `MIX`: 0 or 19 dB.
   - `MIXBUF`: only where the receiver uses an AM input: below 55 MHz, and from 255 to 420 MHz through the up-converter (on the SDRplay plan, board 1, below 50 MHz only). 0 or 24 dB on AM input 2, which the 50 ohm ports use, and 0, 6, 12 or 18 dB on AM input 1, which only the Hi-Z inputs (the RSPduo's and the RSP2's) use.
   - `BB`: 0 to 59 dB.
 
-The ranges the module reports are the most each stage has in any band, because programs such as GQRX read them only once, when the device opens. A value the band you are tuned to cannot take gives the nearest one it can, and a stage the band does not have stays at 0. For ranges that follow the band, add `gain_ranges=band` to the device string. On a channel with a Hi-Z input (the RSPduo's channel 0, the RSP2) `MIXBUF` steps by 6: the Hi-Z takes 0, 6, 12 and 18, the 50 ohm ports 0 and 24. The RSPdx-R2's `LNA` reaches 37 dB with its direct sampling amplifier, and 24 dB on the tuner. There is no automatic gain control.
+The ranges the module reports are the most each stage has in any band, because programs such as GQRX read them only once, when the device opens. A value the band you are tuned to cannot take gives the nearest one it can, and a stage the band does not have stays at 0. For ranges that follow the band, add `gain_ranges=band` to the device string. On a channel with a Hi-Z input (the RSPduo's channel 0, the RSP2) `MIXBUF` steps by 6: the Hi-Z takes 0, 6, 12 and 18, the 50 ohm ports 0 and 24. The RSPdx(-R2)'s `LNA` reaches 37 dB with its direct sampling amplifier (32 dB on the original RSPdx), and 24 dB on the tuner. There is no automatic gain control.
 
 
 <h3>Sample formats</h3>
@@ -160,7 +179,7 @@ The ranges the module reports are the most each stage has in any band, because p
   - `CS16`: complex int16 with full scale 32768.
   - `CS8`: complex int8 with full scale 128.
 
-With `baseband` off and one converter at a low IF, the samples are real instead, as `S16` or `F32`. The same goes for direct sampling on the RSPdx-R2 with `baseband` off, which uses converter I alone. The stream follows the tune there, so tuning into or out of direct sampling switches between real and complex samples. Read `getStreamFormats()` after tuning. A stream set up in the other kind gets the real samples as I with Q at 0, or only the I part of complex ones.
+With `baseband` off and one converter at a low IF, the samples are real instead, as `S16` or `F32`. The same goes for direct sampling on the RSPdx(-R2) with `baseband` off, which uses converter I alone. The stream follows the tune there, so tuning into or out of direct sampling switches between real and complex samples. Read `getStreamFormats()` after tuning. A stream set up in the other kind gets the real samples as I with Q at 0, or only the I part of complex ones.
 
 
 <h3>Settings</h3>
@@ -177,13 +196,13 @@ Programs show these as device settings. With SoapySDR's API they are `writeSetti
 | `transfer` | `ISOC`, `ISOC1`, `ISOC2`, `BULK` | `ISOC` on Linux, `BULK` on Windows | The USB transfer type. |
 | `decimation_bypass` | `AUTO`, `ON`, `OFF` | `AUTO` | Skip the receiver's own filter. `AUTO` does this above 14.5 Msps. |
 | `gap_fill` | `true`, `false` | `false` | Put zeros where samples were lost, for gaps of up to 16 USB packets. Always on with `baseband`, and then read back as `true`. |
-| `biastee` | `true`, `false` | `false` | RSP1B, RSPdx-R2, RSPduo, RSP2 and RSP1A only. Power on the antenna input: port B on the RSPdx-R2 and RSP2, the port marked tuner 2 (channel 1) on the RSPduo. |
-| `fm_notch` | `true`, `false` | `false` | RSP1B, RSPdx-R2, RSPduo, RSP2 and RSP1A only. Notch for FM broadcast (85 to 100 MHz). This is channel 0's. Each channel also has the notches as channel settings. |
-| `mw_notch` | `true`, `false` | `false` | RSP1B, RSPdx-R2, RSPduo, RSP2 and RSP1A only. Notch for medium wave (0.4 to 1.6 MHz). |
-| `dab_notch` | `true`, `false` | `false` | RSP1B, RSPdx-R2, RSPduo and RSP1A only. Notch for DAB (165 to 230 MHz). |
+| `biastee` | `true`, `false` | `false` | RSP1B, RSPdx(-R2), RSPduo, RSP2 and RSP1A only. Power on the antenna input: port B on the RSPdx(-R2) and RSP2, the port marked tuner 2 (channel 1) on the RSPduo. `biasT_ctrl`, the name SoapySDRPlay3 has for it, is taken as the same setting. |
+| `fm_notch` | `true`, `false` | `false` | RSP1B, RSPdx(-R2), RSPduo, RSP2 and RSP1A only. Notch for FM broadcast (85 to 100 MHz). This is channel 0's. Each channel also has the notches as channel settings. |
+| `mw_notch` | `true`, `false` | `false` | RSP1B, RSPdx(-R2), RSPduo, RSP2 and RSP1A only. Notch for medium wave (0.4 to 1.6 MHz). |
+| `dab_notch` | `true`, `false` | `false` | RSP1B, RSPdx(-R2), RSPduo and RSP1A only. Notch for DAB (165 to 230 MHz). |
 | `ref_out` | `true`, `false` | `false` | RSPduo and RSP2 only. The board's 24 MHz clock out of its reference connector, for another receiver. |
 | `port_tie` | `true`, `false` | `false` | RSPduo only. Ties the two 50 ohm ports together, so both channels hear both, as from one antenna. It works at HF, 50 to 200 MHz and 600 to 900 MHz, and much less at 300 to 433 MHz and in L band. Noise from the USB supply can reach both channels through it, strongest at HF. |
-| `direct_sampling` | `OFF`, `ON`, `AUTO` | `AUTO` | RSPdx-R2 only. Sample the antenna directly instead of through the tuner: `ON` whenever the frequency is 2 MHz or below, `AUTO` only where the whole band (the frequency plus half the rate) fits under 2 MHz. Otherwise the tuner is used as usual. `true` and `false` work as `ON` and `OFF`. The gain is then only the LNA, about 37 dB, on from a total of 19 dB. |
+| `direct_sampling` | `OFF`, `ON`, `AUTO` | `AUTO` | RSPdx(-R2) only. Sample the antenna directly instead of through the tuner: `ON` whenever the frequency is 2 MHz or below, `AUTO` only where the whole band (the frequency plus half the rate) fits under 2 MHz. Otherwise the tuner is used as usual. `true` and `false` work as `ON` and `OFF`. The gain is then only the LNA, about 37 dB (32 dB on the original RSPdx), on from a total of 19 dB. |
 
 A setting the receiver cannot do is refused and logged. The receiver keeps what it had, and the setting reads back as before. That includes a `format`, `transfer` or `decimation_bypass` that the current rate does not fit, for example the bypass at 2 Msps (it starts at 2.6) or `ISOC1` at 8 Msps: the module does not move the rate for a setting.
 
@@ -208,9 +227,9 @@ Measured on a Raspberry Pi Compute Module 0 (one core at 1 GHz), the 450 kHz IF 
 
 <h4>Seeing what the receiver runs</h4>
 
-The rules above decide a lot on their own. A rate below 1.3 Msps takes a low IF, the RSPdx-R2 switches to direct sampling below 2 MHz, and a rate a low IF cannot reach is taken to the nearest one it can. To see where they took the receiver, add `report=true` to the device string, for example `driver=mirisdr,report=true`. The module then logs what runs when the device opens, and again after every call that changed it. Only the lines that changed are logged, so a new gain logs one line and the same value set again logs nothing. The values come from the library, so they are what the hardware runs and not what was asked.
+The rules above decide a lot on their own. A rate below 1.3 Msps takes a low IF, the RSPdx(-R2) switches to direct sampling below 2 MHz, and a rate a low IF cannot reach is taken to the nearest one it can. To see where they took the receiver, add `report=true` to the device string, for example `driver=mirisdr,report=true`. The module then logs what runs when the device opens, and again after every call that changed it. Only the lines that changed are logged, so a new gain logs one line and the same value set again logs nothing. The values come from the library, so they are what the hardware runs and not what was asked.
 
-For example, an RSPdx-R2 set to 1 Msps at 100 MHz, and then tuned to 1 MHz:
+For example, an RSPdx(-R2) set to 1 Msps at 100 MHz, and then tuned to 1 MHz:
 
     [INFO] mirisdr: stream: 1000000 S/s, complex float from a low IF on both converters
     [INFO] mirisdr: converters: 6480000 S/s at a 12.960 MHz clock, decimation bypass off, format 336_S16 with 12 bits, transfer ISOC, 19748571 B/s over USB

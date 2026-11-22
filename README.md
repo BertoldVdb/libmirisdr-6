@@ -1,7 +1,7 @@
 LibMiriSDR-6
 ============
 
-A library and tools for receivers built on the Mirics MSi2500 and MSi001 chips, such as the SDRplay RSP1, RSP1A, RSP1B, RSP2, RSPdx, RSPdx-R2, nRSP-ST and RSPduo.
+A library and tools for receivers built on the Mirics MSi2500 and MSi001 chips, such as the SDRplay RSP1, RSP1A, RSP1B, RSP2, RSPdx(-R2), nRSP-ST and RSPduo.
 
 This is another flavour of libmirisdr, started from the original libmirisdr-2 by Miroslav Slugeň, with additions by Leif Åsbrink SM5BSZ in libmirisdr-3-bsz and by Edouard Griffiths (f4exb) in libmirisdr-4, and by Erik Bročko  in libmirisdr-5.
 
@@ -13,7 +13,7 @@ This library is an API compatible drop-in replacement for libmirisdr-5, it only 
 
   - **Support for all SDRplay devices, supporting all features of the devices:**
       - **RSP1B support.** Filters, notches, bias-T, the amplifier and pads.
-      - **RSPdx, RSPdx-R2 and nRSP-ST support.** Filters, notches, bias-T, the amplifier and pads, all antenna inputs and direct sampling below 2 MHz.
+      - **RSPdx(-R2) and nRSP-ST support.** Filters, notches, bias-T, the amplifier and pads, all antenna inputs and direct sampling below 2 MHz.
       - **RSPduo support.** Both tuners, alone or together (a low IF each, delivered as two labelled streams or two SoapySDR channels). Each tuner's filters, notches, amplifier and pads, the bias-T, the Hi-Z input, the tie that feeds both tuners from one port, and the reference output.
       - **RSP1A support.** Filters, notches, bias-T, the amplifier and pads, and the board's test oscillator as an antenna.
       - **RSP2 support.** Filters, notches, bias-T, attenuator, the reference output, ports A and B, the Hi-Z input, and the board's test oscillator.

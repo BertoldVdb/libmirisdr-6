@@ -26,6 +26,15 @@
 #define SOAPY_MIRISDR_DRIVER    "mirisdr"
 #define SOAPY_MIRISDR_SLOTS     256     /* callback buffers the ring holds */
 
+/* Whether the serial of a receiver running from ROM is read from its EEPROM, when listing and
+   when opening by serial (the library's PROBE_SERIAL flags): the device string's probe_serial, else
+   the environment's MIRISDR_PROBE_SERIAL, else what the module was built with */
+bool soapyMiriSDRProbeSerial(const SoapySDR::Kwargs &args);
+
+/* Whether the receiver goes back to its ROM when closed (the library's MIRISDR_OPEN_ROM_ON_CLOSE):
+   the device string's rom_on_close, else what the module was built with */
+bool soapyMiriSDRRomOnClose(const SoapySDR::Kwargs &args);
+
 /* a channel's call: the device held, its tuner selected */
 #define SOAPY_MIRISDR_CHANNEL(c) std::lock_guard<std::recursive_mutex> chanLock_(devMutex); tunerSel = chanOf(c)
 
@@ -141,6 +150,18 @@ private:
     {
         int lna, mixer, baseband, amp;
         std::vector<int> mixbuffer;
+        bool valid;             /* the library took the tune they are of */
+    };
+
+    /* What was asked of each stage by name. A band can lack a stage or step it otherwise,
+       and programs set the gains once, often before the frequency: so each tune gives the
+       stages the nearest its band has to this, and nothing asked is lost in a band without */
+    struct StageWant
+    {
+        bool set;               /* stages asked by name, not a total */
+        bool amp, lna, mixer;
+        int mixbuffer, baseband;
+        mirisdr_gain_config_t sent;     /* the stages of the last tune that set them */
     };
 
     mirisdr_dev_t *dev;
@@ -161,6 +182,7 @@ private:
     bool baseband;          /* the band at 0 Hz in complex float, whatever the IF */
     uint32_t wantRate;          /* as asked */
     uint32_t wantBw[2];         /* each tuner's filter as asked, 0 for the library's choice */
+    StageWant wantStage[2];     /* each tuner's gain stages as asked */
     uint32_t argBw;             /* the device string's bandwidth, what 0 falls back to */
     bool bandGainRanges;    /* gain ranges of the band tuned, not the most of any band */
 
@@ -223,6 +245,8 @@ private:
     uint32_t pickLowIf(uint32_t rate) const;
     void applyTune(const mirisdr_tune_config_t &cfg);
     StageRanges stageRanges(void) const;
+    StageRanges stageRanges(mirisdr_tune_config_t tc) const;
+    void stagesFor(const StageWant &w, const StageRanges &sr, mirisdr_gain_config_t &g) const;
     void setPads(int db);
     SoapySDR::Range attRange(void) const;
     void notchInfo(SoapySDR::ArgInfoList &list, bool device) const;

@@ -112,6 +112,32 @@ for (i = 0; i < n && i < 8; i++)
 
 A receiver in use by another program is not disturbed: the serial is the copy the system keeps, from libusb 1.0.30 on or from sysfs on Linux. Only with an older libusb on other systems is each receiver opened for a moment to read it. `mirisdr_device_known()` says whether the library takes a USB VID:PID as a receiver.
 
+<h4>The serial of a receiver running from its ROM</h4>
+
+An SDRplay or a Mirics TV stick keeps its serial in its EEPROM, but its ROM does not report it. So after a power cycle such a receiver is listed with only its `usb_port`, until a first open has loaded the firmware. `mirisdr_list_receivers_ex()` can read the serial from the EEPROM instead. It takes a config, filled with `mirisdr_list_config_default()` first:
+
+```c
+mirisdr_list_config_t lc;
+mirisdr_receiver_t rx[8];
+int n;
+
+mirisdr_list_config_default(&lc);
+lc.flags = MIRISDR_LIST_PROBE_SERIAL;
+n = mirisdr_list_receivers_ex(&lc, rx, 8);
+```
+
+`serial` and `usb_port` in the config are those of `mirisdr_list_receivers()`. `flags` takes `MIRISDR_LIST_*` values or'ed together, and a flag the library does not know is refused. An entry whose serial was read this way has `serial_from_eeprom` set. It is the serial the receiver reports once the firmware is loaded with the default open config. With `MIRISDR_FW_IDS_IMAGE` or `MIRISDR_FW_IDS_SET` the firmware reports another.
+
+This is off by default, because it is more than a look at the USB. The library opens the receiver for a moment, which takes about 10 ms and drives the receiver's GPIO pins. It keeps this away from receivers in use:
+
+  - Only a receiver that reports no manufacturer, product or serial string is opened. Only the ROM reports none. A receiver running a firmware, the library's or the vendor's, may be in use and is left alone.
+  - The library claims the receiver's USB interface before it sends anything. A receiver another program holds is skipped and listed by its port, after a wait of 300 ms in case that program is only reading a serial too. So is one the Linux kernel's `msi2500` driver holds: the driver is not detached.
+  - A program that opens the receiver in that same moment finds it busy. `mirisdr_open_ex()` waits up to 500 ms for that. Other software may fail and has to try again.
+
+The read needs the permission to open the receiver. Without it the receiver is listed by its port as before. A call that only counts, with `max` 0, reads nothing, unless `serial` or `usb_port` ask for one receiver.
+
+To open a receiver by a serial listed this way, set `MIRISDR_OPEN_PROBE_SERIAL` in the open config's `flags` too. See below.
+
 Open a receiver with `mirisdr_open_ex()`, by its serial or USB port. Fill the config with `mirisdr_open_config_default()` first and change only what you need.
 
 ```c
@@ -128,6 +154,8 @@ The fields you are most likely to use:
 
     With both `serial` and `usb_port`, the receiver with that serial is taken, in whatever port. When none has it, the receiver in `usb_port` is taken, but only if it reports no serial, as one running from its ROM after a power cycle. One that reports another serial is not.
 
+  - `flags`: `MIRISDR_OPEN_*` values or'ed together, 0 by default. A flag the library does not know is refused, as it means the program was written for a newer one. See `MIRISDR_OPEN_ROM_ON_CLOSE` under Back to the ROM on close below. `MIRISDR_OPEN_PROBE_SERIAL` lets the open find a receiver running from its ROM by the serial in its EEPROM, as `mirisdr_list_receivers_ex()` lists it. It is only used when no receiver reports the serial asked for. The receiver in `usb_port` is read first, so with both set the others are mostly not opened. A receiver in `usb_port` whose EEPROM holds another serial is then not taken in its place. Without it a receiver on its ROM is only found by its port.
+
     The receiver is matched in the same device list it is opened from, so a receiver plugged in or out meanwhile cannot take its place. While the firmware loads, the receiver reboots and is opened again by its USB port, whichever way it was chosen.
   - `hw_flavour`: the kind of board. `MIRISDR_HW_AUTO`, the default, tells from the USB ids. Other values are `MIRISDR_HW_DEFAULT` (plain boards and the RSP1), `MIRISDR_HW_SDRPLAY` (the original libmirisdr's SDRplay plan, for a board that is not known), `MIRISDR_HW_RSP1B`, `MIRISDR_HW_RSPDXR2`, `MIRISDR_HW_RSPDUO`, `MIRISDR_HW_MIRICSTV` (the Mirics TV reference design, which TV sticks such as the Hauppauge WinTV 133559LF, the AverMedia A859, the IO-DATA GV-TV100 and the Logitec LDT-1S310U/J follow), `MIRISDR_HW_RSP2` (the RSP2 and RSP2pro) and `MIRISDR_HW_RSP1A`. A wrong value can switch things the board does not have, such as a bias-T.
   - `firmware`, `firmware_path` and `keep_running`: the library loads its own firmware into the receiver by default, and replaces a different one that is running. Give another image, or set `keep_running` to use what runs.
@@ -135,6 +163,18 @@ The fields you are most likely to use:
 The index based functions (`mirisdr_open()`, `mirisdr_get_device_count()` and the others taking an index) are kept for existing programs. A receiver plugged in or out shifts the index of the others, so new programs should not use them.
 
 `mirisdr_close()` stops any stream and frees everything. It also puts the tuners in standby and switches off the bias-T and the front end's amplifiers, pads and notches. On the RSPduo it takes the ports apart. On the RSP2 it also switches off the reference output and the test oscillator, on the RSP1A the test oscillator.
+
+<h4>Back to the ROM on close</h4>
+
+By default the firmware keeps running after `mirisdr_close()`, until the receiver loses power. With `MIRISDR_OPEN_ROM_ON_CLOSE` in the open config's `flags` the receiver goes back to its ROM instead, as after a power cycle. This is for systems where other software expects the receiver as it comes from the factory.
+
+  - `mirisdr_close()` reboots the receiver and returns once it is back on the USB, so a list or an open right after finds it. That takes about a second, and longer where the system is slow to see the receiver again or to give access to it.
+  - On Linux the receiver also goes back when the program ends without closing it, however it ends. The system then puts the USB interface back to its idle setting, and the firmware takes that as the sign. Other systems send nothing, so there only a close does it.
+  - The next open loads the firmware again, which takes about a second.
+  - On its ROM the receiver reports no serial. Use `MIRISDR_OPEN_PROBE_SERIAL` and `MIRISDR_LIST_PROBE_SERIAL` to open and list it by serial.
+  - It needs the library's firmware on the receiver. With `keep_running` on a receiver that runs another firmware, or its ROM, the open fails. An image given with `firmware` or `firmware_path` must be as new as this flag: an older one takes the request as a plain reboot, and the open fails with the receiver gone.
+  - `mirisdr_reset()` sets it up again, as the firmware forgets it at a USB bus reset. A bus reset from elsewhere, such as the system recovering from an error, leaves only the close to do it.
+  - Opened by fd, the close reboots the receiver but does not wait for it.
 
 
 <h3>Tuning</h3>
@@ -195,19 +235,19 @@ The older `mirisdr_set_center_freq()` sets the LO directly. It switches `low_if_
 
 <h4>The front end</h4>
 
-`tc.frontend` holds what sits before the tuner. It goes out with the tune, in the same request. The RSPdx and nRSP-ST have the RSPdx-R2's front end, so what this section says of the RSPdx-R2 holds for them too. The RSPdx differs in one place: its direct sampling amplifier gives 32 dB.
+`tc.frontend` holds what sits before the tuner. It goes out with the tune, in the same request. The nRSP-ST has the RSPdx(-R2)'s front end, so what this section says of the RSPdx(-R2) holds for it too. The original RSPdx differs from the RSPdx-R2 in one place: its direct sampling amplifier gives 32 dB.
 
-  - `bias`: the bias-T, which powers the antenna input. On the RSPdx-R2 and RSP2 it powers port B. On the RSPduo it powers the port marked tuner 2, so only tuner 1 takes it. On the RSP1A it takes 6 to 7 dB off at 0.5 MHz and under 1 dB from 1 MHz.
-  - `notch`: notch filters, on the RSP1B, RSPdx-R2, RSPduo, RSP2 and RSP1A only. `MIRISDR_NOTCH_FM` covers 85 to 100 MHz, `MIRISDR_NOTCH_MW` medium wave from 0.4 to 1.6 MHz, and `MIRISDR_NOTCH_DAB` 165 to 230 MHz. Combine them with `|`. The FM and MW notches share a switch. The RSP2 has no DAB notch.
-  - `antenna`: the input, `MIRISDR_ANTENNA_A` (the default), `_B`, `_C` or `_TEST`. The RSPdx-R2 has B and C. On the RSPduo, tuner 0 takes `MIRISDR_ANTENNA_HIZ` (the same as B), its Hi-Z input. The RSP2 has B, its Hi-Z input as C, and `MIRISDR_ANTENNA_TEST`: the board's own test signal, an RC oscillator near 9.35 MHz whose harmonics reach 2 GHz, through the whole front end. The RSP1A has `MIRISDR_ANTENNA_TEST` too: its test oscillator at 1.59 MHz, with harmonics, added to the antenna's signal, which then comes 3 to 4 dB weaker. A Hi-Z input takes the LO below 30 MHz (at a low IF the frequency is an IF lower). It goes to the tuner's other AM input, past the filters, so its mixbuffer stage steps 0, 6, 12 and 18 dB instead of 0 and 24. A gain kept across the switch keeps its dB, the mixbuffer to the nearest step the input has. On the RSPduo the MW notch has its own switch there. The RSP2's Hi-Z has no notch and no pads. `mirisdr_get_frontend_caps()` says which antennas a board has and which is its Hi-Z.
+  - `bias`: the bias-T, which powers the antenna input. On the RSPdx(-R2) and RSP2 it powers port B. On the RSPduo it powers the port marked tuner 2, so only tuner 1 takes it. On the RSP1A it takes 6 to 7 dB off at 0.5 MHz and under 1 dB from 1 MHz.
+  - `notch`: notch filters, on the RSP1B, RSPdx(-R2), RSPduo, RSP2 and RSP1A only. `MIRISDR_NOTCH_FM` covers 85 to 100 MHz, `MIRISDR_NOTCH_MW` medium wave from 0.4 to 1.6 MHz, and `MIRISDR_NOTCH_DAB` 165 to 230 MHz. Combine them with `|`. The FM and MW notches share a switch. The RSP2 has no DAB notch.
+  - `antenna`: the input, `MIRISDR_ANTENNA_A` (the default), `_B`, `_C` or `_TEST`. The RSPdx(-R2) has B and C. On the RSPduo, tuner 0 takes `MIRISDR_ANTENNA_HIZ` (the same as B), its Hi-Z input. The RSP2 has B, its Hi-Z input as C, and `MIRISDR_ANTENNA_TEST`: the board's own test signal, an RC oscillator near 9.35 MHz whose harmonics reach 2 GHz, through the whole front end. The RSP1A has `MIRISDR_ANTENNA_TEST` too: its test oscillator at 1.59 MHz, with harmonics, added to the antenna's signal, which then comes 3 to 4 dB weaker. A Hi-Z input takes the LO below 30 MHz (at a low IF the frequency is an IF lower). It goes to the tuner's other AM input, past the filters, so its mixbuffer stage steps 0, 6, 12 and 18 dB instead of 0 and 24. A gain kept across the switch keeps its dB, the mixbuffer to the nearest step the input has. On the RSPduo the MW notch has its own switch there. The RSP2's Hi-Z has no notch and no pads. `mirisdr_get_frontend_caps()` says which antennas a board has and which is its Hi-Z.
   - `attenuator`: pads before the tuner, in dB, 0 (none) by default. It is apart from the gain: the total does not count it, and a `MIRISDR_GAIN_TOTAL` tune leaves it as the config has it. Use it against strong signals, since it comes before the tuner's LNA. `mirisdr_set_attenuator()` changes it alone.
     - RSPduo, RSP1B and RSP1A: 6, 13 or 19 dB, one pad at a time. The RSPduo's Hi-Z input does not pass through them: a pad asked there is 0 in force, or refused with `strict`.
-    - RSPdx-R2: 3 to 36 dB in 3 dB steps. Its four pads are in series, so they add: within 1 dB of the step up to 900 MHz. At 1.5 GHz the larger steps give less, 31 dB at most.
+    - RSPdx(-R2): 3 to 36 dB in 3 dB steps. Its four pads are in series, so they add: within 1 dB of the step up to 900 MHz. At 1.5 GHz the larger steps give less, 31 dB at most.
     - RSP2: 5, 11, 15 or 20 dB, flat within 2 to 4 dB from 2 to 250 MHz. Below 1 MHz they give 2 to 5 dB less. Its Hi-Z input does not pass through them.
   - `flags`: the board's switches, a bit for each that is on. A flag the board does not have is refused. They belong to the board, not to a tuner: a tune of either tuner sets them for both, and both tuners' configs and results then show them, the last tune's winning. `mirisdr_set_frontend_flags()` changes them alone.
     - `MIRISDR_FRONTEND_PORT_TIE`, RSPduo only: ties the two 50 ohm ports together, so both tuners hear both, as from one antenna. It works at HF, 50 to 200 MHz and 600 to 900 MHz, where the other tuner hears a port within 5 to 10 dB of its own tuner. It works much less at 300 to 433 MHz and in L band. The port's own tuner loses 0 to 5 dB at HF and 3 to 10 dB at 50 to 600 MHz. The tie's diodes are biased from the board's supply, so noise from the USB supply can reach both tuners through it, strongest at HF: from one laptop it was a comb every 1.6 MHz, up to 75 dB over the floor at HF.
     - `MIRISDR_FRONTEND_REF_OUT`, RSPduo and RSP2: the board's 24 MHz clock out of its reference connector, for another receiver. Off by default.
-  - `direct_sampling`: RSPdx-R2 only. See Direct sampling below.
+  - `direct_sampling`: RSPdx(-R2) only. See Direct sampling below.
   - `raw`: the switch words themselves, in place of the band plan's. See Raw front end words below.
 
 A notch, an antenna, pads or direct sampling on a board without them is refused. A pad value between steps is taken to the nearest, or refused with `strict`. The config keeps what you asked for, and the tune result reports what is in force.
@@ -223,33 +263,33 @@ for (int k = 0; k < caps.attenuator_count; k++)
 
 `mirisdr_set_bias()`, `mirisdr_set_notch()` and `mirisdr_set_antenna()` still work. They change this part of the tune in force and apply it. Like the other single setters they act on the stream's first tuner. On the RSPduo that is tuner 0 unless tuner 1 is streamed alone, and only tuner 1 has the bias-T, so there `mirisdr_set_bias(p, 1)` is refused by default: set `frontend.bias` in tuner 1's tune instead.
 
-The RSP1B, RSPdx-R2, RSP2 and RSP1A choose their filters from the frequency. The RSPdx-R2 uses its 500 kHz low pass only when the tuner's whole filter band fits under 500 kHz, so with a low IF and a narrow filter. Otherwise it uses the 2 MHz low pass.
+The RSP1B, RSPdx(-R2), RSP2 and RSP1A choose their filters from the frequency. The RSPdx(-R2) uses its 500 kHz low pass only when the tuner's whole filter band fits under 500 kHz, so with a low IF and a narrow filter. Otherwise it uses the 2 MHz low pass.
 
 <h4>Raw front end words</h4>
 
 A tune works out what the board's switches get from its band plan and the fields above: register 8's GPIO bits and, on SDRplay boards, the words of their I/O expanders. `frontend.raw` can replace any of them, for a board that is not mapped yet or a path the plan does not choose. `raw.fields` names the parts replaced:
 
   - `MIRISDR_FRONTEND_RAW_GPIO`: `gpio_dir` and `gpio_level`, bit n for GPIO_n: an output, and high.
-  - `MIRISDR_FRONTEND_RAW_EXP1`: `expander[0]`, the expander of the RSP1B, RSPdx-R2, RSP2 and RSP1A, or the RSPduo's first.
+  - `MIRISDR_FRONTEND_RAW_EXP1`: `expander[0]`, the expander of the RSP1B, RSPdx(-R2), RSP2 and RSP1A, or the RSPduo's first.
   - `MIRISDR_FRONTEND_RAW_EXP2`: `expander[1]`, the RSPduo's second expander.
 
-An expander word is the MCP23S18's direction word, port B in the high byte. A 0 bit pulls that pin low and a 1 leaves it to the board. A part replaced takes the word whole. The fields above no longer reach it: a raw GPIO word decides the RSPdx-R2's direct sampling switch (GPIO_2) and a plain board's bias-T (GPIO_3) too. Pins held with `mirisdr_set_gpio_direction()` and the other GPIO calls stay held. A part the board does not have, or a GPIO past 3, is refused. The words go out with the tune, before the tuner's own, and scans take them per hop.
+An expander word is the MCP23S18's direction word, port B in the high byte. A 0 bit pulls that pin low and a 1 leaves it to the board. A part replaced takes the word whole. The fields above no longer reach it: a raw GPIO word decides the RSPdx(-R2)'s direct sampling switch (GPIO_2) and a plain board's bias-T (GPIO_3) too. Pins held with `mirisdr_set_gpio_direction()` and the other GPIO calls stay held. A part the board does not have, or a GPIO past 3, is refused. The words go out with the tune, before the tuner's own, and scans take them per hop.
 
 The tune result's `frontend.raw` reports the words in force, whether replaced or not. Its `fields` names every part the board has.
 
 <h4>Direct sampling</h4>
 
-The RSPdx-R2 can take the antenna past the tuner, through its 2 MHz low pass, straight to the I converter. `frontend.direct_sampling` says when:
+The RSPdx(-R2) can take the antenna past the tuner, through its 2 MHz low pass, straight to the I converter. `frontend.direct_sampling` says when:
 
   - `MIRISDR_DS_OFF` (0): never.
   - `MIRISDR_DS_ON` (1): every tune at 2 MHz (`MIRISDR_DS_MAX_HZ`) or below.
   - `MIRISDR_DS_AUTO` (3): every tune whose band fits under 2 MHz: with a baseband stream the frequency plus half the rate, without one the frequency alone. A rate whose band stops fitting moves the tune to the tuner, and back.
 
-Other tunes use the tuner as usual. The tune result's `frontend.direct_sampling` says which is in force, so a program can sweep across 2 MHz without doing anything itself. `mirisdr_set_direct_sampling(dev, 1)` sets it on the tune in force, as in librtlsdr, and also takes `MIRISDR_DS_AUTO`. 2 (librtlsdr's Q converter) is refused, as the RSPdx-R2 has it on I only.
+Other tunes use the tuner as usual. The tune result's `frontend.direct_sampling` says which is in force, so a program can sweep across 2 MHz without doing anything itself. `mirisdr_set_direct_sampling(dev, 1)` sets it on the tune in force, as in librtlsdr, and also takes `MIRISDR_DS_AUTO`. 2 (librtlsdr's Q converter) is refused, as the RSPdx(-R2) has it on I only.
 
   - **The stream.** Direct sampling is like a single tuner output on I whose IF is the frequency. A stream that follows the tune, or a baseband one, switches to I by itself. With baseband the frequency comes out at 0 Hz, the right way round. The converters run at 4.8 Msps whatever the frequency, so a retune only moves the NCO and the stream does not restart. When a baseband stream's band fits under 500 kHz, the 500 kHz low pass is used instead, with the converters at 1.3 Msps. Rates go from about 9.4 ksps (2.5 ksps with the 500 kHz low pass) up. Without baseband the I samples are the band itself, from 0 Hz to half the rate.
   - **The tuner.** It is not in the path, so it rests in standby (the tune result's `standby`). Left running, a strong signal on it showed in the direct sampling path. A tune above 2 MHz wakes it and calibrates it again, which takes a few ms.
-  - **The gain.** The tuner is not in the path. The only gain is an amplifier of about 37 dB (`MIRISDR_DS_LNA_DB`), 32 dB on the RSPdx, on by default. `mirisdr_get_frontend_caps()` gives it as `ds_lna_db`. With `MIRISDR_GAIN_STAGES` it is `gain.lna`. With `MIRISDR_GAIN_TOTAL` it is on from half its gain. `mirisdr_set_lna_gain()` and `mirisdr_set_tuner_gain()` switch it the same way. The tune result then reports it alone. Leave it on unless the signals are very strong: it raises the noise floor only 4 to 5 dB.
+  - **The gain.** The tuner is not in the path. The only gain is an amplifier of about 37 dB (`MIRISDR_DS_LNA_DB`), 32 dB on the original RSPdx, on by default. `mirisdr_get_frontend_caps()` gives it as `ds_lna_db`. With `MIRISDR_GAIN_STAGES` it is `gain.lna`. With `MIRISDR_GAIN_TOTAL` it is on from half its gain. `mirisdr_set_lna_gain()` and `mirisdr_set_tuner_gain()` switch it the same way. The tune result then reports it alone. Leave it on unless the signals are very strong: it raises the noise floor only 4 to 5 dB.
   - **What stays.** The tune's IF, bandwidth and `iq` are kept for tunes above 2 MHz. The tune result shows `lo` 0, `iq` `MIRISDR_IQ_ONLY_I`, and the low pass's edge as `bandwidth`. Scans refuse direct sampling.
   - **Response.** Flat from about 30 kHz to 1.5 MHz, 15 dB down at 2.5 MHz. Below 30 kHz it rolls off, 8 dB down at 10 kHz.
 
@@ -264,7 +304,7 @@ The gain goes with the tune, in `tc.gain`. Its `mode` decides what happens.
 
 The stages:
 
-  - `amp_bypass`: the board's amplifier before the tuner, on the RSP1B, RSPdx-R2, RSPduo and RSP1A (the RSP2's is always in, and not counted). 0 keeps it in, 1 bypasses it. Its gain in the band, up to about 25 dB, counts in the total, and `mirisdr_get_frontend_caps()` says from which frequency it is there (30 MHz on the RSP1B and RSPdx-R2, 55 MHz on the RSPduo and RSP1A, not on the RSPduo's Hi-Z). `MIRISDR_GAIN_TOTAL` turns it on first, and bypasses it only for a total below its own gain. Elsewhere there is none, and the result reports 0.
+  - `amp_bypass`: the board's amplifier before the tuner, on the RSP1B, RSPdx(-R2), RSPduo and RSP1A (the RSP2's is always in, and not counted). 0 keeps it in, 1 bypasses it. Its gain in the band, up to about 25 dB, counts in the total, and `mirisdr_get_frontend_caps()` says from which frequency it is there (30 MHz on the RSP1B and RSPdx(-R2), 55 MHz on the RSPduo and RSP1A, not on the RSPduo's Hi-Z). `MIRISDR_GAIN_TOTAL` turns it on first, and bypasses it only for a total below its own gain. Elsewhere there is none, and the result reports 0.
   - `lna`: on or off. It adds 24 dB on most bands, 7 dB in band IV/V and about 4 dB in L band. The AM inputs have none.
   - `mixer`: on or off. It adds 19 dB.
   - `mixbuffer`: only on the AM inputs. 0, 6, 12 or 18 dB on AM1, 0 or 24 dB on AM2.
@@ -547,7 +587,7 @@ The comments in `mirisdr.h` describe the timing in detail.
   - GPIO: `mirisdr_set_gpio_direction()`, `mirisdr_set_gpio_output()`, `mirisdr_get_gpio_input()` and related calls, for 4 pins.
   - I2C on GPIO 1 and 2: `mirisdr_i2c_write()`, `mirisdr_i2c_read()` and `mirisdr_i2c_transfer()`.
   - Serial output on GPIO 2: `mirisdr_uart_write()`.
-  - I2C and serial output are refused on pins the open config holds as inputs, and on the RSP1B, RSPdx-R2, RSPduo, RSP2 and RSP1A, whose front end uses those pins.
+  - I2C and serial output are refused on pins the open config holds as inputs, and on the RSP1B, RSPdx(-R2), RSPduo, RSP2 and RSP1A, whose front end uses those pins.
   - The infrared receiver on GPIO 3: `mirisdr_set_ir()` calls a function for every pulse.
   - The EEPROM: `mirisdr_read_eeprom()`, `mirisdr_write_eeprom()` and `mirisdr_eeprom_size()`.
   - Firmware: `mirisdr_get_fw_id()` reads the id of the running image. `mirisdr_fw_get()` and `mirisdr_fw_patch()` read and change the USB ids, the serial and the power inside an image. The image is bus powered at 500 mA as built. `mirisdr_fw_board()` says what the board needs instead: the nRSP-ST is self powered. The library patches that in when it loads the firmware.

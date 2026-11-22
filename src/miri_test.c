@@ -121,6 +121,7 @@ static int              pump_running;
 static volatile int     pump_bytes;
 static volatile int     pump_result;   /* what read_async returned: -1 means it
                                           gave up on its transfers */
+static uint32_t         pump_num = 8;  /* transfers in flight, 0 for the library's default */
 
 /* the last buffer's converters, and buffers whose position went back */
 static volatile int     pump_adc = -1, pump_backwards, pump_infos;
@@ -152,7 +153,7 @@ static void stream_cb (unsigned char *buf, uint32_t len, void *ctx)
 static void *pump_main (void *arg)
 {
     (void) arg;
-    pump_result = mirisdr_read_async(dev, stream_cb, NULL, 8, 65536);
+    pump_result = mirisdr_read_async(dev, stream_cb, NULL, pump_num, 65536);
     return NULL;
 }
 
@@ -564,6 +565,60 @@ static tres_t t_stream_isoc2 (void)
     if (!fw_ours) { say("alt 4 needs our firmware"); return T_SKIP; }
 
     return stream_one("ISOC2", "504_S8", 2000000);
+}
+
+/* An isochronous stream paused and started again, by the application and by a rate
+   change, flows again each time. The Raspberry Pi 4's controller left it silent with
+   more than 16 transfers in flight, so this runs with the library's default of 32 */
+static tres_t isoc_restart_run (void)
+{
+    static const uint32_t rates[] = { 4000000, 2500000, 2000000 };
+    const int pauses = 5;
+    double sps;
+    size_t k;
+    int i;
+
+    if (stream_setup("ISOC", "252_S16", 2000000) < 0) return T_FAIL;
+
+    for (i = 0; i < pauses; i++)
+    {
+        if ((mirisdr_stop_async(dev) < 0) || (mirisdr_start_async(dev) < 0))
+        { pump_stop(); say("pause %d refused", i + 1); return T_FAIL; }
+
+        sps = stream_rate_settled(0.3, NULL);
+        if (!within(sps, 2000000, 0.03)) { pump_stop(); say("%.0f sps after pause %d", sps, i + 1); return T_FAIL; }
+    }
+
+    for (k = 0; k < sizeof rates / sizeof rates[0]; k++)
+    {
+        if (mirisdr_set_sample_rate(dev, rates[k]) < 0)
+        { pump_stop(); say("rate %u refused while streaming", rates[k]); return T_FAIL; }
+
+        sps = stream_rate_settled(0.3, NULL);
+        if (!within(sps, rates[k], 0.03))
+        { pump_stop(); say("%.0f sps after the change to %u", sps, rates[k]); return T_FAIL; }
+    }
+
+    pump_stop();
+    if (pump_result < 0) { say("the stream ended with an error"); return T_FAIL; }
+
+    say("%d pauses and %d rate changes with 32 transfers, the stream at its rate after each", pauses,
+        (int) (sizeof rates / sizeof rates[0]));
+
+    return T_PASS;
+}
+
+static tres_t t_stream_isoc_restart (void)
+{
+    tres_t r;
+
+    pump_stop();
+    pump_num = 0;
+    r = isoc_restart_run();
+    pump_stop();
+    pump_num = 8;
+
+    return r;
 }
 
 static tres_t t_transport_capacity (void)
@@ -1758,6 +1813,274 @@ static tres_t t_std_requests (void)
     return bad ? T_FAIL : T_PASS;
 }
 #endif
+
+/* the list's entry for the receiver at a port, 0 when there is none */
+static int probe_entry (const char *serial, const char *port, int probe, mirisdr_receiver_t *rx)
+{
+    mirisdr_list_config_t lc;
+
+    mirisdr_list_config_default(&lc);
+    lc.serial = serial;
+    lc.usb_port = port;
+    lc.flags = probe ? MIRISDR_LIST_PROBE_SERIAL : 0;
+    memset(rx, 0, sizeof *rx);
+
+    return mirisdr_list_receivers_ex(&lc, rx, 1) == 1;
+}
+
+/* On its ROM a receiver declares no serial, though an SDRplay's or a Mirics TV stick's EEPROM
+   holds one: with the probe flag the list reads it there, the serial the firmware declares once
+   loaded, and an open finds the receiver by it. Without, the list has the port alone. A
+   receiver another program holds is left alone */
+static tres_t t_probe_serial (void)
+{
+    mirisdr_open_config_t cfg;
+    mirisdr_receiver_t rx, all[16];
+    char serial[256] = "", sys[32] = "", port[32], got[256] = "";
+    double t0, took = 0;
+#ifdef __linux__
+    double held = 0;
+#endif
+    int k, n, back = 0, bad = 0;
+
+    if (opt_rom) { say("loads the firmware"); return T_SKIP; }
+    if (mirisdr_get_serial(dev, serial, sizeof serial) <= 0 || !*serial) { say("this device reports no serial"); return T_SKIP; }
+    if (mirisdr_get_usb_position(dev, NULL, NULL, sys, sizeof sys) < 0) { say("no usb position"); return T_SKIP; }
+    snprintf(port, sizeof port, "%s", sys);
+    if (strchr(port, '-')) *strchr(port, '-') = ':';
+
+    /* running its firmware it declares the serial: listed as before, and never opened */
+    if (!probe_entry(NULL, port, 1, &rx) || strcmp(rx.serial, serial) || rx.serial_from_eeprom)
+    { say("with its firmware: serial \"%s\" from_eeprom %u", rx.serial, rx.serial_from_eeprom); return T_FAIL; }
+
+    pump_stop();
+    mirisdr_reboot(dev, MIRISDR_BOOT_ROM);
+    mirisdr_close(dev);
+    dev = NULL;
+
+    /* back at its port without a serial: on the ROM. The old device can still be listed for
+       a moment */
+    for (k = 0; k < 60 && !back; k++) {
+        usleep(250000);
+        back = probe_entry(NULL, port, 0, &rx) && !*rx.serial;
+    }
+    if (!back) {
+        if (device_reopen() < 0) { say("no device after the reboot"); return T_FAIL; }
+        say("still declares a serial after the reboot: it boots a firmware from its EEPROM");
+        return T_SKIP;
+    }
+    if ((rx.vid == 0x1df7) && (rx.pid == 0x2500)) {
+        if (device_reopen() < 0) { say("no device after the reboot"); return T_FAIL; }
+        say("on the ROM's own ids: no EEPROM to read a serial from");
+        return T_SKIP;
+    }
+
+    /* without the probe: the port alone, and not found by its serial */
+    if (rx.serial_from_eeprom) { say("from_eeprom set without a serial"); bad++; }
+    if (probe_entry(serial, NULL, 0, &rx)) { say("found by serial without the probe"); bad++; }
+
+    /* with it: the serial, by port, by serial and in the whole list. The device's
+       permissions can take a while after the reboot */
+    for (k = 0; k < 40; k++) {
+        if (probe_entry(NULL, port, 1, &rx) && *rx.serial) break;
+        usleep(250000);
+    }
+    t0 = now();
+    if (!probe_entry(NULL, port, 1, &rx) || strcmp(rx.serial, serial) || !rx.serial_from_eeprom)
+    { say("by port: serial \"%s\" from_eeprom %u, not \"%s\"", rx.serial, rx.serial_from_eeprom, serial); bad++; }
+    took = now() - t0;
+
+#ifdef __linux__
+    {
+        /* held by another program: not read, after the wait for it */
+        unsigned int ifno = 0;
+        int fd = fd_of_port(sys);
+
+        if (fd < 0 || ioctl(fd, USBDEVFS_CLAIMINTERFACE, &ifno) < 0) { say("could not hold the interface"); bad++; }
+        else {
+            t0 = now();
+            if (!probe_entry(NULL, port, 1, &rx) || *rx.serial || rx.serial_from_eeprom)
+            { say("read while another holds it: \"%s\"", rx.serial); bad++; }
+            held = now() - t0;
+            if (held < 0.2 || held > 1.5) { say("waited %.0f ms for the holder, not about 300", held * 1e3); bad++; }
+            if (probe_entry(serial, NULL, 1, &rx)) { say("found by serial while another holds it"); bad++; }
+        }
+        if (fd >= 0) close(fd);
+    }
+#endif
+
+    if (!probe_entry(serial, NULL, 1, &rx) || strcmp(rx.usb_port, port) || strcmp(rx.serial, serial) || !rx.serial_from_eeprom)
+    { say("by serial: port \"%s\" serial \"%s\"", rx.usb_port, rx.serial); bad++; }
+    if (!probe_entry(serial, port, 1, &rx) || strcmp(rx.serial, serial)) { say("by serial and port: \"%s\"", rx.serial); bad++; }
+    {
+        mirisdr_list_config_t lc;
+
+        mirisdr_list_config_default(&lc);
+        lc.flags = MIRISDR_LIST_PROBE_SERIAL;
+        n = mirisdr_list_receivers_ex(&lc, all, 16);
+        for (k = 0; k < n && k < 16; k++) if (!strcmp(all[k].usb_port, port)) break;
+        if (k >= n || k >= 16 || strcmp(all[k].serial, serial) || !all[k].serial_from_eeprom)
+        { say("not in the whole list with its serial"); bad++; }
+        if (mirisdr_list_receivers_ex(&lc, NULL, 0) != n) { say("the count differs from the list"); bad++; }
+        lc.reserved[0] = 1;
+        if (mirisdr_list_receivers_ex(&lc, all, 16) != -1) { say("a config from a newer library was taken"); bad++; }
+        lc.reserved[0] = 0;
+        lc.flags |= 1u << 31;
+        if (mirisdr_list_receivers_ex(&lc, all, 16) != -1) { say("a list flag of a newer library was taken"); bad++; }
+    }
+
+    /* another serial asked with its port: with the probe it is known to be another receiver,
+       without it the port is taken, as it declares none */
+    if (probe_entry("no such", port, 1, &rx)) { say("taken for another serial with the probe"); bad++; }
+    if (!probe_entry("no such", port, 0, &rx)) { say("not taken by its port without the probe"); bad++; }
+
+    /* opened by the serial alone: only with the probe */
+    mirisdr_open_config_default(&cfg);
+    cfg.serial = serial;
+    if (opt_fw) cfg.firmware_path = opt_fw;
+    if (mirisdr_open_ex(&dev, &cfg) == 0) {
+        say("opened by serial without the probe");
+        bad++;
+    } else {
+        dev = NULL;
+        cfg.flags = MIRISDR_OPEN_PROBE_SERIAL | (1u << 31);
+        if (mirisdr_open_ex(&dev, &cfg) == 0) { say("an open flag of a newer library was taken"); bad++; mirisdr_close(dev); }
+        dev = NULL;
+        cfg.flags = MIRISDR_OPEN_PROBE_SERIAL;
+        if (mirisdr_open_ex(&dev, &cfg) < 0) { dev = NULL; say("not opened by its serial with the probe"); bad++; }
+    }
+
+    if (!dev) {
+        /* by its port then, so the tests after this one have a device */
+        mirisdr_open_config_default(&cfg);
+        cfg.usb_port = port;
+        if (opt_fw) cfg.firmware_path = opt_fw;
+        if (mirisdr_open_ex(&dev, &cfg) < 0) { dev = NULL; if (device_reopen() < 0) { say("no device after the test"); return T_FAIL; } }
+    }
+
+    *got = 0;
+    if (mirisdr_get_serial(dev, got, sizeof got) <= 0 || strcmp(got, serial))
+    { say("the firmware declares \"%s\", the EEPROM read gave \"%s\"", got, serial); bad++; }
+
+    if (!bad) say("on the ROM \"%s\" is read from the EEPROM in %.0f ms, listed and opened by it, and left alone while held", serial, took * 1e3);
+    return bad ? T_FAIL : T_PASS;
+}
+
+#ifdef __linux__
+#include <signal.h>
+#endif
+
+/* what the receiver in a port runs, opened without loading anything: 1 its ROM, 0 a firmware,
+   -1 when it is not there */
+static int rom_at (const char *port)
+{
+    mirisdr_open_config_t cfg;
+    mirisdr_dev_t *d = NULL;
+    int r;
+
+    mirisdr_open_config_default(&cfg);
+    cfg.usb_port = port;
+    cfg.keep_running = 1;
+    if (mirisdr_open_ex(&d, &cfg) < 0) return -1;
+    r = mirisdr_running_from_rom(d);
+    mirisdr_close(d);
+
+    return r;
+}
+
+/* MIRISDR_OPEN_ROM_ON_CLOSE: the receiver is back on its ROM when the close returns, with the
+   ids its EEPROM gives it (GPIO 2, which says how large the EEPROM is, has to be released for
+   that). On Linux also when the program that opened it ends without closing it. The flag is
+   refused on a receiver that does not run our firmware, and without it the firmware stays */
+static tres_t t_rom_on_close (void)
+{
+    mirisdr_open_config_t cfg;
+    mirisdr_receiver_t was, rx;
+    mirisdr_dev_t *d = NULL;
+    char sys[32] = "", port[32];
+    double t0, took = 0, ended = -1;
+    int bad = 0, k;
+
+    if (opt_rom) { say("loads the firmware"); return T_SKIP; }
+    if (mirisdr_get_usb_position(dev, NULL, NULL, sys, sizeof sys) < 0) { say("no usb position"); return T_SKIP; }
+    snprintf(port, sizeof port, "%s", sys);
+    if (strchr(port, '-')) *strchr(port, '-') = ':';
+    if (!probe_entry(NULL, port, 0, &was)) { say("not listed at %s", port); return T_FAIL; }
+
+    /* closed as always: the firmware stays */
+    pump_stop();
+    mirisdr_close(dev);
+    dev = NULL;
+    if (rom_at(port) != 0) { say("on the ROM after a close without the flag"); bad++; }
+
+    /* with the flag: the firmware runs while it is open, the ROM when the close is back */
+    mirisdr_open_config_default(&cfg);
+    cfg.usb_port = port;
+    cfg.flags = MIRISDR_OPEN_ROM_ON_CLOSE;
+    if (opt_fw) cfg.firmware_path = opt_fw;
+    if (mirisdr_open_ex(&d, &cfg) < 0) { say("not opened with the flag"); bad++; }
+    else {
+        if (mirisdr_running_from_rom(d) != 0) { say("no firmware while open"); bad++; }
+        t0 = now();
+        mirisdr_close(d);
+        took = now() - t0;
+        if ((k = rom_at(port)) != 1) { say("after the close: %s", k ? "not there" : "still its firmware"); bad++; }
+        if (!probe_entry(NULL, port, 0, &rx) || rx.vid != was.vid || rx.pid != was.pid)
+        { say("on the ROM as %04x:%04x, not %04x:%04x", rx.vid, rx.pid, was.vid, was.pid); bad++; }
+        if (took > 10) { say("the close took %.1f s", took); bad++; }
+    }
+
+    /* on its ROM now: the flag with whatever runs is refused */
+    cfg.keep_running = 1;
+    d = NULL;
+    if ((rom_at(port) == 1) && (mirisdr_open_ex(&d, &cfg) == 0)) { say("taken on the ROM with keep_running"); bad++; mirisdr_close(d); }
+    cfg.keep_running = 0;
+
+#ifdef __linux__
+    {
+        /* a program that ends without closing it: killed, with nothing streamed */
+        pid_t pid = fork();
+
+        if (pid == 0) {
+            mirisdr_dev_t *c = NULL;
+
+            if (mirisdr_open_ex(&c, &cfg) < 0) _exit(3);
+            if (mirisdr_running_from_rom(c) != 0) _exit(4);
+            kill(getpid(), SIGKILL);
+            _exit(5);
+        }
+        if (pid < 0) { say("no fork"); bad++; }
+        else {
+            int st = 0;
+
+            waitpid(pid, &st, 0);
+            t0 = now();
+            if (!WIFSIGNALED(st)) { say("the other program ended with %d before it was killed", WEXITSTATUS(st)); bad++; }
+            else {
+                /* it leaves the USB a moment after the kill: gone, then back */
+                for (k = 0; k < 100 && probe_entry(NULL, port, 0, &rx); k++) usleep(10000);
+                for (k = 0; k < 400 && !probe_entry(NULL, port, 0, &rx); k++) usleep(10000);
+                ended = now() - t0;
+                for (k = 0; k < 40 && rom_at(port) < 0; k++) usleep(100000);
+                if ((k = rom_at(port)) != 1) { say("after the kill: %s", k ? "not there" : "still its firmware"); bad++; }
+                if (!probe_entry(NULL, port, 0, &rx) || rx.vid != was.vid || rx.pid != was.pid)
+                { say("after the kill on the ROM as %04x:%04x, not %04x:%04x", rx.vid, rx.pid, was.vid, was.pid); bad++; }
+            }
+        }
+    }
+#endif
+
+    /* the tests after this one have a device again, with its firmware */
+    mirisdr_open_config_default(&cfg);
+    cfg.usb_port = port;
+    if (opt_fw) cfg.firmware_path = opt_fw;
+    if (mirisdr_open_ex(&dev, &cfg) < 0) { dev = NULL; if (device_reopen() < 0) { say("no device after the test"); return T_FAIL; } }
+
+    if (!bad && (ended >= 0)) say("on the ROM as %04x:%04x when the close returns, after %.2f s, and %.2f s after the program is killed",
+                                  was.vid, was.pid, took, ended);
+    else if (!bad) say("on the ROM as %04x:%04x when the close returns, after %.2f s", was.vid, was.pid, took);
+    return bad ? T_FAIL : T_PASS;
+}
 
 /* The setup's own lists end within milliseconds, a list left waiting for stream interrupts
    never does, and a register write is then stalled */
@@ -8130,6 +8453,7 @@ static tres_t t_soapy_band (void)   { return soapy_run("bandranges"); }
 static tres_t t_soapy_channels (void) { return soapy_run("channels"); }
 static tres_t t_soapy_regress (void) { return soapy_run("regress"); }
 static tres_t t_soapy_report (void) { return soapy_run("report"); }
+static tres_t t_soapy_devstring (void) { return soapy_run("devstring"); }
 #endif
 
 static const struct {
@@ -8193,6 +8517,7 @@ static const struct {
     { "stream",   "isochronous 3x1024",         t_stream_isoc         },
     { "stream",   "isochronous 1x1024",         t_stream_isoc1        },
     { "stream",   "isochronous 2x1024",         t_stream_isoc2        },
+    { "stream",   "isochronous restarts",       t_stream_isoc_restart },
     { "stream",   "each transport's ceiling",   t_transport_capacity  },
     { "stream",   "every packing format",       t_formats             },
     { "stream",   "synchronous read",           t_sync_read           },
@@ -8222,6 +8547,8 @@ static const struct {
 #ifdef __linux__
     { "fixes",    "standard requests",          t_std_requests        },
 #endif
+    { "fixes",    "serial from the EEPROM",     t_probe_serial        },
+    { "fixes",    "back to the ROM on close",   t_rom_on_close        },
     { "fixes",    "pll stays off the band ends", t_pll_band           },
     { "fixes",    "pll recovers from no lock",  t_pll_unlockable     },
     { "fixes",    "rate recovers from the ceiling", t_rate_over_ceiling },
@@ -8272,6 +8599,7 @@ static const struct {
     { "soapy",    "two channels",               t_soapy_channels      },
     { "soapy",    "review fixes",               t_soapy_regress       },
     { "soapy",    "report of what runs",        t_soapy_report        },
+    { "soapy",    "settings in the device string", t_soapy_devstring  },
 #endif
 };
 

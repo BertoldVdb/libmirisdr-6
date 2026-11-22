@@ -16,7 +16,7 @@
  */
 
 static int mirisdr_open_raw (mirisdr_dev_t **p, uint32_t index, const char *serial, const char *usb_port,
-                             int external_tuner, uint8_t gpio_in, int flavour);
+                             int probe, int external_tuner, uint8_t gpio_in, int flavour);
 static int mirisdr_open_fd_raw (mirisdr_dev_t **p, int fd, int external_tuner, uint8_t gpio_in, int flavour);
 
 const uint8_t *mirisdr_default_firmware (uint32_t *size)
@@ -119,7 +119,7 @@ static int mirisdr_fw_find (const mirisdr_fw_path_t *path, uint32_t fallback, in
 
     i_max = libusb_get_device_list(ctx, &list);
 
-    if (i_max > 0) d = mirisdr_pick(list, i_max, fallback, NULL, path->valid ? path->port : NULL, &found);
+    if (i_max > 0) d = mirisdr_pick(list, i_max, fallback, NULL, path->valid ? path->port : NULL, 0, NULL, &found);
     if (!d) found = -1;
 
     /* udev can take seconds to give the new node its permissions */
@@ -164,6 +164,39 @@ static int mirisdr_fw_wait (const mirisdr_fw_path_t *path, uint32_t fallback)
 
     /* still denied: the open reports it */
     return index;
+}
+
+/* MIRISDR_OPEN_ROM_ON_CLOSE. The system puts the interface back to alternate setting 0 when
+   the program lets go of it, however it ends, and our firmware, asked to, reboots to the ROM
+   when that happens. So the interface is kept off 0 from here on: on the bulk setting, until a
+   stream selects its own. The firmware is asked after that, so an end in between leaves the
+   receiver as it was. */
+#define MIRISDR_ALT_HELD        3
+
+/* the request alone: bit 1 of the reboot request's value, which reboots nothing now */
+static int mirisdr_rom_arm_fw (mirisdr_dev_t *p)
+{
+    return (libusb_control_transfer(p->dh, 0x40, CMD_RESET, 2, 0, NULL, 0, CTRL_TIMEOUT) < 0) ? -1 : 0;
+}
+
+static int mirisdr_rom_arm (mirisdr_dev_t *p, int by_fd)
+{
+    if (!p->fw_ours)
+    {
+        fprintf(stderr, "libmirisdr: MIRISDR_OPEN_ROM_ON_CLOSE needs the library's firmware, and the receiver runs another\n");
+        return -1;
+    }
+
+    if ((libusb_set_interface_alt_setting(p->dh, 0, MIRISDR_ALT_HELD) < 0) || (mirisdr_rom_arm_fw(p) < 0))
+    {
+        fprintf(stderr, "libmirisdr: MIRISDR_OPEN_ROM_ON_CLOSE could not be set up on the receiver\n");
+        return -1;
+    }
+
+    /* 2: the close also waits until it is back. Opened by fd there is no list to see that in */
+    p->rom_on_close = by_fd ? 1 : 2;
+
+    return 0;
 }
 
 /* Locate the device descriptor */
@@ -491,6 +524,60 @@ static int mirisdr_fw_ee_serial (mirisdr_dev_t *p, char *out, int len)
     return 1;
 }
 
+/* The serial in the EEPROM of a receiver that runs from ROM and so declares none, read by
+   opening it for a moment: what mirisdr_fw_ee_serial() gives the firmware at the first open,
+   so the serial it declares from then on (with MIRISDR_FW_IDS_DEVICE). For listing receivers,
+   and for finding one by its serial, before that first open. 0 without one.
+
+   A receiver may be in use, and the read drives its GPIO pins and its SPI port. So only one
+   that declares no strings at all is opened, as only the ROM does: a firmware declares some
+   (ours a manufacturer and product, SDRplay's a serial). And only with interface 0 held, see
+   mirisdr_claim_wait(), waited for wait_ms when another holds it. A kernel driver on it is not
+   detached, as it may be in use too. Register 8 is left as an open leaves it, the board's plan */
+static int mirisdr_probe_serial (libusb_device *d, const struct libusb_device_descriptor *dd, int wait_ms,
+                                 char *out, int len)
+{
+    mirisdr_device_t *board;
+    libusb_device_handle *dh;
+    mirisdr_dev_t *p;
+    uint8_t block[4];
+    int got = 0;
+
+    if (dd->iManufacturer || dd->iProduct || dd->iSerialNumber) return 0;
+    /* the ROM's own ids: no EEPROM gave it others, see mirisdr_fw_ee_serial() */
+    if ((dd->idVendor == MIRISDR_ROM_VID) && (dd->idProduct == MIRISDR_ROM_PID)) return 0;
+    if (!(board = mirisdr_device_get(dd->idVendor, dd->idProduct))) return 0;
+
+    if (mirisdr_open_wait(d, &dh, wait_ms) < 0) return 0;
+    if ((libusb_kernel_driver_active(dh, 0) == 1) || (mirisdr_claim_wait(dh, wait_ms) < 0))
+    {
+        libusb_close(dh);
+        return 0;
+    }
+
+    if ((p = calloc(1, sizeof *p)))
+    {
+        mirisdr_xfer_lock_init(p);
+        p->dh = dh;
+        p->hw_flavour = board->flavour;
+        p->ee_size = -1;
+        p->reg8 = mirisdr_reg8_open(p);
+
+        /* the ROM answers the memory read, without our firmware's block there */
+        if ((mirisdr_read_mem(p, MIRISDR_FW_BLOCK, block, sizeof block, MIRISDR_MEM_XDATA) == 0)
+            && memcmp(block, "BVDB", 4))
+            got = mirisdr_fw_ee_serial(p, out, len);
+
+        mirisdr_xfer_lock_destroy(p);
+        free(p);
+    }
+
+    libusb_release_interface(dh, 0);
+    libusb_close(dh);
+
+    return got;
+}
+
 /* The same three ways the ids are chosen, since a serial is part of the identity
    the image carries. Read before any reboot: the ROM declares none, so an SDRplay's or
    a Mirics TV stick's comes from its EEPROM. */
@@ -612,8 +699,9 @@ static int mirisdr_fw_open (mirisdr_dev_t **dev, const mirisdr_open_config_t *cf
 {
     uint8_t block[16];
     int r = (cfg->fd >= 0) ? mirisdr_open_fd_raw(dev, cfg->fd, cfg->external_tuner, cfg->gpio_input_mask, cfg->hw_flavour)
-                           : mirisdr_open_raw(dev, at, serial, usb_port, cfg->external_tuner,
-                                              cfg->gpio_input_mask, cfg->hw_flavour);
+                           : mirisdr_open_raw(dev, at, serial, usb_port,
+                                              (cfg->flags & MIRISDR_OPEN_PROBE_SERIAL) ? MIRISDR_CLAIM_WAIT_MS : 0,
+                                              cfg->external_tuner, cfg->gpio_input_mask, cfg->hw_flavour);
 
     /* the ROM answers the memory requests too, so anything that needs our own
        firmware asks this rather than assuming */
@@ -727,6 +815,12 @@ int mirisdr_open_ex (mirisdr_dev_t **out, const mirisdr_open_config_t *cfg)
     if (MIRISDR_RESERVED_SET(*cfg) || MIRISDR_RESERVED_SET(cfg->firmware_patch))
     {
         fprintf(stderr, "libmirisdr: " MIRISDR_RESERVED_MSG, "the open config");
+        return -1;
+    }
+
+    if (cfg->flags & ~MIRISDR_OPEN_FLAGS)
+    {
+        fprintf(stderr, "libmirisdr: " MIRISDR_FLAGS_MSG, "the open config", cfg->flags & ~MIRISDR_OPEN_FLAGS);
         return -1;
     }
 
@@ -948,6 +1042,14 @@ out:
     {
         mirisdr_close(dev);
         if (r == 0) r = -1;
+    }
+
+    /* only on the receiver handed back: the closes on the way here reboot nothing */
+    if ((r == 0) && *out && (cfg->flags & MIRISDR_OPEN_ROM_ON_CLOSE) && (mirisdr_rom_arm(*out, cfg->fd >= 0) < 0))
+    {
+        mirisdr_close(*out);
+        *out = NULL;
+        r = -1;
     }
     if (work) free(work);
     if (owned) free(owned);

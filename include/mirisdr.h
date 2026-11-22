@@ -97,7 +97,11 @@ typedef struct mirisdr_receiver
 	const char *product;        /* the board's model, as mirisdr_get_board_name() gives it */
 	const char *name;           /* the long name, "SDRplay RSPdx" */
 	int         hw_flavour;     /* what MIRISDR_HW_AUTO opens it as */
-	uint32_t    reserved[MIRISDR_RESERVED];
+	uint32_t    serial_from_eeprom; /* 1: the receiver runs from ROM and declares no serial. This one
+	                               was read from its EEPROM (see MIRISDR_LIST_PROBE_SERIAL below), and is the one
+	                               it declares once the library's firmware is loaded with the
+	                               default open config */
+	uint32_t    reserved[MIRISDR_RESERVED - 1];
 } mirisdr_receiver_t;
 
 /* Every receiver the library takes, from one look at the USB, so the entries agree with each other:
@@ -108,6 +112,41 @@ typedef struct mirisdr_receiver
    with more room), -1 when the USB cannot be listed */
 MIRISDR_API int mirisdr_list_receivers (const char *serial, const char *usb_port, mirisdr_receiver_t *out,
                                         int max); /* extra */
+
+/* The same with options. Fill the config with mirisdr_list_config_default() and change only what
+ * is needed.
+ *
+ * MIRISDR_LIST_PROBE_SERIAL in flags: an SDRplay or Mirics TV stick running from its ROM declares
+ * no serial, though its EEPROM holds one, so it is listed with only its USB port until a first
+ * open has loaded the firmware. With this flag the library opens such a receiver for a moment and
+ * reads the serial from the EEPROM. Off by default, as that is more than a look at the USB.
+ *
+ * Only a receiver that declares no strings at all is opened, as only the ROM does. One running a
+ * firmware (the library's or the vendor's) may be in use and is left alone.
+ *
+ * The receiver's interface is claimed before anything is sent to it. One that another program
+ * holds, or the kernel's msi2500 driver, is skipped and listed by its port. A program opening it
+ * at that very moment finds it busy: libmirisdr's open waits for that, others may fail.
+ *
+ * The read drives the receiver's GPIO pins and takes about 10 ms for each such receiver. It
+ * needs the permission to open the device.
+ *
+ * Entries are only read from the EEPROM when they are filled in, so a call with max 0 that only
+ * counts opens nothing, unless serial or usb_port ask for one receiver */
+#define MIRISDR_LIST_PROBE_SERIAL   (1u << 0)
+
+typedef struct mirisdr_list_config
+{
+	const char *serial;         /* only the receiver an open with these would take, */
+	const char *usb_port;       /* NULL for every receiver */
+	uint32_t    flags;          /* MIRISDR_LIST_*, 0 by default. A flag this library does not
+	                               know is refused */
+	uint32_t    reserved[MIRISDR_RESERVED];
+} mirisdr_list_config_t;
+
+MIRISDR_API void mirisdr_list_config_default (mirisdr_list_config_t *cfg); /* extra */
+MIRISDR_API int mirisdr_list_receivers_ex (const mirisdr_list_config_t *cfg, mirisdr_receiver_t *out,
+                                           int max); /* extra */
 
 /* main */
 MIRISDR_API int mirisdr_open (mirisdr_dev_t **p, uint32_t index);
@@ -806,6 +845,29 @@ MIRISDR_API int mirisdr_fw_board (mirisdr_dev_t *p, mirisdr_fw_patch_t *out); /*
 #define MIRISDR_FW_IDS_DEVICE   1
 #define MIRISDR_FW_IDS_SET      2
 
+/* The open config's flags.
+ *
+ * MIRISDR_OPEN_PROBE_SERIAL: when no receiver declares the serial asked for, read the EEPROM of
+ * those running from ROM to find it, as mirisdr_list_receivers_ex() does with
+ * MIRISDR_LIST_PROBE_SERIAL, the one in usb_port first. Then a receiver in usb_port whose EEPROM
+ * holds another serial is not taken in its place.
+ *
+ * MIRISDR_OPEN_ROM_ON_CLOSE: the receiver goes back to its ROM when it is closed, as after a
+ * power cycle, instead of keeping the firmware running. mirisdr_close() reboots it and returns
+ * once it is back on the USB, about a second later, so a list or an open right after finds it.
+ * That takes longer where the system is slow to see it again or to give access to it.
+ *
+ * On Linux it also goes back when the program ends without closing it, however it ends: the
+ * system then puts the USB interface back to its idle setting, which the firmware takes as the
+ * sign. A reset of the USB bus makes the firmware forget this until the next open.
+ *
+ * The next open loads the firmware again. On its ROM the receiver declares no serial: see the
+ * PROBE_SERIAL flags. It needs the library's firmware on the receiver: with keep_running and
+ * another one the open fails, and an image from firmware_path older than this flag reboots at
+ * once. */
+#define MIRISDR_OPEN_PROBE_SERIAL   (1u << 0)
+#define MIRISDR_OPEN_ROM_ON_CLOSE   (1u << 1)
+
 typedef struct mirisdr_open_config
 {
 	uint32_t       index;           /* when opening by index */
@@ -833,7 +895,9 @@ typedef struct mirisdr_open_config
 	int            hw_flavour;      /* the board, a mirisdr_hw_flavour_t. Settings this wrong
                                      * could in theory cause damage (eg bias-T on).
 	                                 * MIRISDR_HW_AUTO by default */
-	uint32_t reserved[MIRISDR_RESERVED];
+	uint32_t       flags;           /* MIRISDR_OPEN_*, 0 by default. A flag this library does
+	                                 * not know is refused */
+	uint32_t reserved[MIRISDR_RESERVED - 1];
 } mirisdr_open_config_t;
 
 /* Please fill in the open_config struct using mirisdr_open_config_default(&cfg) and only

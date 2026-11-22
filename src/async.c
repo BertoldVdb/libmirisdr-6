@@ -1137,6 +1137,11 @@ static int mirisdr_start_async_held (mirisdr_dev_t *p) {
         mirisdr_async_alt(p);
         if (mirisdr_async_alloc(p) < 0) goto failed;
     }
+    /* Some host controllers (the VL805 of the Raspberry Pi 4) serve an isochronous
+       endpoint whose transfers were all canceled only about 2 s later, by when the new
+       transfers have timed out and the stream stays silent. Selecting the alternate
+       setting again sets the endpoint up afresh, as a first start does */
+    else if (p->xfer && (p->transfer == MIRISDR_TRANSFER_ISOC)) mirisdr_async_alt(p);
 
     if (!p->xfer) goto failed;
 

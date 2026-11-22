@@ -133,6 +133,7 @@ struct mirisdr_dev {
     int                 driver_active;
     int                 checking;       /* in a *_check(): refusals are not printed */
     int                 fw_ours;
+    int                 rom_on_close;   /* MIRISDR_OPEN_ROM_ON_CLOSE: 1, or 2 to wait for it to be back too */
     uint8_t             fw_pps_at;      /* status blocks, from the firmware block: internal RAM, */
     uint16_t            fw_anchor_at;   /* xdata, */
     uint8_t             fw_list_at;     /* internal RAM; 0 when the firmware has none */

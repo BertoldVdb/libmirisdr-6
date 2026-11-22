@@ -151,10 +151,31 @@ static int probe(Dev *d, soapy_say_t say, soapy_say_t note)
         d->setFrequency(SOAPY_SDR_RX, 0, 10e6);
         if (d->getGainRange(SOAPY_SDR_RX, 0, "MIXBUF").maximum() != 24 || d->getGainRange(SOAPY_SDR_RX, 0, "LNA").maximum() != lnaMax)
         { say("HF gain ranges wrong"); bad++; }
+        /* asked at VHF, before the frequency as GQRX does on opening: in force here */
+        if (d->getGain(SOAPY_SDR_RX, 0, "MIXBUF") != 24) { say("MIXBUF asked at VHF is %.0f at HF", d->getGain(SOAPY_SDR_RX, 0, "MIXBUF")); bad++; }
+        d->setGain(SOAPY_SDR_RX, 0, "MIXBUF", 0);
         d->setGain(SOAPY_SDR_RX, 0, "MIXBUF", 24);
         if (d->getGain(SOAPY_SDR_RX, 0, "MIXBUF") != 24) { say("MIXBUF 24 at HF gave %.0f", d->getGain(SOAPY_SDR_RX, 0, "MIXBUF")); bad++; }
-        d->setGain(SOAPY_SDR_RX, 0, "MIXBUF", 0);
+
+        /* another stage moved in a band without the mixbuffer: still there on the way back.
+           The same for the LNA, which HF does not have, asked here */
+        d->setGain(SOAPY_SDR_RX, 0, "LNA", lnaMax);
+        if (d->getGain(SOAPY_SDR_RX, 0, "LNA") != 0) { say("LNA at HF gave %.0f", d->getGain(SOAPY_SDR_RX, 0, "LNA")); bad++; }
+        d->setFrequency(SOAPY_SDR_RX, 0, 100e6);
+        if (d->getGain(SOAPY_SDR_RX, 0, "LNA") != 24) { say("LNA asked at HF is %.0f at VHF", d->getGain(SOAPY_SDR_RX, 0, "LNA")); bad++; }
+        d->setGain(SOAPY_SDR_RX, 0, "BB", 30);
+        d->setFrequency(SOAPY_SDR_RX, 0, 10e6);
+        if (d->getGain(SOAPY_SDR_RX, 0, "MIXBUF") != 24 || d->getGain(SOAPY_SDR_RX, 0, "BB") != 30)
+        { say("after a stage moved at VHF: MIXBUF %.0f, BB %.0f at HF", d->getGain(SOAPY_SDR_RX, 0, "MIXBUF"), d->getGain(SOAPY_SDR_RX, 0, "BB")); bad++; }
+
+        /* a total forgets them: the library splits it for each band */
+        d->setGain(SOAPY_SDR_RX, 0, 40);
+        d->setFrequency(SOAPY_SDR_RX, 0, 100e6);
+        d->setFrequency(SOAPY_SDR_RX, 0, 10e6);
+        if (d->getGain(SOAPY_SDR_RX, 0) != 40) { say("a total of 40 is %.0f after two retunes", d->getGain(SOAPY_SDR_RX, 0)); bad++; }
     }
+    d->setGain(SOAPY_SDR_RX, 0, "MIXBUF", 0);
+    d->setGain(SOAPY_SDR_RX, 0, "LNA", 0);
 
     /* a total, then one stage: the others stay */
     d->setFrequency(SOAPY_SDR_RX, 0, 100e6);
@@ -260,6 +281,11 @@ static int probe(Dev *d, soapy_say_t say, soapy_say_t note)
     { say("100 Msps in bulk: %.0f", d->getSampleRate(SOAPY_SDR_RX, 0)); bad++; }
     d->setSampleRate(SOAPY_SDR_RX, 0, 2e6);
     d->writeSetting("transfer", transfer);
+
+    /* a rate of 0 is 2 Msps */
+    d->setSampleRate(SOAPY_SDR_RX, 0, 4e6);
+    d->setSampleRate(SOAPY_SDR_RX, 0, 0);
+    if (d->getSampleRate(SOAPY_SDR_RX, 0) != 2e6) { say("a rate of 0 gave %.0f", d->getSampleRate(SOAPY_SDR_RX, 0)); bad++; }
 
     /* a low rate takes a low IF, the frequency still the centre */
     d->setFrequency(SOAPY_SDR_RX, 0, 433.5e6);
@@ -805,6 +831,89 @@ static int report(const char *module, const char *serial, soapy_say_t say, soapy
     return bad ? SOAPY_T_FAIL : SOAPY_T_PASS;
 }
 
+/* the module's warnings and errors, kept here */
+static void keepWarn(const SoapySDRLogLevel level, const char *m)
+{
+    if (level <= SOAPY_SDR_WARNING) logged.push_back(m);
+}
+
+static bool warned(const char *part)
+{
+    for (const std::string &l : logged) if (l.find(part) != std::string::npos) return true;
+    return false;
+}
+
+/* Settings in the device string are applied at open, and one the receiver does not have is
+   said. The bias-T is taken by SoapySDRPlay3's name too. It is only ever written off here:
+   the port may have something connected */
+static int devString(const char *module, const char *serial, soapy_say_t say, soapy_say_t note)
+{
+    SoapySDR::Kwargs extra;
+    bool bias = false, notch = false, ds = false;
+    int bad = 0;
+    Dev *d;
+
+    if (!(d = openDev(module, serial, nullptr, say))) return SOAPY_T_FAIL;
+    for (const auto &a : d->getSettingInfo())
+    {
+        bias = bias || a.key == "biastee";
+        notch = notch || a.key == "fm_notch";
+        ds = ds || a.key == "direct_sampling";
+    }
+    if (d->readSetting("transfer") == "BULK" || d->readSetting("format") != "AUTO")
+    { say("the defaults are not what this test changes"); bad++; }
+    Dev::unmake(d);
+
+    extra["transfer"] = "BULK";
+    extra["format"] = "504_S8";
+    extra["baseband"] = "false";
+    extra["gap_fill"] = "true";
+    extra["fm_notch"] = "true";
+    extra["biasT_ctrl"] = "false";
+    extra["direct_sampling"] = "off";
+    extra["bandwidth"] = "1536000";
+    extra["some_program_key"] = "1";
+    logged.clear();
+    SoapySDR::registerLogHandler(keepWarn);
+    d = openDev(module, serial, nullptr, say, extra);
+    SoapySDR::registerLogHandler(quietLog);
+    if (!d) return SOAPY_T_FAIL;
+
+    try
+    {
+        for (const std::string &l : logged) note("open: %s", l.c_str());
+        if (d->readSetting("transfer") != "BULK" || d->readSetting("format") != "504_S8" ||
+            d->readSetting("baseband") != "false" || d->readSetting("gap_fill") != "true")
+        {
+            say("opened with transfer %s, format %s, baseband %s, gap fill %s", d->readSetting("transfer").c_str(),
+                d->readSetting("format").c_str(), d->readSetting("baseband").c_str(), d->readSetting("gap_fill").c_str());
+            bad++;
+        }
+        if (notch && d->readSetting("fm_notch") != "true") { say("the FM notch is not on"); bad++; }
+        if (notch == warned("fm_notch in the device string")) { say("the FM notch: %s", notch ? "warned of" : "no warning"); bad++; }
+        if (bias == warned("biasT_ctrl in the device string")) { say("the bias-T: %s", bias ? "warned of" : "no warning"); bad++; }
+        if (ds && d->readSetting("direct_sampling") != "OFF") { say("direct sampling is %s", d->readSetting("direct_sampling").c_str()); bad++; }
+        if (ds == warned("direct_sampling in the device string")) { say("direct sampling: %s", ds ? "warned of" : "no warning"); bad++; }
+        if (logged.size() != (size_t) (!notch + !bias + !ds)) { say("%zu warnings at open", logged.size()); bad++; }
+
+        /* the other name reads and writes the same setting */
+        if (d->readSetting("biasT_ctrl") != "false" || d->readSetting("biastee") != "false")
+        { say("the bias-T reads \"%s\" by the other name", d->readSetting("biasT_ctrl").c_str()); bad++; }
+        logged.clear();
+        SoapySDR::registerLogHandler(keepWarn);
+        d->writeSetting("biasT_ctrl", "false");
+        SoapySDR::registerLogHandler(quietLog);
+        if (bias != logged.empty()) { say("writing it by the other name logged %zu lines", logged.size()); bad++; }
+    }
+    catch (const std::exception &e) { say("%s", e.what()); bad++; }
+    Dev::unmake(d);
+    logged.clear();
+
+    if (!bad) say("transfer, format, gap fill%s%s applied at open, %s, other keys ignored", notch ? ", the FM notch" : "",
+                  ds ? ", direct sampling" : "", bias ? "the bias-T by both names" : "a warning for each setting it has not");
+    return bad ? SOAPY_T_FAIL : SOAPY_T_PASS;
+}
+
 extern "C" int soapy_test(const char *which, const char *module, const char *serial, int verbose,
                           soapy_say_t say, soapy_say_t note)
 {
@@ -866,6 +975,13 @@ extern "C" int soapy_test(const char *which, const char *module, const char *ser
     if (!strcmp(which, "report"))
     {
         r = report(module, serial, say, note);
+        SoapySDR::registerLogHandler(nullptr);
+        return r;
+    }
+
+    if (!strcmp(which, "devstring"))
+    {
+        r = devString(module, serial, say, note);
         SoapySDR::registerLogHandler(nullptr);
         return r;
     }

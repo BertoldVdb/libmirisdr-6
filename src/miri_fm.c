@@ -113,6 +113,8 @@ struct dongle_state
 	int      transfer;
 	int      bw;
 	int      if_mode;
+	const char *antenna;    /* -a, NULL the one in use */
+	int      bias;          /* -P, the bias-T on */
 	volatile int mute;      /* samples still to drop */
 	struct demod_state *demod_target;
 };
@@ -211,6 +213,11 @@ void usage(void)
 		"\t    5:       a TV stick on the Mirics TV reference design\n"
 		"\t    6:       SDRplay RSP2 or RSP2pro\n"
 		"\t    7:       SDRplay RSP1A\n"
+		"\t[-a antenna (default: the first one)]\n"
+		"\t    RX on most boards. RSPdx-R2 and nRSP-ST: A, B, C. RSP2: A, B, Hi-Z, TEST.\n"
+		"\t    RSP1A: RX, TEST. RSPduo: RX, Hi-Z. A Hi-Z input works below 30 MHz\n"
+		"\t[-P bias-T on: power on the antenna input, off again when the program ends]\n"
+		"\t    RSP1A and RSP1B. Port B on the RSPdx-R2, nRSP-ST and RSP2\n"
 		"\t[-g total tuner gain in 10 dB units: 4.5 is 45 dB, taken to the nearest the band has\n"
 		"\t    (default: the library's, 43 dB)]\n"
 		"\t[-m sample format (default: auto]\n"
@@ -1001,10 +1008,16 @@ static int dongle_setup(struct controller_state *s)
 		tc.gain.mode = MIRISDR_GAIN_TOTAL;
 		tc.gain.total = dongle.gain;
 	}
+	/* -a and -P, part of the same tune, and of every hop's after it */
+	if (dongle.antenna && verbose_antenna(dongle.dev, dongle.antenna, &tc) < 0) {
+		return -1;}
+	if (dongle.bias) {
+		tc.frontend.bias = 1;}
 	if (mirisdr_tune(dongle.dev, 0, &tc, &tr) < 0) {
 		fprintf(stderr, "Failed to tune.\n");
 		return -1;
 	}
+	verbose_frontend(dongle.dev, &tr);
 
 	mirisdr_get_stream(dongle.dev, &sc, NULL);
 	sc.baseband = 1;
@@ -1128,6 +1141,8 @@ void dongle_init(struct dongle_state *s)
 #else
 	s->transfer = 2;
 #endif
+	s->antenna = NULL;
+	s->bias = 0;
 	s->bw = 0;              /* the widest the IF allows */
 	s->if_mode = -1;        /* auto */
 }
@@ -1234,8 +1249,14 @@ int main(int argc, char **argv)
     mirisdr_hw_flavour_t hw_flavour = MIRISDR_HW_AUTO;
     int intval;
 
-	while ((opt = getopt(argc, argv, "d:T:e:f:g:i:l:m:o:p:r:s:t:w:E:F:A:M:h")) != -1) {
+	while ((opt = getopt(argc, argv, "a:d:T:e:f:g:i:l:m:o:p:Pr:s:t:w:E:F:A:M:h")) != -1) {
 		switch (opt) {
+		case 'a':
+			dongle.antenna = optarg;
+			break;
+		case 'P':
+			dongle.bias = 1;
+			break;
 		case 'd':
 			dongle.dev_index = verbose_device_search(optarg);
 			dev_given = 1;

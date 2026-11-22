@@ -19,6 +19,7 @@
  * todo: use strtol for more flexible int parsing
  * */
 
+#include <ctype.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -347,6 +348,83 @@ int verbose_device_search(char *s)
 	}
 	fprintf(stderr, "No matching devices found.\n");
 	return -1;
+}
+
+/* The antenna input and the bias-T, -a and -P of miri_sdr and miri_fm. Both are part of
+   the tune of tuner 0, so they go into the config the program tunes with */
+
+/* A typed name against an antenna's. Capitals and dashes do not matter, so hiz is Hi-Z */
+static int antenna_same(const char *a, const char *b)
+{
+	for (;;) {
+		while (*a == '-') a++;
+		while (*b == '-') b++;
+		if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) return 0;
+		if (!*a) return 1;
+		a++;
+		b++;
+	}
+}
+
+/* An antenna's name, the one the SoapySDR module lists it under. The Hi-Z input is Hi-Z
+   and the test oscillator TEST. A board with a second 50 ohm port has its ports' letters,
+   any other the one RX */
+const char *antenna_name(const mirisdr_frontend_caps_t *caps, int antenna)
+{
+	static const char *letters[] = { "A", "B", "C" };
+
+	if (antenna == MIRISDR_ANTENNA_TEST) return "TEST";
+	if (antenna == caps->antenna_hiz) return "Hi-Z";
+	if ((caps->antennas & (1u << MIRISDR_ANTENNA_B)) && (caps->antenna_hiz != MIRISDR_ANTENNA_B) &&
+	    (antenna >= MIRISDR_ANTENNA_A) && (antenna <= MIRISDR_ANTENNA_C))
+		return letters[antenna];
+	return "RX";
+}
+
+/* -a: the antenna named, into the tune config. A name the receiver does not have lists
+   the ones it has */
+int verbose_antenna(mirisdr_dev_t *dev, const char *name, mirisdr_tune_config_t *tc)
+{
+	mirisdr_frontend_caps_t caps;
+	int a;
+
+	if (mirisdr_get_frontend_caps(dev, 0, &caps) < 0) {
+		fprintf(stderr, "Failed to read the receiver's antennas.\n");
+		return -1;
+	}
+	for (a = 0; a < 32; a++) {
+		if ((caps.antennas & (1u << a)) && antenna_same(name, antenna_name(&caps, a))) {
+			tc->frontend.antenna = a;
+			return 0;
+		}
+	}
+	fprintf(stderr, "No antenna %s. This receiver has:", name);
+	for (a = 0; a < 32; a++) {
+		if (caps.antennas & (1u << a)) {
+			fprintf(stderr, " %s", antenna_name(&caps, a));}
+	}
+	fprintf(stderr, "\n");
+	return -1;
+}
+
+/* After the tune: the antenna in use, where the board has more than one, and the bias-T,
+   where it has one or GPIO 3 stands in for one. -P sets frontend.bias in the tune config
+   and the tune refuses it where there is none to turn on: the Mirics TV design, and the
+   RSPduo's tuner 0, as its bias-T powers the other tuner's port. mirisdr_close() turns it
+   off again */
+void verbose_frontend(mirisdr_dev_t *dev, const mirisdr_tune_result_t *tr)
+{
+	mirisdr_frontend_caps_t caps;
+
+	if (mirisdr_get_frontend_caps(dev, 0, &caps) < 0) {
+		return;}
+	if (caps.antennas & (caps.antennas - 1)) {
+		fprintf(stderr, "Antenna %s.\n", antenna_name(&caps, tr->frontend.antenna));}
+	if (caps.bias) {
+		fprintf(stderr, "Bias-T %s.\n", tr->frontend.bias ? "on" : "off");}
+	else if (tr->frontend.bias) {
+		fprintf(stderr, "No bias-T known on this board. GPIO 3 is held high, which switches one on some boards.\n"
+		        "On an RSP1 that pin helps select the band filter, so reception suffers in most bands.\n");}
 }
 
 // vim: tabstop=8:softtabstop=8:shiftwidth=8:noexpandtab

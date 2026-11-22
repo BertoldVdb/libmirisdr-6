@@ -1425,14 +1425,18 @@ static int mirisdr_tune_apply (mirisdr_dev_t *p, const mirisdr_tune_config_t *c,
     const hw_switch_freq_plan_t *row;
     mirisdr_tuner_status_t st;
     mirisdr_tune_plan_t pl;
-    int r, pinned;
+    int r, pinned, checking;
 
     if (!p || !c) return -1;
 
-    /* the row without fallback, and whether this tune can ask the tuner */
+    /* the row without fallback, and whether this tune can ask the tuner. Quietly, as a
+       tune refused here is planned again below, which says why */
+    checking = p->checking;
+    p->checking = 1;
     p->edge_try = 1;
     r = mirisdr_tune_plan(p, c, flags, &pl);
     p->edge_try = 0;
+    p->checking = checking;
     if (r < 0) return mirisdr_tune_apply_once(p, c, flags, res);
     row = pl.w.row;
 

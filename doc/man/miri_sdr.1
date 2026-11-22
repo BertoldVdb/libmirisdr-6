@@ -1,4 +1,4 @@
-.TH MIRI_SDR 1 "October 2026" "libmirisdr-6" "User Commands"
+.TH MIRI_SDR 1 "November 2026" "libmirisdr-6" "User Commands"
 .ad l
 .ss 12 0
 .SH NAME
@@ -12,7 +12,7 @@ miri_sdr \- capture samples from a Mirics based receiver
 .SH DESCRIPTION
 .B miri_sdr
 tunes a receiver built on the Mirics MSi2500 and MSi001, such as the SDRplay
-RSP1, RSP1A, RSP1B, RSP2, RSPdx, RSPdx\-R2, nRSP\-ST and RSPduo, and writes the samples it receives to a file.
+RSP1, RSP1A, RSP1B, RSP2, RSPdx(\-R2), nRSP\-ST and RSPduo, and writes the samples it receives to a file.
 Give
 .B \-
 as the file to write them to standard output.
@@ -53,6 +53,47 @@ The real formats use one converter, and only make sense with a low IF:
 (12 bits) and
 .B 504r
 (16 bits).
+.TP
+.BI \-a " antenna"
+The antenna input, by its name. Most boards have one, called
+.BR RX .
+The RSPdx(\-R2) and nRSP\-ST have
+.BR A ,
+.B B
+and
+.BR C ,
+the RSP2 has
+.BR A ,
+.BR B ,
+.B Hi\-Z
+and
+.BR TEST ,
+the RSP1A has
+.B RX
+and
+.BR TEST ,
+and the RSPduo has
+.B RX
+and
+.BR Hi\-Z .
+A Hi\-Z input only works below 30 MHz, and
+.B TEST
+is the board's own test signal. Capitals do not matter, and
+.B hiz
+is taken as
+.BR Hi\-Z .
+A name the receiver does not have lists the ones it has. The default is the
+first one.
+.TP
+.B \-P
+Turns the bias\-T on, which puts power on the antenna input for an amplifier at the
+antenna. The RSP1A and RSP1B have one, and the RSPdx(\-R2), nRSP\-ST and RSP2 have
+one on port B. It goes off again when the program ends. The RSPduo's is on the
+port marked tuner 2, which this program does not receive from, so there it is
+refused. On a board with no bias\-T known, GPIO 3 is held high, which switches
+one on some boards. On an RSP1 that pin helps select the band filter, so
+reception suffers in most bands. Only use it with something connected that
+takes the power.
 .TP
 .BI \-g " gain"
 The total gain in units of 10 dB, so 4.5 is 45 dB. The nearest gain the band has
@@ -103,7 +144,7 @@ Which receiver to open, counting from 0. The default is 0.
 .BI \-T " board"
 The board, when the USB ids do not tell it: 0 a plain MSi2500 and MSi001 board,
 or the SDRplay RSP1, 1 the original libmirisdr\(aqs SDRplay plan (its board is
-not known), 2 the RSP1B, 3 the RSPdx, RSPdx\-R2 and nRSP\-ST, 4 the RSPduo, 5 the Mirics TV reference design
+not known), 2 the RSP1B, 3 the RSPdx(\-R2) and nRSP\-ST, 4 the RSPduo, 5 the Mirics TV reference design
 (TV sticks such as the Hauppauge WinTV 133559LF), 6 the RSP2 and 7 the RSP1A.
 .TP
 .BI \-b " size"

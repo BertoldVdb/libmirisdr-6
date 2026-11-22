@@ -8,7 +8,7 @@ You do not need to change anything there to use the library. A receiver that sta
 
 <h3>Why put the firmware there</h3>
 
-The ROM does not report a serial. Until a program has opened the receiver once, it is listed with only its place on the USB, such as `usb_port=1:3` (see "Receivers without firmware in their EEPROM" in the [SoapySDR guide](soapysdr.md)). With the firmware in the EEPROM the receiver has its serial from the start, so programs find the same receiver again in any port.
+The ROM does not report a serial. Until a program has opened the receiver once, it is listed with only its place on the USB, such as `usb_port=1:3` (see "Receivers without firmware in their EEPROM" in the [SoapySDR guide](soapysdr.md)). With the firmware in the EEPROM the receiver has its serial from the start, so programs find the same receiver again in any port. Without it, the library can read the serial from the EEPROM while listing. The SoapySDR module does so unless told not to (`probe_serial`, see the same section).
 
 The receiver needs an EEPROM for this. The tool to use is `miri_eeprom`, and its manual page (`man miri_eeprom`) lists all its commands.
 

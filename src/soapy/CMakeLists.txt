@@ -19,3 +19,9 @@ target_include_directories(mirisdrSupport PRIVATE ${CMAKE_SOURCE_DIR}/include ${
 if(NOT WIN32 AND NOT APPLE)
     target_compile_definitions(mirisdrSupport PRIVATE mirisdr_STATIC)
 endif()
+
+# what the module does unless MIRISDR_PROBE_SERIAL or the device string says otherwise
+target_compile_definitions(mirisdrSupport PRIVATE MIRISDR_SOAPY_PROBE_SERIAL=$<BOOL:${SOAPY_PROBE_SERIAL}>)
+
+# what the module does unless the device string says otherwise
+target_compile_definitions(mirisdrSupport PRIVATE MIRISDR_SOAPY_ROM_ON_CLOSE=$<BOOL:${SOAPY_ROM_ON_CLOSE}>)

@@ -38,6 +38,8 @@
 
 #include "mirisdr.h"
 
+#include "convenience.c"
+
 #define DEFAULT_SAMPLE_RATE		2048000
 #define DEFAULT_ASYNC_BUF_NUMBER	32
 #define DEFAULT_BUF_LENGTH		(16 * 16384)
@@ -106,6 +108,11 @@ void usage(void)
 		"\t    5:       a TV stick on the Mirics TV reference design\n"
 		"\t    6:       SDRplay RSP2 or RSP2pro\n"
 		"\t    7:       SDRplay RSP1A\n"
+		"\t[-a antenna (default: the first one)]\n"
+		"\t    RX on most boards. RSPdx-R2 and nRSP-ST: A, B, C. RSP2: A, B, Hi-Z, TEST.\n"
+		"\t    RSP1A: RX, TEST. RSPduo: RX, Hi-Z. A Hi-Z input works below 30 MHz\n"
+		"\t[-P bias-T on: power on the antenna input, off again when the program ends]\n"
+		"\t    RSP1A and RSP1B. Port B on the RSPdx-R2, nRSP-ST and RSP2\n"
 		"\t[-g total gain in 10 dB units: 4.5 is 45 dB, taken to the nearest the band has\n"
 		"\t    (default: keep the gain set, there is no automatic gain)]\n"
         "\t[-G individual gains separated by comma (mixer, lna, mixbuffer, baseband)]\n"
@@ -230,10 +237,18 @@ int main(int argc, char **argv)
     uint32_t device_count;
 	char vendor[256] = { 0 }, product[256] = { 0 }, serial[256] = { 0 };
 	mirisdr_hw_flavour_t hw_flavour = MIRISDR_HW_AUTO;
+	const char *antenna = NULL;
+	int bias = 0;
 	int intval;
 
-	while ((opt = getopt(argc, argv, "b:Bd:D:T:e:f:g:G:i:m:qs:w:S::")) != -1) {
+	while ((opt = getopt(argc, argv, "a:b:Bd:D:T:e:f:g:G:i:m:Pqs:w:S::")) != -1) {
 		switch (opt) {
+		case 'a':
+			antenna = optarg;
+			break;
+		case 'P':
+			bias = 1;
+			break;
 		case 'b':
 			out_block_size = parse_u32(optarg, "-b");
 			block_given = 1;
@@ -447,11 +462,21 @@ int main(int argc, char **argv)
 	} else {
 		fprintf(stderr, "No automatic gain, keeping the gain set.\n");
 	}
+	/* -a and -P, part of the same tune. From here on every way out closes the receiver,
+	   which turns the bias-T off again */
+	if (antenna && verbose_antenna(dev, antenna, &tc) < 0) {
+		r = -1;
+		goto out;
+	}
+	if (bias)
+		tc.frontend.bias = 1;
 	if (mirisdr_tune(dev, 0, &tc, &tr) < 0) {
 		fprintf(stderr, "Failed to tune.\n");
-		exit(1);
+		r = -1;
+		goto out;
 	}
 	fprintf(stderr, "Tuned to %u Hz (LO %u Hz).\n", frequency, tr.lo);
+	verbose_frontend(dev, &tr);
 	fprintf(stderr, "Tuner gain %d dB: LNA %s, mixer %s, mixbuffer %d dB, baseband %d dB.\n", tr.gain.total,
 	        tr.gain.lna ? "on" : "off", tr.gain.mixer ? "on" : "off", tr.gain.mixbuffer, tr.gain.baseband);
 
@@ -474,7 +499,8 @@ int main(int argc, char **argv)
 	sc.swap_iq = swap_iq;
 	if (mirisdr_set_stream(dev, &sc, &sr) < 0) {
 		fprintf(stderr, "Failed to set up the stream.\n");
-		exit(1);
+		r = -1;
+		goto out;
 	}
 	samp_rate = sr.rate;
 	fprintf(stderr, "Sample rate is set to %u Hz.\n", samp_rate);

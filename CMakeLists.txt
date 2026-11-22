@@ -144,6 +144,15 @@ endif (DETACH_KERNEL_DRIVER)
 # SoapySDR module, and miri_test's tests of it
 ########################################################################
 option(ENABLE_SOAPY "Build the SoapySDR module when SoapySDR is found" ON)
+# on, the default: a receiver running from ROM is opened for a moment when listing, to read the
+# serial in its EEPROM, see MIRISDR_LIST_PROBE_SERIAL in mirisdr.h. Off, listing receivers opens
+# none. probe_serial in the device string or MIRISDR_PROBE_SERIAL=0 or 1 in the environment
+# overrides it
+option(SOAPY_PROBE_SERIAL "The SoapySDR module reads the serial of receivers running from ROM from their EEPROM" ON)
+# off, the default: the firmware keeps running after a program closes the receiver. On, the
+# receiver goes back to its ROM, see MIRISDR_OPEN_ROM_ON_CLOSE in mirisdr.h. rom_on_close in the
+# device string overrides it
+option(SOAPY_ROM_ON_CLOSE "The SoapySDR module puts the receiver back on its ROM when it is closed" OFF)
 set(MIRISDR_SOAPY OFF)
 if(ENABLE_SOAPY)
     find_package(SoapySDR CONFIG QUIET)
