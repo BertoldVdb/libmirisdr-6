@@ -1747,7 +1747,10 @@ std::vector<std::string> SoapyMiriSDR::reportLines(void) const
         /* the gain, stage by stage: the LNA is not on the AM ports, the mixbuffer only there */
         const bool am = tr.band == MIRISDR_BAND_AM1 || tr.band == MIRISDR_BAND_AM2;
         if (tr.frontend.direct_sampling)
+        {
             s = strf("tuner %d gain: %d dB, the direct sampling amplifier %s", t, tr.gain.total, tr.gain.lna ? "on" : "off");
+            if (r.baseband != MIRISDR_BASEBAND_OFF) s += strf(", %d dB on the samples", tr.gain.baseband);
+        }
         else
         {
             s = strf("tuner %d gain: %d dB in total", t, tr.gain.total);

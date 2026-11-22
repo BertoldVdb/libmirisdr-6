@@ -202,7 +202,7 @@ Programs show these as device settings. With SoapySDR's API they are `writeSetti
 | `dab_notch` | `true`, `false` | `false` | RSP1B, RSPdx(-R2), RSPduo and RSP1A only. Notch for DAB (165 to 230 MHz). |
 | `ref_out` | `true`, `false` | `false` | RSPduo and RSP2 only. The board's 24 MHz clock out of its reference connector, for another receiver. |
 | `port_tie` | `true`, `false` | `false` | RSPduo only. Ties the two 50 ohm ports together, so both channels hear both, as from one antenna. It works at HF, 50 to 200 MHz and 600 to 900 MHz, and much less at 300 to 433 MHz and in L band. Noise from the USB supply can reach both channels through it, strongest at HF. |
-| `direct_sampling` | `OFF`, `ON`, `AUTO` | `AUTO` | RSPdx(-R2) only. Sample the antenna directly instead of through the tuner: `ON` whenever the frequency is 2 MHz or below, `AUTO` only where the whole band (the frequency plus half the rate) fits under 2 MHz. Otherwise the tuner is used as usual. `true` and `false` work as `ON` and `OFF`. The gain is then only the LNA, about 37 dB (32 dB on the original RSPdx), on from a total of 19 dB. |
+| `direct_sampling` | `OFF`, `ON`, `AUTO` | `AUTO` | RSPdx(-R2) only. Sample the antenna directly instead of through the tuner: `ON` whenever the frequency is 2 MHz or below, `AUTO` only where the whole band (the frequency plus half the rate) fits under 2 MHz. Otherwise the tuner is used as usual. `true` and `false` work as `ON` and `OFF`. The gain is then the LNA, about 37 dB (32 dB on the original RSPdx), and `BB` as a digital gain on the samples. An overall gain switches the LNA on from 37 dB and makes up the rest with `BB`. With `baseband` off there is no digital gain, and the LNA is on from a total of 19 dB. |
 
 A setting the receiver cannot do is refused and logged. The receiver keeps what it had, and the setting reads back as before. That includes a `format`, `transfer` or `decimation_bypass` that the current rate does not fit, for example the bypass at 2 Msps (it starts at 2.6) or `ISOC1` at 8 Msps: the module does not move the rate for a setting.
 
@@ -240,7 +240,7 @@ For example, an RSPdx(-R2) set to 1 Msps at 100 MHz, and then tuned to 1 MHz:
     [INFO] mirisdr: converters: 4800000 S/s at a 9.600 MHz clock, decimation bypass off, format 504_REAL_S16 with 14 bits, transfer ISOC, 9752380 B/s over USB
     [INFO] mirisdr: baseband: decimation 4.8 with the resampler, NCO in use
     [INFO] mirisdr: tuner 0: 1.000000 MHz by direct sampling: the antenna through the 2 MHz low pass to converter I, no LO, in the stream at 0 Hz, DC removal on
-    [INFO] mirisdr: tuner 0 gain: 37 dB, the direct sampling amplifier on
+    [INFO] mirisdr: tuner 0 gain: 40 dB, the direct sampling amplifier on, 3 dB on the samples
 
 The rate below 1.3 Msps took the 1620 kHz IF. Below 2 MHz the receiver switched to direct sampling, which always needs the NCO.
 

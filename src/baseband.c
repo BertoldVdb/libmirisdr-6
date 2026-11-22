@@ -96,6 +96,8 @@ typedef struct mirisdr_bb
     mirisdr_hb_t hb[MIRISDR_BB_STAGES_MAX];
     mirisdr_rs_t *rs;       /* NULL where the rate is the converters' divided by a power of 2 */
     float   dc_a, dc_i, dc_q, dc_r; /* the DC estimates: I and Q, or the one output's */
+    int     gain_db;        /* direct sampling's digital gain in force, dB */
+    float   gain_mul;       /* as a factor, 0 before the first buffer */
     int     dc_on;          /* this buffer: the tune's dc_removal for this path */
     unsigned rot;
 
@@ -905,7 +907,8 @@ static int mirisdr_bb_process (mirisdr_dev_t *p, mirisdr_bb_t *b, const unsigned
 {
     const int s8 = p->format == MIRISDR_FORMAT_504_S8;
     const uint32_t vals = s8 ? len : len / 2;     /* int8 or int16 values */
-    const float full = s8 ? 1.0f / 128.0f : 1.0f / 32768.0f;
+    const mirisdr_tuner_ctx_t *t = &p->tctx[b->tuner];
+    float full = s8 ? 1.0f / 128.0f : 1.0f / 32768.0f;
     float *w;
     uint32_t i;
     int n, s;
@@ -913,6 +916,21 @@ static int mirisdr_bb_process (mirisdr_dev_t *p, mirisdr_bb_t *b, const unsigned
     if (!(w = mirisdr_bb_work(b, (b->low ? 2 * vals : vals) + 2))) return 0;
 
     if ((s = mirisdr_atomic_xchg(&b->nco_move, 0))) mirisdr_bb_nco_for(b, (uint32_t) (s - 1));
+
+    /* Direct sampling's digital gain, the tune's baseband stage, read once a buffer and
+       part of the conversion's scale. The DC estimates are in output units, so a change
+       moves them with it */
+    s = t->ds ? 59 - t->gain_reduction_baseband : 0;
+    if ((s != b->gain_db) || !b->gain_mul) {
+        const float step = powf(10.0f, (float) (s - b->gain_db) / 20.0f);
+
+        b->dc_i *= step;
+        b->dc_q *= step;
+        b->dc_r *= step;
+        b->gain_db = s;
+        b->gain_mul = powf(10.0f, (float) s / 20.0f);
+    }
+    full *= b->gain_mul;
 
     /* its tuner's tune's choice, read once a buffer. Gap fill's zeros are no signal: they
        leave the estimate, and stay 0 (the signal's mean once its DC is off), not a step of -DC */

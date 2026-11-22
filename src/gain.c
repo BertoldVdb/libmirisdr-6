@@ -20,6 +20,7 @@
 
 static int mirisdr_set_gain_words(mirisdr_dev_t *p);
 static int mirisdr_gain_tune(mirisdr_dev_t *p);
+static int mirisdr_bb_path_of(mirisdr_dev_t *p);
 
 int mirisdr_set_gain(mirisdr_dev_t *p)
 {
@@ -441,6 +442,11 @@ int mirisdr_get_tuner_gain(mirisdr_dev_t *p)
     if (p->gain < 0)
         goto gain_auto;
 
+    /* under direct sampling its amplifier, and a baseband stream's digital gain */
+    if (p->ds)
+        return (p->ds_lna ? mirisdr_ds_lna_db(p) : 0) +
+               ((mirisdr_bb_path_of(p) == MIRISDR_BASEBAND_OFF) ? 0 : 59 - p->gain_reduction_baseband);
+
     mirisdr_gr_get(p, &r);
     mirisdr_stages_of(p->band, &r, &g);
 
@@ -589,6 +595,23 @@ int mirisdr_set_baseband_gain(mirisdr_dev_t *p, int gain)
     }
     if (gain < 0) gain = 0;
     if (gain > 59) gain = 59;
+
+    /* under direct sampling a baseband stream's digital gain, which goes with a tune. The
+       amplifier stays as it is */
+    if (p->ds)
+    {
+        int old = p->gain_reduction_baseband, old_lna = p->gain_reduction_lna, old_stages = p->gain_stages_set;
+
+        p->gain_reduction_baseband = 59 - gain;
+        p->gain_reduction_lna = p->ds_lna ? 0 : 1;
+        p->gain_stages_set = 1;
+        if (mirisdr_gain_tune(p) == 0) return 0;
+        p->gain_reduction_baseband = old;
+        p->gain_reduction_lna = old_lna;
+        p->gain_stages_set = old_stages;
+        return -1;
+    }
+
     p->gain_reduction_baseband = 59 - gain;
 
     p->gain_stages_set = 1;

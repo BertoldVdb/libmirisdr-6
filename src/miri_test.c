@@ -7107,6 +7107,9 @@ static int bb_open_ds (uint32_t f, uint32_t f2, uint32_t rate, mirisdr_stream_re
     mirisdr_get_tune(bbo.d, 0, &tc, NULL);
     tc.frequency = f;
     tc.frontend.direct_sampling = 1;
+    /* the amplifier alone, no digital gain: the samples come out as they went in */
+    tc.gain.mode = MIRISDR_GAIN_TOTAL;
+    tc.gain.total = MIRISDR_DS_LNA_DB;
     if (mirisdr_tune(bbo.d, 0, &tc, &tr) < 0 || !tr.frontend.direct_sampling) return -1;
     mirisdr_get_stream(bbo.d, &sc, NULL);
     sc.baseband = 1;
@@ -7241,6 +7244,138 @@ static tres_t t_bb_ds (void)
     mirisdr_close(n);
 
     if (!bad) say("the band at 0 Hz the right way round, %.0f dB over its mirror, both low passes, a retune moving the NCO alone; the tuner again above 2 MHz", worst);
+    return bad ? T_FAIL : T_PASS;
+}
+
+/* A tone of amplitude 0.05 through a baseband stream under direct sampling, the gain set
+   by 'how' at the start or, with 'late', half way. Returns its level over the last quarter
+   against what went in, dB */
+static double bb_ds_level (int total, int lna, int bb, int late, mirisdr_tune_result_t *tr)
+{
+    mirisdr_stream_result_t sr;
+    mirisdr_tune_config_t tc;
+    uint32_t len, half;
+    uint8_t *data;
+    size_t m, s0;
+    double a;
+
+    if (bb_open_ds(1000000, 0, 250000, &sr) < 0) return -999;
+    mirisdr_get_tune(bbo.d, 0, &tc, NULL);
+    tc.gain.mode = (total >= 0) ? MIRISDR_GAIN_TOTAL : MIRISDR_GAIN_STAGES;
+    tc.gain.total = total;
+    tc.gain.lna = lna;
+    tc.gain.mixer = 1;
+    tc.gain.mixbuffer = 0;
+    tc.gain.baseband = bb;
+    tc.gain.amp_bypass = 0;
+
+    data = bb_gen(1, sr.adc_rate, -1000000.0, 40000, 0.05, 0, 0, (int) (0.4 * sr.adc_rate / 504) + 64, -1, 0, &len);
+    half = late ? (len / 2) & ~1023u : 0;
+    bb_feed(data, half, 0);
+    if (late == 2) { if (mirisdr_set_baseband_gain(bbo.d, bb) < 0) total = -999; mirisdr_get_tune(bbo.d, 0, NULL, tr); }
+    else if (mirisdr_tune(bbo.d, 0, &tc, tr) < 0) total = -999;
+    bb_feed(data + half, len - half, 0);
+    free(data);
+    mirisdr_close(bbo.d);
+    if (total == -999) return -999;
+
+    m = bbo.n / 2 / 4;
+    s0 = bbo.n / 2 - m;
+    a = bb_tone(bbo.x + 2 * s0, m, 40000, sr.rate);
+    return 20 * log10(a / 0.05 + 1e-12);
+}
+
+/* Direct sampling's digital gain. In a baseband stream the baseband stage scales the
+ * samples and a total is exact, the amplifier on once the total holds its gain. A raw
+ * stream has the amplifier alone, as before */
+static tres_t t_bb_ds_gain (void)
+{
+    static const struct { int total, lna, bb, late, want_lna, want_db; } cases[] = {
+        { MIRISDR_DS_LNA_DB, 0, 0, 0, 1, 0 },   /* the amplifier alone */
+        { 43, 0, 0, 0, 1, 6 },                  /* and 6 dB */
+        { 20, 0, 0, 0, 0, 20 },                 /* under the amplifier's gain: digital only */
+        { -1, 0, 20, 0, 0, 20 },                /* stages */
+        { -1, 1, 59, 0, 1, 59 },
+        { -1, 1, 30, 1, 1, 30 },                /* a tune while it streams */
+        { -1, 1, 12, 2, 1, 12 } };              /* the single setter while it streams */
+    mirisdr_stream_result_t sr;
+    mirisdr_stream_config_t sc;
+    mirisdr_tune_config_t tc;
+    mirisdr_tune_result_t tr;
+    mirisdr_dev_t *n;
+    unsigned i;
+    int bad = 0, t;
+
+    for (i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        double db = bb_ds_level(cases[i].total, cases[i].lna, cases[i].bb, cases[i].late, &tr);
+        int total = (cases[i].want_lna ? MIRISDR_DS_LNA_DB : 0) + cases[i].want_db;
+
+        note("total %d lna %d baseband %d%s: %+.2f dB on the samples, reported lna %d baseband %d total %d", cases[i].total,
+             cases[i].lna, cases[i].bb, cases[i].late ? " while streaming" : "", db, tr.gain.lna, tr.gain.baseband, tr.gain.total);
+        if (fabs(db - cases[i].want_db) > 0.3 || tr.gain.lna != cases[i].want_lna || tr.gain.baseband != cases[i].want_db ||
+            tr.gain.total != total || bbo.bad_info) {
+            say("case %u: %+.2f dB, lna %d baseband %d total %d, wanted %+d dB and total %d", i, db, tr.gain.lna,
+                tr.gain.baseband, tr.gain.total, cases[i].want_db, total);
+            bad++;
+        }
+    }
+
+    /* every total up to the two together is exact, strict too, and past it refused */
+    if (bb_open_ds(1000000, 0, 250000, &sr) < 0) return T_FAIL;
+    mirisdr_get_tune(bbo.d, 0, &tc, NULL);
+    tc.gain.mode = MIRISDR_GAIN_TOTAL;
+    tc.strict = 1;
+    for (t = 0; t <= MIRISDR_DS_LNA_DB + 59; t++) {
+        tc.gain.total = t;
+        if (mirisdr_tune_check(bbo.d, 0, &tc, &tr) < 0 || tr.gain.total != t || tr.gain.lna != (t >= MIRISDR_DS_LNA_DB) ||
+            tr.gain.baseband != t - (tr.gain.lna ? MIRISDR_DS_LNA_DB : 0)) {
+            say("strict total %d: lna %d baseband %d total %d", t, tr.gain.lna, tr.gain.baseband, tr.gain.total);
+            bad++;
+        }
+    }
+    tc.gain.total = MIRISDR_DS_LNA_DB + 60;
+    if (mirisdr_tune_check(bbo.d, 0, &tc, &tr) == 0) { say("strict total %d accepted", tc.gain.total); bad++; }
+    tc.strict = 0;
+    if (mirisdr_tune(bbo.d, 0, &tc, &tr) < 0 || tr.gain.total != MIRISDR_DS_LNA_DB + 59 ||
+        mirisdr_get_tuner_gain(bbo.d) != MIRISDR_DS_LNA_DB + 59 || mirisdr_get_baseband_gain(bbo.d) != 59) {
+        say("total %d: %d, the getters %d and %d", tc.gain.total, tr.gain.total, mirisdr_get_tuner_gain(bbo.d),
+            mirisdr_get_baseband_gain(bbo.d));
+        bad++;
+    }
+    /* a kept total is split again by a later tune, and the setter leaves the amplifier */
+    tc.gain.total = 30;
+    mirisdr_tune(bbo.d, 0, &tc, &tr);
+    tc.gain.mode = MIRISDR_GAIN_KEEP;
+    tc.frequency = 1100000;
+    if (mirisdr_tune(bbo.d, 0, &tc, &tr) < 0 || tr.gain.lna || tr.gain.baseband != 30) { say("kept total 30: lna %d baseband %d", tr.gain.lna, tr.gain.baseband); bad++; }
+    if (mirisdr_set_lna_gain(bbo.d, 1) < 0 || mirisdr_set_baseband_gain(bbo.d, 7) < 0 || mirisdr_get_tune(bbo.d, 0, NULL, &tr) < 0 ||
+        !tr.gain.lna || tr.gain.baseband != 7 || tr.gain.total != MIRISDR_DS_LNA_DB + 7) {
+        say("the setters: lna %d baseband %d total %d", tr.gain.lna, tr.gain.baseband, tr.gain.total);
+        bad++;
+    }
+    mirisdr_close(bbo.d);
+
+    /* a raw stream: the amplifier alone, on from half its gain, strict only at 0 or its gain */
+    if (mirisdr_open_null(&n, "504_REAL_S16") < 0) return T_FAIL;
+    mirisdr_set_hw_flavour(n, MIRISDR_HW_RSPDXR2);
+    mirisdr_get_stream(n, &sc, NULL);
+    mirisdr_get_tune(n, 0, &tc, NULL);
+    tc.frequency = 1000000;
+    tc.frontend.direct_sampling = 1;
+    tc.gain.mode = MIRISDR_GAIN_TOTAL;
+    tc.gain.total = 25;
+    if (sc.baseband || mirisdr_tune(n, 0, &tc, &tr) < 0 || !tr.gain.lna || tr.gain.baseband || tr.gain.total != MIRISDR_DS_LNA_DB)
+    { say("raw, total 25: lna %d baseband %d total %d", tr.gain.lna, tr.gain.baseband, tr.gain.total); bad++; }
+    tc.gain.total = 60;
+    if (mirisdr_tune(n, 0, &tc, &tr) < 0 || tr.gain.total != MIRISDR_DS_LNA_DB) { say("raw, total 60: %d", tr.gain.total); bad++; }
+    tc.strict = 1;
+    if (mirisdr_tune_check(n, 0, &tc, &tr) == 0) { say("raw, strict total 60 accepted"); bad++; }
+    tc.strict = 0;
+    tc.gain.mode = MIRISDR_GAIN_STAGES; tc.gain.lna = 1; tc.gain.mixer = 1; tc.gain.mixbuffer = 0; tc.gain.baseband = 20; tc.gain.amp_bypass = 0;
+    if (mirisdr_tune(n, 0, &tc, &tr) < 0 || tr.gain.baseband || tr.gain.total != MIRISDR_DS_LNA_DB) { say("raw, stages: baseband %d total %d", tr.gain.baseband, tr.gain.total); bad++; }
+    mirisdr_close(n);
+
+    if (!bad) say("the baseband stage on the samples within 0.3 dB, by a tune and the setter while streaming, every total to %d dB exact, a raw stream the amplifier alone", MIRISDR_DS_LNA_DB + 59);
     return bad ? T_FAIL : T_PASS;
 }
 
@@ -8490,6 +8625,7 @@ static const struct {
     { "baseband", "rates, IF moves and the LO",  t_bb_plan             },
     { "baseband", "tone, mirror and image",     t_bb_tone             },
     { "baseband", "direct sampling",            t_bb_ds               },
+    { "baseband", "direct sampling's digital gain", t_bb_ds_gain      },
     { "baseband", "two tuners",                 t_bb_dual             },
     { "baseband", "two tuners without baseband", t_dual_raw           },
     { "baseband", "counts, buffers and gaps",   t_bb_timing           },

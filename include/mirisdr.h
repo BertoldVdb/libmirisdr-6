@@ -697,8 +697,11 @@ MIRISDR_API int mirisdr_set_freq_correction (mirisdr_dev_t *p, int ppm);
  * to I, and a baseband one puts the frequency at 0 Hz, its converters at 2.4 x the low
  * pass's edge whatever the frequency, so a retune moves only the NCO, no restart. The
  * 500 kHz low pass is taken when a baseband stream's band fits under it. The gain is
- * then the low pass's amplifier alone, about 37 dB (32 on the RSPdx, the caps'
- * ds_lna_db): gain.lna in STAGES, a total from half of it. The tuner's IF, bandwidth and iq are kept for above. Not in scans.
+ * then the low pass's amplifier, about 37 dB (32 on the RSPdx, the caps' ds_lna_db),
+ * gain.lna in STAGES. A baseband stream has gain.baseband too, 0 to 59 dB, as a digital
+ * gain on its samples, and a total is then exact: the amplifier on once the total holds
+ * its gain, the rest digital. Any other stream has the amplifier alone, on from half its
+ * gain. The tuner's IF, bandwidth and iq are kept for above. Not in scans.
  * mirisdr_set_direct_sampling(): 0 off, 1 on (the I converter), as librtlsdr's, or
  * MIRISDR_DS_AUTO. The 2 of librtlsdr, the Q converter, is refused. */
 #define MIRISDR_DS_OFF          0

@@ -1039,6 +1039,27 @@ static void mirisdr_frontend_words (mirisdr_dev_t *p, const mirisdr_tune_config_
     if (raw->fields & MIRISDR_FRONTEND_RAW_EXP2) pl->fe.expander[1] = raw->expander[1];
 }
 
+/* Whether the selected tuner comes out of a baseband stream, whose samples the library
+   makes: under direct sampling the baseband stage is then a digital gain on them */
+static int mirisdr_ds_digital (mirisdr_dev_t *p)
+{
+    return p->stream.baseband && (mirisdr_stream_tuners(p) & (1 << p->tuner_cur));
+}
+
+/* A total under direct sampling. With the digital gain the amplifier is on once the total
+   holds its gain and the digital gain is the rest, so every total up to the two together is
+   exact. Without it the amplifier alone, on from half its gain */
+static void mirisdr_ds_split (int total, int lna_db, int digital, int *lna, mirisdr_gr_t *r)
+{
+    int rest;
+
+    if (total < 0) total = 0;
+    *lna = digital ? (total >= lna_db) : (total >= (lna_db + 1) / 2);
+    rest = digital ? total - (*lna ? lna_db : 0) : 0;
+    if (rest > 59) rest = 59;
+    r->baseband = 59 - rest;
+}
+
 static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, int flags,
                               mirisdr_tune_plan_t *pl)
 {
@@ -1273,21 +1294,27 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
     /* direct sampling: the low pass, the tuner tuned as usual but not heard */
     if (pl->ds) pl->w.expander = (pl->ds_edge == MIRISDR_DS_LP500_HZ) ? DXR2_LPF500 : DXR2_LPF2;
 
-    /* under direct sampling the gain is its amplifier's, on from half its gain, and the
-       tuner takes the rest (no LNA on its AM inputs) */
+    /* under direct sampling the gain is its amplifier's, and in a baseband stream the
+       baseband stage as a digital gain on the samples (the tuner, tuned but not heard,
+       takes the stages too) */
     g = c->gain;
     pl->ds_lna = p->ds_lna;
     /* The tuner's LNA is on none of the AM inputs direct sampling tunes, so its stage keeps
        the value, for the tune that leaves direct sampling */
     if (pl->ds && (g.mode == MIRISDR_GAIN_STAGES)) pl->ds_lna = g.lna ? 1 : 0;
-    else if (pl->ds && (g.mode == MIRISDR_GAIN_TOTAL))
+    else if (pl->ds && (g.mode == MIRISDR_GAIN_TOTAL) && strict)
     {
-        if (strict && (g.total != 0) && (g.total != mirisdr_ds_lna_db(p)))
+        const int lna_db = mirisdr_ds_lna_db(p);
+
+        /* every total up to the two together with the digital gain, without it the amplifier's only */
+        if (mirisdr_ds_digital(p) ? (g.total > lna_db + 59) : ((g.total != 0) && (g.total != lna_db)))
         {
-            mirisdr_refuse(p, "unsupported gain %d dB under direct sampling: 0 or %d\n", g.total, mirisdr_ds_lna_db(p));
+            if (mirisdr_ds_digital(p))
+                mirisdr_refuse(p, "unsupported gain %d dB under direct sampling: 0 to %d\n", g.total, lna_db + 59);
+            else
+                mirisdr_refuse(p, "unsupported gain %d dB under direct sampling: 0 or %d\n", g.total, lna_db);
             return -1;
         }
-        pl->ds_lna = g.total >= (mirisdr_ds_lna_db(p) + 1) / 2;
     }
 
     /* the gain in that band, the board's amplifier on this path */
@@ -1316,6 +1343,18 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
     /* the stages kept: the mixbuffer by its dB between the two AM inputs */
     else if (p->gain_stages_set) pl->gr.mixbuffer = mirisdr_mixbuffer_keep(p->band, pl->w.band, pl->gr.mixbuffer);
     else mirisdr_split_of(pl->w.band, p->gain, &pl->gr);
+
+    /* a total under direct sampling: its own split. One kept moves the amplifier only where
+       the digital gain makes up the rest */
+    if (pl->ds && (c->gain.mode == MIRISDR_GAIN_TOTAL))
+        mirisdr_ds_split(c->gain.total, mirisdr_ds_lna_db(p), mirisdr_ds_digital(p), &pl->ds_lna, &pl->gr);
+    else if (pl->ds && (c->gain.mode == MIRISDR_GAIN_KEEP) && !p->gain_stages_set)
+    {
+        int lna = pl->ds_lna;
+
+        mirisdr_ds_split(p->gain, mirisdr_ds_lna_db(p), mirisdr_ds_digital(p), &lna, &pl->gr);
+        if (mirisdr_ds_digital(p)) pl->ds_lna = lna;
+    }
 
     /* the pads, the Hi-Z has none */
     pl->att = mirisdr_attenuator_snap(p->hw_flavour, c->frontend.attenuator, strict);
@@ -1377,8 +1416,9 @@ static void mirisdr_tune_result_bb (int bb_path, uint32_t if_hz, uint32_t rx, ui
 }
 
 /* Direct sampling in force: no LO, the I converter with the frequency where it is (at
-   0 Hz under baseband), the low pass's edge as the bandwidth, the amplifier as the gain */
-static void mirisdr_tune_result_ds (int ds, int lna, int lna_db, uint32_t edge, uint32_t rx, int bb_path,
+   0 Hz under baseband), the low pass's edge as the bandwidth, the amplifier as the gain
+   and in a baseband stream the baseband stage, bb_db, as the digital gain on its samples */
+static void mirisdr_tune_result_ds (int ds, int lna, int lna_db, int bb_db, uint32_t edge, uint32_t rx, int bb_path,
                                     mirisdr_tune_result_t *res)
 {
     res->frontend.direct_sampling = ds;
@@ -1392,8 +1432,8 @@ static void mirisdr_tune_result_ds (int ds, int lna, int lna_db, uint32_t edge, 
     res->gain.lna = lna;
     res->gain.mixer = 0;
     res->gain.mixbuffer = 0;
-    res->gain.baseband = 0;
-    res->gain.total = lna ? lna_db : 0;
+    res->gain.baseband = (bb_path == MIRISDR_BASEBAND_OFF) ? 0 : bb_db;
+    res->gain.total = (lna ? lna_db : 0) + res->gain.baseband;
 }
 
 static int mirisdr_tune_adc (mirisdr_dev_t *p, int iq)
@@ -1566,6 +1606,8 @@ static int mirisdr_tune_apply_once (mirisdr_dev_t *p, const mirisdr_tune_config_
     }
 
     mirisdr_gain_retune(p);
+    /* a total under direct sampling has its own split, which the tuner's just replaced */
+    if (pl.ds && !p->gain_stages_set) p->gain_reduction_baseband = pl.gr.baseband;
     if (mirisdr_set_gain(p) < 0) r = -1;
     if (mirisdr_batch_end(p) < 0) r = -1;
 
@@ -1595,7 +1637,8 @@ static int mirisdr_tune_apply_once (mirisdr_dev_t *p, const mirisdr_tune_config_
         res->frontend.attenuator = p->attenuator;
         res->frontend.flags = p->fe_flags;
         res->frontend.raw = p->fe;
-        mirisdr_tune_result_ds(p->ds, p->ds_lna, mirisdr_ds_lna_db(p), p->ds_edge, c->frequency, mirisdr_bb_path_of(p), res);
+        mirisdr_tune_result_ds(p->ds, p->ds_lna, mirisdr_ds_lna_db(p), 59 - p->gain_reduction_baseband, p->ds_edge,
+                               c->frequency, mirisdr_bb_path_of(p), res);
         res->standby = mirisdr_tuner_rests(p, p->ds);
     }
 
@@ -1741,7 +1784,8 @@ static int mirisdr_tune_check_of (mirisdr_dev_t *p, const mirisdr_tune_config_t 
         res->frontend.attenuator = pl.att;
         res->frontend.flags = cfg->frontend.flags;
         res->frontend.raw = pl.fe;
-        mirisdr_tune_result_ds(pl.ds, pl.ds_lna, mirisdr_ds_lna_db(p), pl.ds_edge, cfg->frequency, bb, res);
+        mirisdr_tune_result_ds(pl.ds, pl.ds_lna, mirisdr_ds_lna_db(p), 59 - pl.gr.baseband, pl.ds_edge, cfg->frequency,
+                               bb, res);
         res->standby = mirisdr_tuner_rests(p, pl.ds);
     }
 
@@ -1767,7 +1811,8 @@ int mirisdr_get_tune (mirisdr_dev_t *p, int tuner, mirisdr_tune_config_t *cfg, m
         res->frontend.attenuator = p->attenuator;
         res->frontend.flags = p->fe_flags;
         res->frontend.raw = p->fe;
-        mirisdr_tune_result_ds(p->ds, p->ds_lna, mirisdr_ds_lna_db(p), p->ds_edge, p->tune.frequency, mirisdr_bb_path_of(p), res);
+        mirisdr_tune_result_ds(p->ds, p->ds_lna, mirisdr_ds_lna_db(p), 59 - gr.baseband, p->ds_edge, p->tune.frequency,
+                               mirisdr_bb_path_of(p), res);
         res->standby = mirisdr_tuner_rests(p, p->ds);
     }
     mirisdr_tuner_select(p, mirisdr_tuner_primary(p));
