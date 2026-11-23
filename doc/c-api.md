@@ -215,6 +215,18 @@ The filters each IF has:
 | 450 kHz | 200000, 300000, 600000 |
 | 1620 kHz and 2048 kHz | 600000, 1536000 |
 
+The wide filters have less gain, and the gain the library reports does not count that. Against the 1.536 MHz filter, measured on an nRSP-ST at 3.5 and at 100 MHz with the same gain settings:
+
+| Filter | Level |
+|---|---|
+| 200 kHz to 1.536 MHz, at every IF | the same within 0.3 dB |
+| 5 MHz | 8 dB lower |
+| 6 MHz | 9.7 dB lower |
+| 7 MHz | 11 dB lower |
+| 8 MHz, and no filter | 12.2 dB lower |
+
+The loss is in the tuner, before the converters, so a signal that clips with the 1.536 MHz filter has 8 dB of room with the 5 MHz one. With `bandwidth` at 0 the level therefore steps when the sample rate crosses 1.536 Msps, and again at 5, 6 and 7 Msps.
+
 A filter the IF does not have is taken to the nearest it has, or refused with `strict`. This matters when you change the IF. `mirisdr_get_tune()` gives the bandwidth back as you asked for it. A 0 stays 0 and works at every IF. A filter you chose yourself, for example 8 MHz at zero IF, may not exist at the new IF: the tune then takes the IF's nearest, or with `strict` you set `bandwidth` to 0, or to a filter of the new IF, when you change `if_freq`. The tune result always says which filter is in force.
 
 <h4>The tune result</h4>

@@ -270,7 +270,7 @@ bool SoapyMiriSDR::applyStream(const mirisdr_stream_config_t &cfg, bool strict)
     return true;
 }
 
-void SoapyMiriSDR::applyTune(const mirisdr_tune_config_t &cfg)
+bool SoapyMiriSDR::applyTune(const mirisdr_tune_config_t &cfg)
 {
     std::lock_guard<std::recursive_mutex> lock(devMutex);
     mirisdr_tune_config_t c = cfg;
@@ -296,9 +296,10 @@ void SoapyMiriSDR::applyTune(const mirisdr_tune_config_t &cfg)
     {
         SoapySDR_logf(SOAPY_SDR_ERROR, "mirisdr: tune refused (%u Hz, IF %u, bandwidth %u)",
                       c.frequency, c.if_freq, c.bandwidth);
-        return;
+        return false;
     }
     if (c.gain.mode == MIRISDR_GAIN_STAGES) w.sent = c.gain;
+    return true;
 }
 
 /* the rates the library takes for one tuner without baseband */
@@ -412,6 +413,43 @@ uint32_t SoapyMiriSDR::pickLowIf(uint32_t rate) const
     return pick;
 }
 
+/* "auto" with one tuner, from 2 to 5.5 MHz: at zero IF the tuner also receives at 3 times
+   the frequency, which a 2-12 MHz filter or a 12 MHz low pass in front of it passes, 20 to
+   24 dB down. A 2048 kHz IF moves that 8.2 MHz up, out of the filter. What is left is its
+   image 4.1 MHz above the frequency, 48 dB down (all on the nRSP-ST, 2026-11-22: the
+   response is the tuner's, so every board takes the rule). Its widest filter is 1.536 MHz,
+   so only for rates up to HARMONIC_RATE_MAX. 0 where this does not apply, as on a board
+   that does not tune there */
+#define HARMONIC_LO_HZ      2000000
+#define HARMONIC_HI_HZ      5500000
+#define HARMONIC_RATE_MAX   2048000
+#define HARMONIC_IF         2048000
+
+uint32_t SoapyMiriSDR::harmonicIf(uint32_t hz, uint32_t rate) const
+{
+    const mirisdr_frontend_caps_t &c = caps[streamTuners() == 2 ? 1 : 0];
+    uint32_t lo, hi;
+    bool tunes = false;
+
+    if (!baseband || ifMode != "auto" || streamTuners() == 3) return 0;
+    if (hz < HARMONIC_LO_HZ || hz >= HARMONIC_HI_HZ || rate > HARMONIC_RATE_MAX) return 0;
+    for (int i = 0; i < c.range_count; i++) tunes |= hz >= c.range[i][0] && hz < c.range[i][1];
+    if (!tunes) return 0;
+    lowIfRange(HARMONIC_IF, lo, hi);
+    return (rate < lo || rate > hi) ? 0 : HARMONIC_IF;
+}
+
+/* the IF "auto" or a fixed setting gives this frequency and rate */
+uint32_t SoapyMiriSDR::pickIf(uint32_t hz, uint32_t rate) const
+{
+    uint32_t ifHz = fixedIf();
+
+    if (harmonicIf(hz, rate)) return harmonicIf(hz, rate);
+    /* below the converters own minimum only a low IF gets there, and two tuners always take one */
+    if (baseband && ifMode == "auto" && (rate < rateMin || streamTuners() == 3)) ifHz = pickLowIf(rate);
+    return ifHz;
+}
+
 /* raw samples from one converter: a low IF on one, or direct sampling, which takes I alone.
    The library's stream follows the tune, so tuning into or out of direct sampling changes it */
 bool SoapyMiriSDR::realOut(void) const
@@ -424,22 +462,29 @@ bool SoapyMiriSDR::realOut(void) const
     return r.adc != MIRISDR_IQ_BOTH;
 }
 
-bool SoapyMiriSDR::configure(uint32_t rate)
+/* freq: the selected tuner goes there with it (the frequency can change the IF), 0 leaves
+   each tuner where it is */
+bool SoapyMiriSDR::configure(uint32_t rate, uint32_t freq)
 {
     std::lock_guard<std::recursive_mutex> lock(devMutex);
     mirisdr_tune_config_t tc;
     mirisdr_stream_config_t c = streamCfg, now;
     uint32_t ifHz = 0, out = rate;
-
-    ifHz = fixedIf();
+    const int sel = tunerSel;
 
     /* from two tuners to one: the stream first, at the low IF both have, as two tuners
        refuse a tune to zero IF */
     if (streamTuners() != 3 && mirisdr_get_stream(dev, &now, NULL) == 0 && now.tuners == 3 && !applyStream(streamCfg))
         return false;
 
-    /* below the converters own minimum only a low IF gets there, and two tuners always take one */
-    if (baseband && ifMode == "auto" && (rate < rateMin || streamTuners() == 3)) ifHz = pickLowIf(rate);
+    /* the IF goes by the tuner streamed, where one is */
+    {
+        const int t = streamTuners() == 2 ? 1 : 0;
+        uint32_t hz = (freq && t == sel) ? freq : 0;
+
+        if (!hz && mirisdr_get_tune(dev, t, &tc, NULL) == 0) hz = tc.frequency;
+        ifHz = pickIf(hz, rate);
+    }
 
     /* a low IF has a span of rates: the nearest end outside it */
     if (baseband && ifHz)
@@ -457,12 +502,13 @@ bool SoapyMiriSDR::configure(uint32_t rate)
         if (!(streamTuners() & (1 << t))) continue;
         tunerSel = t;
         mirisdr_get_tune(dev, tunerSel, &tc, NULL);
+        if (freq && t == sel) tc.frequency = freq;
         tc.if_freq = ifHz;
         tc.iq = (ifHz && streamTuners() != 3) ? converters : MIRISDR_IQ_BOTH;
         tc.low_if_auto = 0;
         tc.bandwidth = pickBandwidth(ifHz);
         tc.gain.mode = MIRISDR_GAIN_KEEP;
-        if (mirisdr_tune(dev, tunerSel, &tc, NULL) < 0)
+        if (!applyTune(tc))
         {
             SoapySDR_logf(SOAPY_SDR_ERROR, "mirisdr: IF %u refused on tuner %d", ifHz, t);
             return false;
@@ -493,7 +539,8 @@ bool SoapyMiriSDR::configure(uint32_t rate)
     if (r.bits && r.bits < 14)
         SoapySDR_logf(SOAPY_SDR_INFO, "mirisdr: %u S/s over USB fits the %s format, %d bits a sample",
                       r.adc_rate, r.format, r.bits);
-    if (ifHz == 2048000)
+    /* not where "auto" took it for the frequency: 1620 kHz does less there */
+    if (ifHz == 2048000 && fixedIf())
         SoapySDR_logf(SOAPY_SDR_INFO, "mirisdr: a 1620 kHz IF has the same filters as 2048 kHz at a lower "
                       "converter rate");
 
@@ -509,10 +556,18 @@ bool SoapyMiriSDR::configure(uint32_t rate)
             if (f < r.rate && f > below) below = f;
             if (f > r.rate && (!above || f < above)) above = f;
         }
-        SoapySDR_logf(SOAPY_SDR_WARNING, "mirisdr: %u S/s with a %u Hz IF needs the %s, the receiver at %u S/s: "
-                      "more CPU than %u%s%.0u S/s, which need neither", r.rate, ifHz,
-                      r.nco && r.resampled ? "resampler and the NCO" : r.nco ? "NCO" : "resampler", r.adc_rate,
-                      below ? below : above, below && above ? " or " : "", below && above ? above : 0);
+        const char *needs = r.nco && r.resampled ? "resampler and the NCO" : r.nco ? "NCO" : "resampler";
+
+        /* no such rate at 2048 kHz, where the converters run below 4 x IF. Nothing to say
+           where "auto" took that IF for the frequency */
+        if (!below && !above && !fixedIf()) return true;
+        if (!below && !above)
+            SoapySDR_logf(SOAPY_SDR_INFO, "mirisdr: %u S/s with a %u Hz IF needs the %s, the receiver at %u S/s. "
+                          "Every rate needs the NCO at this IF", r.rate, ifHz, needs, r.adc_rate);
+        else
+            SoapySDR_logf(SOAPY_SDR_WARNING, "mirisdr: %u S/s with a %u Hz IF needs the %s, the receiver at %u S/s: "
+                          "more CPU than %u%s%.0u S/s, which need neither", r.rate, ifHz, needs, r.adc_rate,
+                          below ? below : above, below && above ? " or " : "", below && above ? above : 0);
     }
 
     return true;
@@ -996,7 +1051,22 @@ void SoapyMiriSDR::setFrequency(const int direction, const size_t channel, const
     }
 
     mirisdr_get_tune(dev, tunerSel, &tc, NULL);
+    const uint32_t was = tc.frequency;
     tc.frequency = (uint32_t) std::llround(frequency);
+
+    /* "auto": the frequency can change the IF, and the stream goes with it. Refused, the
+       tuner goes back where it was at the IF it had */
+    if ((streamTuners() & (1 << tunerSel)) && pickIf(tc.frequency, wantRate) != ifFreq)
+    {
+        const int sel = tunerSel;
+
+        if (configure(wantRate, tc.frequency)) { tunerSel = sel; return; }
+        tunerSel = sel;
+        configure(wantRate, was);
+        tunerSel = sel;
+        return;
+    }
+
     tc.low_if_auto = 0;
     tc.gain.mode = MIRISDR_GAIN_KEEP;
     applyTune(tc);

@@ -5535,12 +5535,12 @@ static tres_t t_plan_dxr2 (void)
     if ((w = plan_exp_word(n, &c)) != 0x3DFA) { plan_bad++; say("401 kHz, 200 kHz wide: word %04X, not 3DFA", w); }
     c.if_freq = 0; c.bandwidth = 0;
 
-    /* HF: the 2 MHz low pass to 1.7 MHz, 2-12 up to 12.5 MHz, then 12-30, A5 released (no
+    /* HF: the 2 MHz low pass to 2 MHz, 2-12 up to 12.5 MHz, then 12-30, A5 released (no
        amplifier there, port A's A2 low). At 349 and 350 MHz a total of 60 takes the
        amplifier, A5 low */
     {
         static const struct { uint32_t hz; uint16_t word; } hf[] = {
-            { 1699000, 0x3DFA }, { 1700000, 0x3CFA }, { 12499000, 0x3CFA }, { 12500000, 0x3EFA }, { 17000000, 0x3EFA }, { 21000000, 0x3EFA },
+            { 1999000, 0x3DFA }, { 2000000, 0x3CFA }, { 12499000, 0x3CFA }, { 12500000, 0x3EFA }, { 17000000, 0x3EFA }, { 21000000, 0x3EFA },
             { 25900000, 0x3EFA }, { 29900000, 0x3EFA },
             { 349000000, 0x3C5A }, { 350000000, 0x3E5A },          /* the 380-420 filter from 350 MHz */
         };
@@ -8589,6 +8589,7 @@ static tres_t t_soapy_channels (void) { return soapy_run("channels"); }
 static tres_t t_soapy_regress (void) { return soapy_run("regress"); }
 static tres_t t_soapy_report (void) { return soapy_run("report"); }
 static tres_t t_soapy_devstring (void) { return soapy_run("devstring"); }
+static tres_t t_soapy_harmonic (void) { return soapy_run("harmonic"); }
 #endif
 
 static const struct {
@@ -8736,6 +8737,7 @@ static const struct {
     { "soapy",    "review fixes",               t_soapy_regress       },
     { "soapy",    "report of what runs",        t_soapy_report        },
     { "soapy",    "settings in the device string", t_soapy_devstring  },
+    { "soapy",    "low IF from 2 to 5.5 MHz",   t_soapy_harmonic      },
 #endif
 };
 

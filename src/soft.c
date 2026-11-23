@@ -125,8 +125,11 @@ static hw_switch_freq_plan_t hw_switch_freq_plan_rsp1b[] = {
 #define DXR2_AMP_UHF    24
 #define DXR2_AMP_B45    21
 #define DXR2_AMP_L      15
-#define DXR2_2_12_KHZ   1700    /* the 2-12 filter beats the 2 MHz low pass from 1.7 MHz: 1.4 dB at 1.85,
-                                   6.2 at 1.99 (2026-10-17) */
+#define DXR2_2_12_KHZ   2000    /* the 2-12 filter passes what the tuner also takes at 3 and 5 times its
+                                   frequency: 20 and 30 dB down at 1.71-1.9 MHz, more than 80 behind the
+                                   low pass (nRSP-ST, 2026-11-22). Against the 2-12 filter the low pass
+                                   lost signal on the RSPdx-R2 (1.4 dB at 1.85 MHz, 6.2 at 1.99,
+                                   2026-10-17) and gained some on the nRSP-ST (3.7 dB at 1.7, 0.7 at 1.99) */
 #define DXR2_380_420_KHZ 350000 /* the 380-420 filter beats the 300-380 one from 344 MHz on the RSPdx-R2,
                                    up to 1.4 dB at 360 (2026-10-17), from 357 MHz on the nRSP-ST, 2.1 dB
                                    at 345 (2026-10-27). One unit each, so between the two */

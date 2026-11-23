@@ -116,7 +116,7 @@ These rates cost the least CPU, because the filters reach them by halving alone:
 | 450 kHz | 900000, 450000, 225000, 112500, 56250, 28125 |
 | 1620 kHz | 810000, 405000, 202500, 101250, 50625 |
 
-Any other rate adds a resampler in software. The module then logs a warning that names the nearest rates that need neither. The 2048 kHz IF always adds a frequency shift (an NCO) as well, because 4 times it would clock the receiver past its best, so it runs at 6.7584 Msps rather than 8.192. `auto` never picks it: the 1620 kHz IF has the same filters at a lower rate. It picks the IF like this:
+Any other rate adds a resampler in software. The module then logs a warning that names the nearest rates that need neither. The 2048 kHz IF always adds a frequency shift (an NCO) as well, because 4 times it would clock the receiver past its best, so it runs at 6.7584 Msps rather than 8.192. For a low rate `auto` never picks it: the 1620 kHz IF has the same filters at a lower rate. It picks the IF like this:
 
   - A rate from the table gets its IF.
   - Up to 750 ksps, any other rate gets the 450 kHz IF, whose widest filter (600 kHz) still passes most of it.
@@ -138,6 +138,27 @@ With `if_freq` fixed at `0` there is no low IF: the module lists and takes only 
 
 The module logs a warning when a rate clocks the receiver's converters past 15 MHz, which is above 7.5 Msps (15 Msps with the decimation bypass). Their effective resolution drops there, gradually. It also notes when the USB format keeps fewer than 14 bits a sample, and suggests the 1620 kHz IF when 2048 kHz is set.
 
+<h4>False signals below 5.5 MHz</h4>
+
+At zero IF the tuner also receives at 3 times the frequency it is tuned to, and more weakly at 5 times. Only the filter in front of the tuner can stop that, and the 2 to 12 MHz filter of the newer SDRplay boards passes those frequencies while the tuner is below about 5 MHz. So does the 12 MHz low pass of the RSP1, the RSP2 and the plain Mirics boards. A broadcast station at 9.5 MHz then shows up at 3.3 MHz when you tune to 3.2 MHz, about 23 dB weaker than it really is. Such a false signal sits at 4 times the centre frequency minus its real frequency. It moves when you retune, and its spectrum is mirrored.
+
+With a low IF the tuner takes its 3 times from higher up: 8.2 MHz higher with the 2048 kHz IF, where the filter stops it. `auto` therefore uses the 2048 kHz IF when all of these hold:
+
+  - The frequency is from 2 MHz up to 5.5 MHz.
+  - The rate is at most 2.048 Msps.
+  - One channel is streamed and `baseband` is on.
+
+Measured on an nRSP-ST at 3.5 MHz and 2 Msps, the false signal goes from 23 dB down to nothing measurable. What remains is the image of the low IF: a signal 4.1 MHz above the frequency leaks in 46 to 48 dB down. The other boards have the same tuner and take the same rule, but how much it gains with their filters is not measured.
+
+This has a cost:
+
+  - Tuning into or out of the range changes the IF, which restarts the stream. That takes about 13 ms going in and 8 ms going out.
+  - The widest filter of this IF is 1.536 MHz. At 2 Msps the outer 230 kHz on each side of the stream are attenuated.
+  - That filter has 8 dB more gain than the 5 MHz filter that zero IF uses above 1.536 Msps (see Bandwidth below). At such a rate the level steps by 8 dB at the edges of the range, so a gain set near clipping outside the range clips inside it.
+  - The receiver's converters run at 6.7584 Msps, with 12 bits a sample over USB, and the computer does more work (see How much CPU below).
+
+Set `if_freq=0` to keep zero IF everywhere. Above 2.048 Msps nothing changes, so the false signals stay there.
+
 
 <h3>Bandwidth</h3>
 
@@ -155,6 +176,18 @@ Some programs, have no field for the filter. For those, put it in the device str
 | Zero IF | 1.536, 5, 6, 7 and 8 MHz, and 14 MHz (no filter) |
 | 450 kHz | 200, 300 and 600 kHz |
 | 1620 kHz and 2048 kHz | 600 kHz and 1.536 MHz |
+
+The wide filters have less gain, and the gain the module reports does not count that. Against the 1.536 MHz filter, measured on an nRSP-ST at 3.5 and at 100 MHz with the same gain settings:
+
+| Filter | Level |
+|---|---|
+| 200 kHz to 1.536 MHz, at every IF | the same within 0.3 dB |
+| 5 MHz | 8 dB lower |
+| 6 MHz | 9.7 dB lower |
+| 7 MHz | 11 dB lower |
+| 8 MHz, and no filter | 12.2 dB lower |
+
+The loss is in the tuner, before the converters, so a signal that clips with the 1.536 MHz filter has 8 dB of room with the 5 MHz one. When the library chooses the filter, the level therefore steps when the sample rate crosses 1.536 Msps, and again at 5, 6 and 7 Msps.
 
 
 <h3>Gain</h3>
@@ -188,7 +221,7 @@ Programs show these as device settings. With SoapySDR's API they are `writeSetti
 
 | Setting | Values | Default | What it does |
 |---|---|---|---|
-| `if_freq` | `auto`, `0`, `450000`, `1620000`, `2048000` | `auto` | The tuner IF. `auto` uses zero IF from 1.3 Msps up and a low IF below, never 2048 kHz. The others fix the IF. |
+| `if_freq` | `auto`, `0`, `450000`, `1620000`, `2048000` | `auto` | The tuner IF. `auto` uses zero IF from 1.3 Msps up and a low IF below. It also uses the 2048 kHz IF from 2 to 5.5 MHz, see False signals below 5.5 MHz. The others fix the IF. |
 | `if_in_use` | read only | | The IF in force, in Hz, 0 for zero IF: what `auto` picked. |
 | `converters` | `both`, `I`, `Q` | `both` | With a low IF, use both converters or only one. Two channels always use both. |
 | `baseband` | `true`, `false` | `true` | Put the frequency you set at the centre of the stream, at any IF. |
@@ -227,7 +260,7 @@ Measured on a Raspberry Pi Compute Module 0 (one core at 1 GHz), the 450 kHz IF 
 
 <h4>Seeing what the receiver runs</h4>
 
-The rules above decide a lot on their own. A rate below 1.3 Msps takes a low IF, the RSPdx(-R2) switches to direct sampling below 2 MHz, and a rate a low IF cannot reach is taken to the nearest one it can. To see where they took the receiver, add `report=true` to the device string, for example `driver=mirisdr,report=true`. The module then logs what runs when the device opens, and again after every call that changed it. Only the lines that changed are logged, so a new gain logs one line and the same value set again logs nothing. The values come from the library, so they are what the hardware runs and not what was asked.
+The rules above decide a lot on their own. A rate below 1.3 Msps takes a low IF, the RSPdx(-R2) switches to direct sampling below 2 MHz, a rate up to 2.048 Msps takes the 2048 kHz IF from 2 to 5.5 MHz, and a rate a low IF cannot reach is taken to the nearest one it can. To see where they took the receiver, add `report=true` to the device string, for example `driver=mirisdr,report=true`. The module then logs what runs when the device opens, and again after every call that changed it. Only the lines that changed are logged, so a new gain logs one line and the same value set again logs nothing. The values come from the library, so they are what the hardware runs and not what was asked.
 
 For example, an RSPdx(-R2) set to 1 Msps at 100 MHz, and then tuned to 1 MHz:
 

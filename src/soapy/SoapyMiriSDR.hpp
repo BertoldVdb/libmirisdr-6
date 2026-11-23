@@ -177,7 +177,8 @@ private:
     mirisdr_stream_config_t streamCfg;
     std::string formatSetting, transferSetting, bypassSetting;
     uint32_t ifFreq;        /* the IF in force */
-    std::string ifMode;     /* "auto": zero IF from rateMin up, a low IF below; or a fixed one */
+    std::string ifMode;     /* "auto": zero IF from rateMin up, a low IF below and where harmonicIf()
+                               has one; or a fixed one */
     int converters;         /* MIRISDR_IQ_BOTH, _ONLY_I or _ONLY_Q */
     bool baseband;          /* the band at 0 Hz in complex float, whatever the IF */
     uint32_t wantRate;          /* as asked */
@@ -237,13 +238,13 @@ private:
     bool oneOut(void) const { return converters != MIRISDR_IQ_BOTH || streamTuners() == 3; }
 
     bool applyStream(const mirisdr_stream_config_t &cfg, bool strict = false);
-    bool configure(uint32_t rate);
+    bool configure(uint32_t rate, uint32_t freq = 0);
     void setIfSetting(const std::string &key, const std::string &value);
     bool realOut(void) const;
     std::vector<uint32_t> lowIfRates(uint32_t ifHz) const;
     void lowIfRange(uint32_t ifHz, uint32_t &lo, uint32_t &hi) const;
     uint32_t pickLowIf(uint32_t rate) const;
-    void applyTune(const mirisdr_tune_config_t &cfg);
+    bool applyTune(const mirisdr_tune_config_t &cfg);
     StageRanges stageRanges(void) const;
     StageRanges stageRanges(mirisdr_tune_config_t tc) const;
     void stagesFor(const StageWant &w, const StageRanges &sr, mirisdr_gain_config_t &g) const;
@@ -256,6 +257,8 @@ private:
     long long indexToNs(uint64_t index, uint32_t rate) const;
     void timeRebase(uint64_t index, uint32_t rate);
     uint32_t fixedIf(void) const;
+    uint32_t harmonicIf(uint32_t hz, uint32_t rate) const;
+    uint32_t pickIf(uint32_t hz, uint32_t rate) const;
     bool zeroIfFixed(void) const { return ifMode == "0"; }
     long long hardwareTime(void) const;
 };

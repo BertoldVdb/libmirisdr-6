@@ -914,6 +914,75 @@ static int devString(const char *module, const char *serial, soapy_say_t say, so
     return bad ? SOAPY_T_FAIL : SOAPY_T_PASS;
 }
 
+/* "auto" takes the 2048 kHz IF from 2 to 5.5 MHz at up to 2.048 Msps, against what the tuner
+ * receives at 3 times its frequency. Other rates, a fixed IF, baseband off and a board that does
+ * not tune there keep what they had. A stream runs on across the change */
+static int harmonic(Dev *d, soapy_say_t say, soapy_say_t note)
+{
+    const bool hf = d->getFrequencyRange(SOAPY_SDR_RX, 0).front().minimum() <= 2e6;
+    static const struct { double rate, hz; const char *hfIf; } want[] = {
+        { 2e6, 1999999, "0" }, { 2e6, 2e6, "2048000" }, { 2e6, 3.5e6, "2048000" }, { 2e6, 5499999, "2048000" },
+        { 2e6, 5.5e6, "0" }, { 2e6, 100e6, "0" }, { 2048000, 3.5e6, "2048000" }, { 2049000, 3.5e6, "0" },
+        { 6e6, 3.5e6, "0" }, { 1.5e6, 3.5e6, "2048000" },
+    };
+    int bad = 0, hops = 0;
+
+    for (const auto &w : want)
+    {
+        d->setSampleRate(SOAPY_SDR_RX, 0, w.rate);
+        d->setFrequency(SOAPY_SDR_RX, 0, w.hz);
+        const std::string got = d->readSetting("if_in_use"), exp = hf ? w.hfIf : "0";
+        if (got != exp) { say("%.0f sps at %.0f Hz: IF %s, not %s", w.rate, w.hz, got.c_str(), exp.c_str()); bad++; }
+    }
+    if (!hf) { if (!bad) say("zero IF kept on a board that does not tune there"); return bad ? SOAPY_T_FAIL : SOAPY_T_PASS; }
+
+    /* at 3.5 MHz and 2 Msps: a fixed zero IF and baseband off leave it, auto and baseband bring it back */
+    d->setSampleRate(SOAPY_SDR_RX, 0, 2e6);
+    d->setFrequency(SOAPY_SDR_RX, 0, 3.5e6);
+    static const struct { const char *key, *value, *ifHz; } sets[] = {
+        { "if_freq", "0", "0" }, { "if_freq", "auto", "2048000" }, { "baseband", "false", "0" }, { "baseband", "true", "2048000" },
+    };
+    for (const auto &w : sets)
+    {
+        d->writeSetting(w.key, w.value);
+        if (d->readSetting("if_in_use") != w.ifHz)
+        { say("%s %s: IF %s, not %s", w.key, w.value, d->readSetting("if_in_use").c_str(), w.ifHz); bad++; }
+    }
+    if (std::fabs(d->getFrequency(SOAPY_SDR_RX, 0) - 3.5e6) > 1) { say("the frequency reads %.0f", d->getFrequency(SOAPY_SDR_RX, 0)); bad++; }
+
+    /* in and out of the range in a running stream: samples flow again within a second each time */
+    SoapySDR::Stream *s = d->setupStream(SOAPY_SDR_RX, SOAPY_SDR_CF32);
+    std::vector<float> buf(2 * d->getStreamMTU(s));
+    void *b = buf.data();
+    long long ovf = 0;
+
+    d->activateStream(s);
+    for (int k = 0; k < 20 && !bad; k++, hops++)
+    {
+        const bool in = !(k & 1);
+        long long got = 0;
+        double t0;
+
+        d->setFrequency(SOAPY_SDR_RX, 0, in ? 5.0e6 : 6.0e6);
+        if (d->readSetting("if_in_use") != (in ? "2048000" : "0")) { say("hop %d: IF %s", k, d->readSetting("if_in_use").c_str()); bad++; }
+        for (t0 = now(); got < 100000 && now() - t0 < 1; )
+        {
+            int fl = 0; long long t = 0;
+            int n = d->readStream(s, &b, buf.size() / 2, fl, t, 200000);
+
+            if (n == SOAPY_SDR_OVERFLOW) ovf++;
+            if (n > 0) got += n;
+        }
+        if (got < 100000) { say("hop %d to %s MHz: %lld samples in a second", k, in ? "5.0" : "6.0", got); bad++; }
+    }
+    d->deactivateStream(s);
+    d->closeStream(s);
+    if (ovf) note("%lld overflows across the hops", ovf);
+
+    if (!bad) say("the 2048 kHz IF from 2 to 5.5 MHz up to 2.048 Msps, not with a fixed IF or baseband off; %d hops across the edge in a stream", hops);
+    return bad ? SOAPY_T_FAIL : SOAPY_T_PASS;
+}
+
 extern "C" int soapy_test(const char *which, const char *module, const char *serial, int verbose,
                           soapy_say_t say, soapy_say_t note)
 {
@@ -997,6 +1066,7 @@ extern "C" int soapy_test(const char *which, const char *module, const char *ser
         else if (!strcmp(which, "retune")) r = retune(d, say, note);
         else if (!strcmp(which, "bandranges")) r = bandRanges(d, say, note);
         else if (!strcmp(which, "regress")) r = regress(d, module, serial, say, note);
+        else if (!strcmp(which, "harmonic")) r = harmonic(d, say, note);
     }
     catch (const std::exception &e) { say("%s", e.what()); r = SOAPY_T_FAIL; }
 
