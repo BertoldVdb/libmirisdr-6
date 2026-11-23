@@ -1021,9 +1021,17 @@ static int mirisdr_stream_apply (mirisdr_dev_t *p, const mirisdr_stream_config_t
 		return -1;
 	}
 
-	/* at zero IF a filter the tune left to the library follows the rate */
-	if (!p->tune.bandwidth && (p->if_freq == MIRISDR_IF_ZERO) &&
-	    (mirisdr_bw_auto(MIRISDR_IF_ZERO, p->rate) != (int) p->bandwidth)) moved = 1;
+	/* a filter the tune left to the library follows the rate: at zero IF the stream's, at a
+	   low IF a baseband stream's */
+	for (t = 0; !moved && (t < mirisdr_tuners_of(p)); t++)
+	{
+		if (!(pl.tuners & (1 << t))) continue;
+		mirisdr_tuner_select(p, t);
+		if (!p->tune.bandwidth &&
+		    (mirisdr_bw_auto(p->if_freq, (p->if_freq == MIRISDR_IF_ZERO) ? p->rate :
+		                     (p->bb_path != MIRISDR_BASEBAND_OFF) ? p->bb_rate : 0) != (int) p->bandwidth)) moved = 1;
+	}
+	mirisdr_tuner_select(p, mirisdr_tuner_primary(p));
 
 	/* the tunes again, each tuner streamed: the converter switch and the LO follow. A tuner
 	   the stream no longer takes goes to rest, one it takes again wakes */

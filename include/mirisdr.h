@@ -615,7 +615,9 @@ typedef struct mirisdr_tune_config
 	uint32_t bandwidth;     /* Hz: 200000, 300000 or 600000 with a 450 kHz IF, 600000 or 1536000
 	                           with 1620 and 2048 kHz, 1536000, 5000000 to 8000000 (1 MHz steps)
 	                           or 14000000 (no filter) with zero IF. 0: the library's, at a low IF
-	                           the widest, at zero IF the narrowest at least as wide as the rate */
+	                           the widest, or the narrowest that passes a baseband stream whole,
+	                           at zero IF 1536000 up to 2.048 Msps and above that the narrowest
+	                           at least as wide as the rate */
 	uint32_t if_freq;       /* 0 (zero IF), 450000, 1620000 or 2048000 */
 	int      low_if_auto;   /* low IF: put the LO if_freq above frequency */
 	int      iq;            /* MIRISDR_IQ_*: low IF only, the output not requested is switched off */

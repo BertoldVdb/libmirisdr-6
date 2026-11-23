@@ -4285,7 +4285,7 @@ static tres_t t_plan_tune (void)
     mirisdr_tune_config_default(&c);
     plan_tune(n, "the default", &c, 1, &r);
     if (mirisdr_tune_check(n, 1, &c, &r) == 0) { plan_bad++; say("a second tuner accepted"); }
-    if (r.bandwidth != 5000000) { plan_bad++; say("default bandwidth %u at 2.048 Msps", r.bandwidth); }
+    if (r.bandwidth != 1536000) { plan_bad++; say("default bandwidth %u at 2.048 Msps", r.bandwidth); }
     plan_near(r.offset, 0, 10, "default offset");
 
     /* the bandwidths each IF allows: strict, others refused. Otherwise the narrowest the IF
@@ -5940,13 +5940,20 @@ static tres_t t_plan_miricstv (void)
     return plan_bad ? T_FAIL : T_PASS;
 }
 
-/* Bandwidth 0 at zero IF: the narrowest filter as wide as the rate, 8 MHz at most,
- * and it follows the rate. One asked for stays */
+/* Bandwidth 0 at zero IF: 1.536 MHz up to 2.048 Msps, from there the narrowest filter as
+ * wide as the rate, 8 MHz at most, and it follows the rate. At a low IF the widest, or
+ * under a baseband stream the narrowest that passes it whole. One asked for stays */
 static tres_t t_plan_bw_auto (void)
 {
     static const struct { uint32_t rate, bw; } want[] = {
-        { 1300000, 1536000 }, { 1536000, 1536000 }, { 2048000, 5000000 }, { 5000000, 5000000 },
+        { 1300000, 1536000 }, { 1536000, 1536000 }, { 2048000, 1536000 }, { 2500000, 5000000 }, { 5000000, 5000000 },
         { 5500000, 6000000 }, { 7000000, 7000000 }, { 8000000, 8000000 }, { 10000000, 8000000 },
+    };
+    static const struct { uint32_t ifh, rate, bw; } low[] = {
+        { 2048000, 256000, 600000 }, { 2048000, 400000, 600000 }, { 2048000, 512000, 1536000 },
+        { 1620000, 202500, 600000 }, { 1620000, 810000, 1536000 },
+        { 450000, 192000, 200000 }, { 450000, 250000, 300000 }, { 450000, 300000, 300000 },
+        { 450000, 500000, 600000 },
     };
     mirisdr_dev_t *n;
     mirisdr_tune_config_t c, got;
@@ -5960,7 +5967,7 @@ static tres_t t_plan_bw_auto (void)
 
     /* as opened: 2.048 Msps */
     mirisdr_get_tune(n, 0, &got, &r);
-    if (got.bandwidth || r.bandwidth != 5000000) { plan_bad++; say("as opened: asked %u, in force %u", got.bandwidth, r.bandwidth); }
+    if (got.bandwidth || r.bandwidth != 1536000) { plan_bad++; say("as opened: asked %u, in force %u", got.bandwidth, r.bandwidth); }
 
     /* the stream's rate moves it, in either order */
     for (i = 0; i < sizeof want / sizeof want[0]; i++)
@@ -5984,7 +5991,7 @@ static tres_t t_plan_bw_auto (void)
 
     /* 0 again: from the rate */
     c.bandwidth = 0;
-    if (mirisdr_tune(n, 0, &c, &r) < 0 || r.bandwidth != 5000000) { plan_bad++; say("back to 0: %u", r.bandwidth); }
+    if (mirisdr_tune(n, 0, &c, &r) < 0 || r.bandwidth != 1536000) { plan_bad++; say("back to 0: %u", r.bandwidth); }
 
     /* a low IF: its widest. Then to zero IF with a baseband stream at 256 ksps, which
        the tune moves up to the zero IF rates: the filter is the new rate's */
@@ -5993,19 +6000,47 @@ static tres_t t_plan_bw_auto (void)
     sc.baseband = 1; sc.rate = 256000;
     if (mirisdr_tune(n, 0, &c, &r) < 0 || r.bandwidth != 1536000) { plan_bad++; say("2048 kHz IF: %u", r.bandwidth); }
     if (mirisdr_set_stream(n, &sc, NULL) < 0) { plan_bad++; say("baseband 256 ksps refused"); }
+
+    /* a low IF under a baseband stream: the narrowest filter that passes the stream whole.
+       The tune comes first here, so the stream's rate has to move the filter */
+    for (i = 0; i < sizeof low / sizeof low[0]; i++)
+    {
+        c.if_freq = low[i].ifh; c.bandwidth = 0;
+        if (mirisdr_tune(n, 0, &c, &r) < 0) { plan_bad++; say("a %u Hz IF refused", low[i].ifh); continue; }
+        mirisdr_get_stream(n, &sc, NULL);
+        sc.rate = low[i].rate;
+        if (mirisdr_set_stream(n, &sc, NULL) < 0) { plan_bad++; say("%u sps at a %u Hz IF refused", low[i].rate, low[i].ifh); continue; }
+        mirisdr_get_tune(n, 0, &got, &r);
+        if (got.bandwidth || r.bandwidth != low[i].bw || mirisdr_get_sample_rate(n) != low[i].rate)
+        { plan_bad++; say("a %u Hz IF at %u sps: %u Hz, want %u (rate %u)", low[i].ifh, low[i].rate, r.bandwidth, low[i].bw, mirisdr_get_sample_rate(n)); }
+        note("IF %7u, %7u sps -> %7u Hz", low[i].ifh, low[i].rate, r.bandwidth);
+    }
+
+    /* the stream first: the tune takes the filter for the rate it finds. One asked for stays */
+    mirisdr_get_stream(n, &sc, NULL);
+    sc.rate = 250000;
+    if (mirisdr_set_stream(n, &sc, NULL) < 0) { plan_bad++; say("250 ksps refused"); }
+    c.if_freq = 2048000; c.bandwidth = 0;
+    if (mirisdr_tune(n, 0, &c, &r) < 0 || r.bandwidth != 600000) { plan_bad++; say("2048 kHz IF at 250 ksps: %u", r.bandwidth); }
+    c.bandwidth = 1536000;
+    if (mirisdr_tune(n, 0, &c, &r) < 0 || r.bandwidth != 1536000) { plan_bad++; say("1.536 MHz asked at 250 ksps: %u", r.bandwidth); }
+    c.bandwidth = 0;
+    mirisdr_get_stream(n, &sc, NULL);
+    sc.rate = 256000;
+    if (mirisdr_set_stream(n, &sc, NULL) < 0) { plan_bad++; say("256 ksps again refused"); }
     c.if_freq = 0; c.low_if_auto = 0;
     if (mirisdr_tune(n, 0, &c, &r) < 0) { plan_bad++; say("back to zero IF refused"); }
     else
     {
         uint32_t rate = mirisdr_get_sample_rate(n);
-        uint32_t bw = rate <= 1536000 ? 1536000 : 5000000;
+        uint32_t bw = rate <= 2048000 ? 1536000 : 5000000;
 
         if (r.bandwidth != bw) { plan_bad++; say("zero IF at %u sps: %u, want %u", rate, r.bandwidth, bw); }
         note("baseband to zero IF: %u sps, %u Hz", rate, r.bandwidth);
     }
 
     mirisdr_close(n);
-    if (!plan_bad) say("zero IF follows the rate from 1.536 to 8 MHz, an asked filter stays, a low IF gets its widest");
+    if (!plan_bad) say("zero IF takes 1.536 MHz up to 2.048 Msps and follows the rate from there to 8 MHz, an asked filter stays, a low IF gets its widest or what a baseband stream needs");
     return plan_bad ? T_FAIL : T_PASS;
 }
 

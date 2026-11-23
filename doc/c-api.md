@@ -198,7 +198,7 @@ The second argument is the tuner, from 0. `mirisdr_get_tuner_count()` says how m
 
   - `frequency`: the frequency to receive, in Hz. Most boards take it up to 2400 MHz. `mirisdr_get_frontend_caps()` lists the frequency ranges supported by the board.
   - `if_freq`: 0 for zero IF, or a low IF of 450000, 1620000 or 2048000.
-  - `bandwidth`: the tuner's filter in Hz. 0 lets the library pick. At zero IF it takes the narrowest filter at least as wide as the sample rate, up to 8 MHz, and changes it when the rate changes. For example 2.048 Msps gets 5 MHz and 10 Msps gets 8 MHz. With a low IF it takes the widest the IF has. The filters are listed below.
+  - `bandwidth`: the tuner's filter in Hz. 0 lets the library pick. At zero IF it takes 1.536 MHz up to 2.048 Msps, and above that the narrowest filter at least as wide as the sample rate, up to 8 MHz. It changes when the rate changes. For example 2.5 Msps gets 5 MHz and 10 Msps gets 8 MHz. With a low IF it takes the widest the IF has. Under a `baseband` stream, whose rate says how much band is wanted, it takes the narrowest that passes the stream whole: at 450 kHz the 200 kHz filter up to 200 ksps and the 300 kHz filter up to 300 ksps, and at 1620 and 2048 kHz the 600 kHz filter up to 400 ksps. It changes with the stream's rate. The filters are listed below.
   - `low_if_auto`: with a low IF, put the LO one IF above `frequency`, so `frequency` is what the tuner passes. Without it the LO sits at `frequency`.
   - `iq`: with a low IF, which tuner outputs run. `MIRISDR_IQ_BOTH`, or `MIRISDR_IQ_ONLY_I` or `MIRISDR_IQ_ONLY_Q` to switch one off.
   - `gain`: see the next section.
@@ -225,7 +225,11 @@ The wide filters have less gain, and the gain the library reports does not count
 | 7 MHz | 11 dB lower |
 | 8 MHz, and no filter | 12.2 dB lower |
 
-The loss is in the tuner, before the converters, so a signal that clips with the 1.536 MHz filter has 8 dB of room with the 5 MHz one. With `bandwidth` at 0 the level therefore steps when the sample rate crosses 1.536 Msps, and again at 5, 6 and 7 Msps.
+The loss is in the tuner, before the converters, so a signal that clips with the 1.536 MHz filter has 8 dB of room with the 5 MHz one. With `bandwidth` at 0 the level therefore steps when the sample rate crosses 2.048 Msps, and again at 5, 6 and 7 Msps.
+
+From 1.536 to 2.048 Msps the 1.536 MHz filter is narrower than the stream. It is flat to 700 kHz from the centre, 2.4 dB down at 800 kHz, 9.7 dB at 900 kHz and 16.5 dB at 1 MHz. In return a signal next to the stream stays away from the converters: it is 27 dB down at 1.2 MHz from the centre, 39 dB at 1.5 MHz and 52 dB at 2 MHz, where the 5 MHz filter passes all three in full. SDRplay's own driver makes the same choice. Ask for 5000000 to have the whole stream flat.
+
+The narrow filters are steep. At the 450 kHz IF each is 0.7 dB down at its edge and 9.5 dB down at 1.2 times that. At 1620 and 2048 kHz the 600 kHz filter sits about 60 kHz off the centre of the stream, so on one side it is already 12 dB down at 300 kHz. That is why it is only picked up to 400 ksps.
 
 A filter the IF does not have is taken to the nearest it has, or refused with `strict`. This matters when you change the IF. `mirisdr_get_tune()` gives the bandwidth back as you asked for it. A 0 stays 0 and works at every IF. A filter you chose yourself, for example 8 MHz at zero IF, may not exist at the new IF: the tune then takes the IF's nearest, or with `strict` you set `bandwidth` to 0, or to a filter of the new IF, when you change `if_freq`. The tune result always says which filter is in force.
 

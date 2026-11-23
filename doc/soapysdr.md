@@ -153,8 +153,7 @@ Measured on an nRSP-ST at 3.5 MHz and 2 Msps, the false signal goes from 23 dB d
 This has a cost:
 
   - Tuning into or out of the range changes the IF, which restarts the stream. That takes about 13 ms going in and 8 ms going out.
-  - The widest filter of this IF is 1.536 MHz. At 2 Msps the outer 230 kHz on each side of the stream are attenuated.
-  - That filter has 8 dB more gain than the 5 MHz filter that zero IF uses above 1.536 Msps (see Bandwidth below). At such a rate the level steps by 8 dB at the edges of the range, so a gain set near clipping outside the range clips inside it.
+  - The widest filter of this IF is 1.536 MHz, so a wider filter asked for does not apply inside the range. It is the filter zero IF also takes by itself at these rates, so the level and the stream's edges stay the same across the range (see Bandwidth below).
   - The receiver's converters run at 6.7584 Msps, with 12 bits a sample over USB, and the computer does more work (see How much CPU below).
 
 Set `if_freq=0` to keep zero IF everywhere. Above 2.048 Msps nothing changes, so the false signals stay there.
@@ -166,8 +165,8 @@ The bandwidths are the tuner's filters. A request picks the narrowest filter tha
 
 Asking for 0, the default, lets the library choose:
 
-  - At zero IF it takes the narrowest filter that is at least as wide as the sample rate, up to 8 MHz. It changes when the rate changes. For example 2.048 Msps gets 5 MHz, 6 Msps gets 6 MHz and 10 Msps gets 8 MHz. This passes the whole stream and keeps strong signals outside it away from the receiver's converters.
-  - With a low IF it takes the widest filter the IF has. The software filters do the rest.
+  - At zero IF it takes 1.536 MHz up to 2.048 Msps. Above that it takes the narrowest filter that is at least as wide as the sample rate, up to 8 MHz. It changes when the rate changes. For example 2.5 Msps gets 5 MHz, 6 Msps gets 6 MHz and 10 Msps gets 8 MHz. This keeps strong signals outside the stream away from the receiver's converters.
+  - With a low IF it takes the narrowest filter that passes the whole stream: at 450 kHz the 200 kHz filter up to 200 ksps, the 300 kHz filter up to 300 ksps and the 600 kHz filter above, and at 1620 and 2048 kHz the 600 kHz filter up to 400 ksps and the 1.536 MHz filter above. The software filters do the rest. With `baseband` off it takes the widest filter the IF has, as the stream's rate then says nothing about the band wanted.
 
 Some programs, have no field for the filter. For those, put it in the device string, for example `driver=mirisdr,bandwidth=1536000`. A program that asks for 0 then gets this filter.
 
@@ -187,7 +186,9 @@ The wide filters have less gain, and the gain the module reports does not count 
 | 7 MHz | 11 dB lower |
 | 8 MHz, and no filter | 12.2 dB lower |
 
-The loss is in the tuner, before the converters, so a signal that clips with the 1.536 MHz filter has 8 dB of room with the 5 MHz one. When the library chooses the filter, the level therefore steps when the sample rate crosses 1.536 Msps, and again at 5, 6 and 7 Msps.
+The loss is in the tuner, before the converters, so a signal that clips with the 1.536 MHz filter has 8 dB of room with the 5 MHz one. When the library chooses the filter, the level therefore steps when the sample rate crosses 2.048 Msps, and again at 5, 6 and 7 Msps.
+
+From 1.536 to 2.048 Msps the 1.536 MHz filter is narrower than the stream. It is flat to 700 kHz from the centre, 2.4 dB down at 800 kHz, 9.7 dB at 900 kHz and 16.5 dB at 1 MHz. In return a signal next to the stream stays away from the converters: it is 27 dB down at 1.2 MHz from the centre, 39 dB at 1.5 MHz and 52 dB at 2 MHz, where the 5 MHz filter passes all three in full. On a crowded band such as FM broadcast that leaves room for more gain before the receiver overloads. SDRplay's own driver makes the same choice. Ask for a bandwidth of 5 MHz, or put `bandwidth=5000000` in the device string, to have the whole stream flat.
 
 
 <h3>Gain</h3>

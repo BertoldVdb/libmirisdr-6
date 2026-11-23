@@ -948,15 +948,59 @@ static uint32_t mirisdr_zero_if_rate (mirisdr_dev_t *p)
     return (r < 0) ? rate : spl.rate;
 }
 
+/* What a baseband stream gives a second once it follows a tune with these outputs and IF
+   (as mirisdr_stream_plan() takes them), 0 where the selected tuner has no such stream */
+static uint32_t mirisdr_baseband_rate (mirisdr_dev_t *p, int siq, uint32_t sif, uint32_t ds_edge)
+{
+    mirisdr_stream_plan_t spl;
+    int checking = p->checking, r;
+
+    if (!p->stream.baseband || !(mirisdr_stream_tuners(p) & (1 << p->tuner_cur))) return 0;
+
+    p->checking = 1;
+    r = mirisdr_stream_plan(p, &p->stream, MIRISDR_STREAM_ADJUST, siq, sif, ds_edge, &spl);
+    p->checking = checking;
+
+    return (r < 0) ? 0 : spl.bb_rate;
+}
+
 /* Bandwidth 0: at zero IF the narrowest filter as wide as the rate, which passes the
    whole stream and keeps out what the converter would only have to filter away. 8 MHz
-   at most, as the wider setting has no filter. A low IF filters in software, so its
-   widest */
+   at most, as the wider setting has no filter. Up to MIRISDR_BW_1536_RATE it stays at
+   1.536 MHz, as with SDRplay's own driver: the next filter is 5 MHz, which lets signals
+   up to 2 MHz off the centre reach the converters at full level and has 8 dB less gain.
+   The stream's edge pays for it: flat to 700 kHz off the centre, 2.4 dB down at 800 kHz,
+   9.7 at 900 kHz and 16.5 at 1 MHz (nRSP-ST, 2026-11-23).
+   A low IF filters in software, so its widest, unless a baseband stream gives no more
+   than a narrower one passes whole (rate, 0 without such a stream) */
+#define MIRISDR_BW_1536_RATE    2048000
+
+/* A low IF's narrower filters, and the most a baseband stream gives a second to pass them
+   whole. At 450 kHz they are centred, 0.7 dB down at their edge and 9.5 dB at 1.2 times
+   it. At 1620 and 2048 kHz the 600 kHz filter sits about 60 kHz off the stream's centre:
+   1.3 to 1.7 dB down at 225 kHz and 12 dB at 300 kHz on its near side (nRSP-ST,
+   2026-11-23) */
+static const struct { uint8_t ifm, bw; uint32_t rate; } mirisdr_bw_low_if[] = {
+    { MIRISDR_IF_450KHZ,  MIRISDR_BW_200KHZ, 200000 },
+    { MIRISDR_IF_450KHZ,  MIRISDR_BW_300KHZ, 300000 },
+    { MIRISDR_IF_1620KHZ, MIRISDR_BW_600KHZ, 400000 },
+    { MIRISDR_IF_2048KHZ, MIRISDR_BW_600KHZ, 400000 },
+};
+
 static int mirisdr_bw_auto (int ifm, uint32_t rate)
 {
     int b = MIRISDR_BW_1536KHZ;
+    unsigned i;
 
-    if (ifm != MIRISDR_IF_ZERO) return mirisdr_if_bw_widest[ifm];
+    if (ifm != MIRISDR_IF_ZERO)
+    {
+        for (i = 0; rate && (i < sizeof mirisdr_bw_low_if / sizeof mirisdr_bw_low_if[0]); i++)
+            if ((mirisdr_bw_low_if[i].ifm == ifm) && (rate <= mirisdr_bw_low_if[i].rate)) return mirisdr_bw_low_if[i].bw;
+
+        return mirisdr_if_bw_widest[ifm];
+    }
+
+    if (rate <= MIRISDR_BW_1536_RATE) return b;
 
     while ((b < MIRISDR_BW_8MHZ) && (mirisdr_bw_hz[b] < rate)) b++;
 
@@ -1158,6 +1202,10 @@ static int mirisdr_tune_plan (mirisdr_dev_t *p, const mirisdr_tune_config_t *c, 
     pl->siq = pl->ds ? MIRISDR_IQ_ONLY_I : pl->iq;
     pl->sif = pl->ds ? c->frequency : mirisdr_if_hz[pl->ifm];
     pl->ds_edge = pl->ds ? mirisdr_ds_edge(&p->stream, c->frequency) : 0;
+
+    /* a low IF's filter left to the library goes by the baseband stream, known from here */
+    if (!pl->cfg.bandwidth && (pl->ifm != MIRISDR_IF_ZERO))
+        pl->bw = mirisdr_bw_auto(pl->ifm, mirisdr_baseband_rate(p, pl->siq, pl->sif, pl->ds_edge));
 
     /* two tuners streamed: each converter takes one tuner's output, which one is not known,
        so both run */
