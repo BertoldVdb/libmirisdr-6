@@ -99,8 +99,13 @@ static int mirisdr_reserved_set (const uint32_t *r, size_t n)
 #include "sync.c"
 #include "null.c"
 
+/* resets for a receiver that does not answer at the open, before it is given up */
+#define MIRISDR_REVIVE_TRIES    2
+
 static int mirisdr_setup (mirisdr_dev_t **out_dev, mirisdr_dev_t *dev) {
-    int r, standby = 0;
+    struct libusb_device_descriptor dd;
+    uint8_t four[4];
+    int r, tries, strings, standby = 0;
 
     mirisdr_xfer_lock_init(dev);
 
@@ -140,13 +145,27 @@ static int mirisdr_setup (mirisdr_dev_t **out_dev, mirisdr_dev_t *dev) {
         goto failed;
     }
 
-    /* a register list our firmware still runs (a process that ended inside a scan) makes it
-       refuse every register write, a USB reset included: stop it first. The ROM, which has no
-       such request, refuses it, which is fine */
-    libusb_control_transfer(dev->dh, 0x40, 0x5A /* CMD_REG_LIST */, 0, 0, NULL, 0, 1000);
+    /* A register list our firmware still runs (a process that ended inside a scan) makes it
+       refuse every register write, a USB reset included: stop it first. Only a firmware gets
+       the request, and one declares strings. The ROM declares none, has no such request and
+       leaves it to time out */
+    strings = (libusb_get_device_descriptor(libusb_get_device(dev->dh), &dd) == 0)
+              && (dd.iManufacturer || dd.iProduct || dd.iSerialNumber);
+    r = strings ? libusb_control_transfer(dev->dh, 0x40, CMD_REG_LIST, 0, 0, NULL, 0, 1000) : 0;
 
-    /* the reset is needed, otherwise the device at times refuses to communicate */
-    mirisdr_reset(dev);
+    for (tries = 0; ; tries++)
+    {
+        if (r != LIBUSB_ERROR_TIMEOUT) r = mirisdr_rreg(dev, MIRISDR_MEM_XDATA, MIRISDR_FW_BLOCK, four, sizeof four);
+        if (r != LIBUSB_ERROR_TIMEOUT) break;
+
+        if ((tries == MIRISDR_REVIVE_TRIES) || (mirisdr_reset(dev) < 0))
+        {
+            fprintf(stderr, "miri usb device %u does not answer\n", dev->index);
+            goto failed;
+        }
+
+        r = 0;
+    }
 
     /* and always stop streaming, which can still be running when opening */
     mirisdr_streaming_stop(dev);
@@ -481,7 +500,12 @@ int mirisdr_reset (mirisdr_dev_t *p) {
     p->reg8_valid = 0;
     p->tuner_valid = 0;
 
-    if ((r = libusb_reset_device(p->dh)) < 0) {
+    r = libusb_reset_device(p->dh);
+
+    if ((r == LIBUSB_ERROR_NOT_FOUND) && (libusb_release_interface(p->dh, 0) == LIBUSB_ERROR_NOT_FOUND))
+        r = mirisdr_claim_wait(p->dh, MIRISDR_CLAIM_WAIT_MS);
+
+    if (r < 0) {
         fprintf( stderr, "failed to reset miri usb device %u with code %d\n", p->index, r);
         goto failed;
     }

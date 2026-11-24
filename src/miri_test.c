@@ -1447,7 +1447,8 @@ static tres_t t_no_false_resync (void)
     return d.resyncs ? T_FAIL : T_PASS;
 }
 
-/* The library resets inside every open, so it has to leave a usable device */
+/* The open resets a receiver that does not answer, and programs may ask for a reset, so it
+   has to leave a usable device */
 static tres_t t_usb_reset (void)
 {
     mirisdr_stream_stats_t d;

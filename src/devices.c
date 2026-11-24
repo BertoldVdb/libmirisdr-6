@@ -131,7 +131,12 @@ static int mirisdr_ds_lna_db (const mirisdr_dev_t *p)
    so a busy one is waited for a little while: an open far longer than such a read takes, a
    listing only long enough for another read to end. Asked again every few ms, well within the
    5 to 10 ms a read takes: with several programs reading in turn, one asking less often could
-   miss every gap between them */
+   miss every gap between them.
+
+   A USB reset breaks the rule. libusb gives the interface up around one, and Linux drops every
+   hold on the receiver at one without telling the holder, so one that was waiting gets in and
+   two then talk at once. The open therefore sends none to a receiver that answers, see
+   mirisdr_setup() */
 #define MIRISDR_CLAIM_WAIT_MS   500
 #define MIRISDR_PROBE_WAIT_MS   300
 #define MIRISDR_CLAIM_STEP_MS   2
